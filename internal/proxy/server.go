@@ -848,7 +848,7 @@ func (s *Server) queryCurrentLSN(writerConn net.Conn) (router.LSN, error) {
 func (s *Server) handleReadQuery(ctx context.Context, clientConn net.Conn, msg *protocol.Message, query string, session *router.Session) error {
 	// Check cache
 	if s.queryCache != nil {
-		key := cache.CacheKey(query)
+		key := s.cacheKey(query)
 		if cached := s.queryCache.Get(key); cached != nil {
 			slog.Debug("cache hit", "sql", query)
 			if s.metrics != nil {
@@ -931,7 +931,7 @@ func (s *Server) handleReadQuery(ctx context.Context, clientConn net.Conn, msg *
 			return fmt.Errorf("relay reader response: %w", err)
 		}
 		if collected != nil { // nil means oversize, skip cache
-			key := cache.CacheKey(query)
+			key := s.cacheKey(query)
 			s.queryCache.Set(key, collected, nil)
 			if s.metrics != nil {
 				s.metrics.CacheEntries.Set(float64(s.queryCache.Len()))
@@ -1018,7 +1018,7 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, bu
 		// Cache the response keyed by the batch (first Parse query), skip if oversize
 		if collected != nil && len(buf) > 0 && buf[0].Type == protocol.MsgParse {
 			_, query := protocol.ParseParseMessage(buf[0].Payload)
-			key := cache.CacheKey(query)
+			key := s.cacheKey(query)
 			s.queryCache.Set(key, collected, nil)
 			if s.metrics != nil {
 				s.metrics.CacheEntries.Set(float64(s.queryCache.Len()))
@@ -1327,6 +1327,14 @@ func (s *Server) Reload(newCfg *config.Config) error {
 // CfgPath returns the config file path (stored externally by main).
 func (s *Server) Cfg() *config.Config {
 	return s.cfg
+}
+
+// cacheKey uses semantic or plain cache key based on config.
+func (s *Server) cacheKey(query string) uint64 {
+	if s.cfg.Routing.ASTParser {
+		return cache.SemanticCacheKey(query)
+	}
+	return s.cacheKey(query)
 }
 
 // classifyQuery uses AST or string parser based on config.

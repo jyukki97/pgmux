@@ -8,11 +8,13 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/jyukki97/pgmux/internal/admin"
 	"github.com/jyukki97/pgmux/internal/config"
 	"github.com/jyukki97/pgmux/internal/dataapi"
 	"github.com/jyukki97/pgmux/internal/proxy"
+	"github.com/jyukki97/pgmux/internal/telemetry"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -42,6 +44,19 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+
+	// Initialize OpenTelemetry
+	otelShutdown, err := telemetry.Init(cfg.Telemetry)
+	if err != nil {
+		return fmt.Errorf("init telemetry: %w", err)
+	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := otelShutdown(shutdownCtx); err != nil {
+			slog.Error("telemetry shutdown", "error", err)
+		}
+	}()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()

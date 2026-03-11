@@ -1,0 +1,15 @@
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - gosimple
+
+linters-settings:
+  errcheck:
+    check-blank: true
+
+run:
+  timeout: 3m

@@ -138,3 +138,117 @@ func TestExtractTables(t *testing.T) {
 		})
 	}
 }
+
+// === QA Report Regression Tests (extended cases) ===
+
+// #4: Dollar Quoting — additional cases beyond dollar_quote_test.go
+func TestClassify_DollarQuoting_Extended(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  QueryType
+	}{
+		{
+			"hint inside $tag$ should be ignored",
+			"SELECT * FROM users WHERE note = $body$ /* route:writer */ $body$",
+			QueryRead,
+		},
+		{
+			"real hint outside $$ should still work",
+			"/* route:writer */ SELECT * FROM users WHERE note = $$ harmless $$",
+			QueryWrite,
+		},
+		{
+			"$$ with no closing tag",
+			"SELECT $$ open-ended",
+			QueryRead,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Classify(tt.query)
+			if got != tt.want {
+				t.Errorf("Classify(%q) = %d, want %d", tt.query, got, tt.want)
+			}
+		})
+	}
+}
+
+// #5: Nested Block Comments — additional cases beyond nested_comment_test.go
+func TestClassify_NestedComments_Extended(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  QueryType
+	}{
+		{
+			"nested comment hides UPDATE",
+			"SELECT /* /* */ UPDATE admin SET foo='bar' */ 1",
+			QueryRead,
+		},
+		{
+			"triple nested comment",
+			"SELECT /* /* /* */ */ */ 1",
+			QueryRead,
+		},
+		{
+			"nested comment with hint inside should be ignored",
+			"/* /* route:writer */ */ SELECT 1",
+			QueryRead,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Classify(tt.query)
+			if got != tt.want {
+				t.Errorf("Classify(%q) = %d, want %d", tt.query, got, tt.want)
+			}
+		})
+	}
+}
+
+// #6: Quoted table names — additional cases beyond quoted_table_test.go
+func TestExtractTables_QuotedNames_Extended(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  string
+	}{
+		{
+			"double-quoted table with schema",
+			`UPDATE public."my table" SET a=1`,
+			"my table",
+		},
+		{
+			"INSERT INTO quoted table",
+			`INSERT INTO "Order Items" VALUES (1)`,
+			"order items",
+		},
+		{
+			"DELETE FROM quoted table",
+			`DELETE FROM "user data" WHERE id=1`,
+			"user data",
+		},
+		{
+			"TRUNCATE quoted table",
+			`TRUNCATE TABLE "audit log"`,
+			"audit log",
+		},
+		{
+			"quoted schema and quoted table",
+			`UPDATE "my schema"."my table" SET a=1`,
+			"my table",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tables := ExtractTables(tt.query)
+			if len(tables) == 0 {
+				t.Fatalf("ExtractTables(%q) returned empty", tt.query)
+			}
+			if tables[0] != tt.want {
+				t.Errorf("ExtractTables(%q) = %q, want %q", tt.query, tables[0], tt.want)
+			}
+		})
+	}
+}

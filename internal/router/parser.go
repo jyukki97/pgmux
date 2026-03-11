@@ -79,9 +79,36 @@ func containsWriteKeyword(query string) bool {
 
 func extractHint(query string) string {
 	sanitized := stripStringLiterals(query)
-	matches := hintRegex.FindStringSubmatch(sanitized)
-	if len(matches) >= 2 {
-		return matches[1]
+	// Only match hints in top-level block comments (depth 0).
+	// Nested comments like /* /* route:writer */ */ should NOT be treated as hints.
+	i := 0
+	for i < len(sanitized) {
+		if i+1 < len(sanitized) && sanitized[i] == '/' && sanitized[i+1] == '*' {
+			start := i
+			depth := 1
+			i += 2
+			for i < len(sanitized) && depth > 0 {
+				if i+1 < len(sanitized) && sanitized[i] == '/' && sanitized[i+1] == '*' {
+					depth++
+					i += 2
+				} else if i+1 < len(sanitized) && sanitized[i] == '*' && sanitized[i+1] == '/' {
+					depth--
+					i += 2
+				} else {
+					i++
+				}
+			}
+			// Only check for hint if this was a non-nested comment (max depth was 1)
+			comment := sanitized[start:i]
+			if !strings.Contains(comment, "/* ") || strings.Count(comment, "/*") == 1 {
+				matches := hintRegex.FindStringSubmatch(comment)
+				if len(matches) >= 2 {
+					return matches[1]
+				}
+			}
+		} else {
+			i++
+		}
 	}
 	return ""
 }
@@ -97,15 +124,38 @@ func firstKeyword(query string) string {
 }
 
 func stripComments(query string) string {
-	// Remove /* ... */ comments
-	re := regexp.MustCompile(`/\*.*?\*/`)
-	q := re.ReplaceAllString(query, "")
-
-	// Remove -- line comments
-	re2 := regexp.MustCompile(`--[^\n]*`)
-	q = re2.ReplaceAllString(q, "")
-
-	return q
+	var result strings.Builder
+	result.Grow(len(query))
+	i := 0
+	for i < len(query) {
+		// Block comment: handle nested /* ... */
+		if i+1 < len(query) && query[i] == '/' && query[i+1] == '*' {
+			depth := 1
+			i += 2
+			for i < len(query) && depth > 0 {
+				if i+1 < len(query) && query[i] == '/' && query[i+1] == '*' {
+					depth++
+					i += 2
+				} else if i+1 < len(query) && query[i] == '*' && query[i+1] == '/' {
+					depth--
+					i += 2
+				} else {
+					i++
+				}
+			}
+			continue
+		}
+		// Line comment: --
+		if i+1 < len(query) && query[i] == '-' && query[i+1] == '-' {
+			for i < len(query) && query[i] != '\n' {
+				i++
+			}
+			continue
+		}
+		result.WriteByte(query[i])
+		i++
+	}
+	return result.String()
 }
 
 // ExtractTables extracts table names from write queries.
@@ -196,6 +246,26 @@ func stripStringLiterals(query string) string {
 
 	for i := 0; i < len(query); i++ {
 		ch := query[i]
+
+		// Dollar quoting: $$ or $tag$ (only outside other quotes)
+		if ch == '$' && !inSingle && !inDouble {
+			tag, ok := parseDollarTag(query, i)
+			if ok {
+				// Write the opening tag, skip content, write the closing tag
+				result.WriteString(tag)
+				end := strings.Index(query[i+len(tag):], tag)
+				if end >= 0 {
+					i += len(tag) + end + len(tag) - 1
+					result.WriteString(tag)
+				} else {
+					// No closing tag — treat rest as dollar-quoted (skip all)
+					i = len(query) - 1
+					result.WriteString(tag)
+				}
+				continue
+			}
+		}
+
 		switch {
 		case ch == '\'' && !inDouble:
 			result.WriteByte(ch)
@@ -226,6 +296,43 @@ func stripStringLiterals(query string) string {
 	return result.String()
 }
 
+// parseDollarTag checks if position i in query starts a dollar-quote tag ($$ or $tag$).
+// Returns the tag string and true if valid, or ("", false) otherwise.
+func parseDollarTag(query string, i int) (string, bool) {
+	if i >= len(query) || query[i] != '$' {
+		return "", false
+	}
+	// $$ case
+	if i+1 < len(query) && query[i+1] == '$' {
+		return "$$", true
+	}
+	// $tag$ case: tag must be [A-Za-z0-9_] and not start with digit
+	j := i + 1
+	if j >= len(query) {
+		return "", false
+	}
+	// Tag must start with letter or underscore
+	if !isTagStart(query[j]) {
+		return "", false
+	}
+	j++
+	for j < len(query) && isTagChar(query[j]) {
+		j++
+	}
+	if j < len(query) && query[j] == '$' {
+		return query[i : j+1], true
+	}
+	return "", false
+}
+
+func isTagStart(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_'
+}
+
+func isTagChar(ch byte) bool {
+	return isTagStart(ch) || (ch >= '0' && ch <= '9')
+}
+
 func extractAfter(query, upper, keyword string) string {
 	rest := strings.TrimSpace(query[len(keyword):])
 	// Handle optional keywords like "TABLE"
@@ -233,12 +340,73 @@ func extractAfter(query, upper, keyword string) string {
 	if strings.HasPrefix(upperRest, "TABLE ") {
 		rest = strings.TrimSpace(rest[6:])
 	}
-	fields := strings.Fields(rest)
-	if len(fields) == 0 {
+	if len(rest) == 0 {
 		return ""
 	}
-	// Remove schema prefix and clean up
-	name := strings.TrimRight(fields[0], "(;,")
+	name := extractIdentifier(rest)
+	if name == "" {
+		return ""
+	}
+	// Remove schema prefix — take the last part after '.'
 	parts := strings.Split(name, ".")
-	return strings.ToLower(parts[len(parts)-1])
+	final := parts[len(parts)-1]
+	// Strip surrounding quotes if present
+	final = stripQuotes(final)
+	return strings.ToLower(final)
+}
+
+// extractIdentifier extracts a possibly quoted (schema.table) identifier from the start of s.
+// Handles: tablename, "quoted name", schema."quoted name", "schema"."table"
+func extractIdentifier(s string) string {
+	var result strings.Builder
+	i := 0
+	for {
+		if i >= len(s) {
+			break
+		}
+		if s[i] == '"' {
+			// Quoted identifier: read until closing "
+			result.WriteByte('"')
+			i++
+			for i < len(s) {
+				if s[i] == '"' {
+					// Check for escaped "" inside identifier
+					if i+1 < len(s) && s[i+1] == '"' {
+						result.WriteString(`""`)
+						i += 2
+						continue
+					}
+					result.WriteByte('"')
+					i++
+					break
+				}
+				result.WriteByte(s[i])
+				i++
+			}
+		} else {
+			// Unquoted identifier: read until whitespace or special char
+			for i < len(s) && s[i] != ' ' && s[i] != '\t' && s[i] != '\n' &&
+				s[i] != '(' && s[i] != ';' && s[i] != ',' && s[i] != '.' && s[i] != '"' {
+				result.WriteByte(s[i])
+				i++
+			}
+		}
+		// Check for dot (schema.table)
+		if i < len(s) && s[i] == '.' {
+			result.WriteByte('.')
+			i++
+			continue
+		}
+		break
+	}
+	return result.String()
+}
+
+// stripQuotes removes surrounding double quotes from a quoted identifier.
+func stripQuotes(s string) string {
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		inner := s[1 : len(s)-1]
+		return strings.ReplaceAll(inner, `""`, `"`)
+	}
+	return s
 }

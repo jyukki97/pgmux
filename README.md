@@ -85,7 +85,7 @@ writer:
   host: "primary.db.internal"
   port: 5432
 
-readers:
+readers:                              # 선택사항 — 생략 시 모든 쿼리가 writer로 라우팅
   - host: "replica-1.db.internal"
     port: 5432
   - host: "replica-2.db.internal"

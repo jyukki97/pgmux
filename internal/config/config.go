@@ -272,9 +272,6 @@ func (c *Config) validate() error {
 	if c.Writer.Port <= 0 || c.Writer.Port > 65535 {
 		return fmt.Errorf("writer.port must be between 1 and 65535, got %d", c.Writer.Port)
 	}
-	if len(c.Readers) == 0 {
-		return fmt.Errorf("at least one reader is required")
-	}
 	for i, r := range c.Readers {
 		if r.Host == "" {
 			return fmt.Errorf("readers[%d].host is required", i)

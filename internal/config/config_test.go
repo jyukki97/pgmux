@@ -178,9 +178,12 @@ writer:
   host: "primary.db.internal"
   port: 5432
 `
-	_, err := loadFromStringRaw(t, content)
-	if err == nil {
-		t.Error("expected error for no readers")
+	cfg, err := loadFromStringRaw(t, content)
+	if err != nil {
+		t.Fatalf("unexpected error for no readers: %v", err)
+	}
+	if len(cfg.Readers) != 0 {
+		t.Errorf("expected empty readers, got %d", len(cfg.Readers))
 	}
 }
 

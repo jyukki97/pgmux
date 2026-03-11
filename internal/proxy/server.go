@@ -193,6 +193,10 @@ func NewServer(cfg *config.Config) *Server {
 			"webhook", cfg.Audit.Webhook.Enabled)
 	}
 
+	if len(readerAddrs) == 0 {
+		slog.Info("no readers configured, all queries routed to writer")
+	}
+
 	slog.Info("server initialized",
 		"writer", writerAddr,
 		"readers", len(readerAddrs),

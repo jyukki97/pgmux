@@ -216,6 +216,12 @@ metrics:
 admin:
   enabled: true
   listen: "0.0.0.0:9091"
+
+data_api:
+  enabled: true
+  listen: "0.0.0.0:8080"
+  api_keys:
+    - "your-api-key-here"
 ```
 ### 9. Audit Logging & Slow Query Tracker
 
@@ -238,7 +244,45 @@ admin:
 
 ---
 
-### 10. 향후 고도화 아이디어 (Future Enhancements)
+### 10. Serverless Data API
+
+HTTP REST API를 통해 SQL 쿼리를 실행할 수 있는 엔드포인트를 제공한다. Lambda/Edge 함수에서 TCP 커넥션 비용 없이 DB에 접근할 수 있다.
+
+- **엔드포인트**
+  - `POST /v1/query` — SQL 전송 → JSON 응답
+  - 별도 포트에서 HTTP 서버 운영 (`data_api.listen`)
+- **PG Wire Protocol → JSON 변환**
+  - RowDescription OID 기반 타입 매핑 (int4→number, text→string, bool→boolean 등)
+  - DataRow 메시지를 파싱하여 JSON 배열로 변환
+  - NULL 값, 타입 변환 정확 처리
+- **기존 기능 투명 적용**
+  - R/W 라우팅: SELECT는 Reader, INSERT/UPDATE/DELETE는 Writer
+  - 쿼리 캐싱: Reader 쿼리 결과 캐시 + 쓰기 시 무효화
+  - 방화벽: AST 기반 위험 쿼리 차단 (DELETE without WHERE 등)
+  - Rate Limiting: Token Bucket 제한
+- **인증**
+  - `Authorization: Bearer <api_key>` 헤더 검증
+  - API Key 목록은 YAML 설정으로 관리
+  - 키 미설정 시 인증 비활성화
+
+---
+
+### 11. Helm Chart
+
+Kubernetes에 db-proxy를 배포하기 위한 Helm Chart를 제공한다.
+
+- **Dockerfile**: Multi-stage 빌드 (golang:1.25-bookworm → debian:bookworm-slim)
+- **Helm Chart 구조**: `deploy/helm/db-proxy/`
+  - Deployment (readiness/liveness probe, ConfigMap 마운트)
+  - Service (PG 5432, Metrics 9090, Admin 9091)
+  - ConfigMap (config.yaml 주입)
+  - HPA (CPU 기반 오토스케일링)
+  - PDB (최소 가용 Pod 보장)
+  - ServiceMonitor (Prometheus Operator 연동)
+
+---
+
+### 12. 향후 고도화 아이디어 (Future Enhancements)
 - **분산 추적 (OpenTelemetry)**: 쿼리가 프록시를 거쳐 처리되는 전 과정을 모니터링하기 위한 Trace ID 삽입.
-- **Serverless Data API**: HTTP REST → PG Protocol 변환. Lambda/Edge에서 TCP 비용 없이 DB 접근.
-- **Helm Chart**: Kubernetes 배포용 Helm Chart 제공.
+- **Multi-Tenant Routing**: 테넌트별 백엔드 라우팅 (단일 백엔드 아키텍처 변경 필요).
+- **K8s Operator (CRD)**: Helm 이상의 자동화가 필요할 때 별도 프로젝트로 구현.

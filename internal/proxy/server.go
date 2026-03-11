@@ -18,22 +18,25 @@ import (
 	"github.com/jyukki97/db-proxy/internal/metrics"
 	"github.com/jyukki97/db-proxy/internal/pool"
 	"github.com/jyukki97/db-proxy/internal/protocol"
+	"github.com/jyukki97/db-proxy/internal/resilience"
 	"github.com/jyukki97/db-proxy/internal/router"
 )
 
 type Server struct {
-	cfg         *config.Config
-	listenAddr  string
-	writerAddr  string
-	writerPool  *pool.Pool
-	readerPools map[string]*pool.Pool
-	balancer    *router.RoundRobin
-	queryCache  *cache.Cache
-	invalidator *cache.Invalidator
-	metrics     *metrics.Metrics
-	listener    net.Listener
-	tlsConfig   *tls.Config
-	wg          sync.WaitGroup
+	cfg          *config.Config
+	listenAddr   string
+	writerAddr   string
+	writerPool   *pool.Pool
+	readerPools  map[string]*pool.Pool
+	balancer     *router.RoundRobin
+	queryCache   *cache.Cache
+	invalidator  *cache.Invalidator
+	metrics      *metrics.Metrics
+	listener     net.Listener
+	tlsConfig    *tls.Config
+	writerCB     *resilience.CircuitBreaker
+	readerCBs    map[string]*resilience.CircuitBreaker
+	wg           sync.WaitGroup
 }
 
 func NewServer(cfg *config.Config) *Server {
@@ -125,6 +128,24 @@ func NewServer(cfg *config.Config) *Server {
 		}
 		s.readerPools[addr] = p
 		slog.Info("reader pool created", "addr", addr, "max_conn", cfg.Pool.MaxConnections)
+	}
+
+	// Initialize Circuit Breakers
+	if cfg.CircuitBreaker.Enabled {
+		cbCfg := resilience.BreakerConfig{
+			ErrorThreshold: cfg.CircuitBreaker.ErrorThreshold,
+			OpenDuration:   cfg.CircuitBreaker.OpenDuration,
+			HalfOpenMax:    cfg.CircuitBreaker.HalfOpenMax,
+			WindowSize:     cfg.CircuitBreaker.WindowSize,
+		}
+		s.writerCB = resilience.NewCircuitBreaker(cbCfg)
+		s.readerCBs = make(map[string]*resilience.CircuitBreaker)
+		for _, addr := range readerAddrs {
+			s.readerCBs[addr] = resilience.NewCircuitBreaker(cbCfg)
+		}
+		slog.Info("circuit breakers enabled",
+			"threshold", cbCfg.ErrorThreshold,
+			"open_duration", cbCfg.OpenDuration)
 	}
 
 	// Load TLS certificate if enabled
@@ -632,9 +653,18 @@ func (s *Server) acquireWriterConn(ctx context.Context, bound *pool.Conn) (*pool
 	if bound != nil {
 		return bound, false, nil
 	}
+	// Circuit breaker check
+	if s.writerCB != nil {
+		if err := s.writerCB.Allow(); err != nil {
+			return nil, false, fmt.Errorf("writer circuit breaker open: %w", err)
+		}
+	}
 	acquireStart := time.Now()
 	conn, err := s.writerPool.Acquire(ctx)
 	if err != nil {
+		if s.writerCB != nil {
+			s.writerCB.RecordFailure()
+		}
 		return nil, false, fmt.Errorf("acquire writer: %w", err)
 	}
 	if s.metrics != nil {
@@ -699,7 +729,13 @@ func (s *Server) fallbackToWriter(ctx context.Context, clientConn net.Conn, msg 
 func (s *Server) handleWriteQuery(clientConn net.Conn, writerConn net.Conn, msg *protocol.Message, query string) {
 	if err := s.forwardAndRelay(clientConn, writerConn, msg); err != nil {
 		slog.Error("forward write to writer", "error", err)
+		if s.writerCB != nil {
+			s.writerCB.RecordFailure()
+		}
 		return
+	}
+	if s.writerCB != nil {
+		s.writerCB.RecordSuccess()
 	}
 
 	// Invalidate cache for affected tables
@@ -748,6 +784,17 @@ func (s *Server) handleReadQuery(ctx context.Context, clientConn net.Conn, msg *
 		return s.fallbackToWriter(ctx, clientConn, msg)
 	}
 
+	// Circuit breaker check for reader
+	if cb, ok := s.readerCBs[readerAddr]; ok {
+		if err := cb.Allow(); err != nil {
+			slog.Warn("reader circuit breaker open, fallback to writer", "addr", readerAddr)
+			if s.metrics != nil {
+				s.metrics.ReaderFallback.Inc()
+			}
+			return s.fallbackToWriter(ctx, clientConn, msg)
+		}
+	}
+
 	rPool, ok := s.readerPools[readerAddr]
 	if !ok {
 		slog.Warn("no pool for reader, fallback to writer", "addr", readerAddr)
@@ -763,6 +810,9 @@ func (s *Server) handleReadQuery(ctx context.Context, clientConn net.Conn, msg *
 		slog.Warn("acquire reader failed, fallback to writer", "addr", readerAddr, "error", err)
 		if s.metrics != nil {
 			s.metrics.ReaderFallback.Inc()
+		}
+		if cb, ok := s.readerCBs[readerAddr]; ok {
+			cb.RecordFailure()
 		}
 		return s.fallbackToWriter(ctx, clientConn, msg)
 	}
@@ -797,11 +847,17 @@ func (s *Server) handleReadQuery(ctx context.Context, clientConn net.Conn, msg *
 	} else {
 		if err := s.relayUntilReady(clientConn, rConn); err != nil {
 			rPool.Discard(rConn)
+			if cb, ok := s.readerCBs[readerAddr]; ok {
+				cb.RecordFailure()
+			}
 			return fmt.Errorf("relay reader response: %w", err)
 		}
 		rPool.Release(rConn)
 	}
 
+	if cb, ok := s.readerCBs[readerAddr]; ok {
+		cb.RecordSuccess()
+	}
 	return nil
 }
 

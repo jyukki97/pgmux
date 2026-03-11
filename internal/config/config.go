@@ -18,8 +18,9 @@ type Config struct {
 	Backend BackendConfig `yaml:"backend"`
 	Metrics MetricsConfig `yaml:"metrics"`
 	Admin   AdminConfig   `yaml:"admin"`
-	TLS     TLSConfig     `yaml:"tls"`
-	Auth    AuthConfig    `yaml:"auth"`
+	TLS            TLSConfig            `yaml:"tls"`
+	Auth           AuthConfig           `yaml:"auth"`
+	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
 }
 
 type MetricsConfig struct {
@@ -46,6 +47,14 @@ type AuthConfig struct {
 type AuthUser struct {
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
+}
+
+type CircuitBreakerConfig struct {
+	Enabled        bool          `yaml:"enabled"`
+	ErrorThreshold float64       `yaml:"error_threshold"` // 0.0-1.0
+	OpenDuration   time.Duration `yaml:"open_duration"`
+	HalfOpenMax    int           `yaml:"half_open_max"`
+	WindowSize     int           `yaml:"window_size"`
 }
 
 type BackendConfig struct {
@@ -161,6 +170,18 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Admin.Listen == "" {
 		c.Admin.Listen = "0.0.0.0:9091"
+	}
+	if c.CircuitBreaker.ErrorThreshold <= 0 {
+		c.CircuitBreaker.ErrorThreshold = 0.5
+	}
+	if c.CircuitBreaker.OpenDuration <= 0 {
+		c.CircuitBreaker.OpenDuration = 10 * time.Second
+	}
+	if c.CircuitBreaker.HalfOpenMax <= 0 {
+		c.CircuitBreaker.HalfOpenMax = 3
+	}
+	if c.CircuitBreaker.WindowSize <= 0 {
+		c.CircuitBreaker.WindowSize = 10
 	}
 }
 

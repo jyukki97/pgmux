@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jyukki97/db-proxy/internal/audit"
 	"github.com/jyukki97/db-proxy/internal/cache"
 	"github.com/jyukki97/db-proxy/internal/config"
 	"github.com/jyukki97/db-proxy/internal/metrics"
@@ -37,6 +38,7 @@ type Server struct {
 	writerCB     *resilience.CircuitBreaker
 	readerCBs    map[string]*resilience.CircuitBreaker
 	rateLimiter  *resilience.RateLimiter
+	auditLogger  *audit.Logger
 	wg           sync.WaitGroup
 }
 
@@ -168,11 +170,30 @@ func NewServer(cfg *config.Config) *Server {
 		}
 	}
 
+	// Initialize Audit Logger
+	if cfg.Audit.Enabled {
+		s.auditLogger = audit.New(audit.Config{
+			Enabled:            true,
+			SlowQueryThreshold: cfg.Audit.SlowQueryThreshold,
+			LogAllQueries:      cfg.Audit.LogAllQueries,
+			Webhook: audit.WebhookConfig{
+				Enabled: cfg.Audit.Webhook.Enabled,
+				URL:     cfg.Audit.Webhook.URL,
+				Timeout: cfg.Audit.Webhook.Timeout,
+			},
+		})
+		slog.Info("audit logging enabled",
+			"slow_threshold", cfg.Audit.SlowQueryThreshold,
+			"log_all", cfg.Audit.LogAllQueries,
+			"webhook", cfg.Audit.Webhook.Enabled)
+	}
+
 	slog.Info("server initialized",
 		"writer", writerAddr,
 		"readers", len(readerAddrs),
 		"cache", cfg.Cache.Enabled,
 		"tls", cfg.TLS.Enabled,
+		"audit", cfg.Audit.Enabled,
 		"pooling", "transaction")
 
 	return s
@@ -225,6 +246,9 @@ func (s *Server) Start(ctx context.Context) error {
 				s.closePools()
 				if s.invalidator != nil {
 					s.invalidator.Close()
+				}
+				if s.auditLogger != nil {
+					s.auditLogger.Close()
 				}
 				slog.Info("proxy shut down gracefully")
 				return nil
@@ -561,10 +585,12 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				}
 			}
 
+			elapsed := time.Since(start)
 			if s.metrics != nil {
 				s.metrics.QueriesRouted.WithLabelValues(target).Inc()
-				s.metrics.QueryDuration.WithLabelValues(target).Observe(time.Since(start).Seconds())
+				s.metrics.QueryDuration.WithLabelValues(target).Observe(elapsed.Seconds())
 			}
+			s.emitAuditEvent(clientConn, query, target, elapsed, false)
 			continue
 		}
 
@@ -674,10 +700,12 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				}
 			}
 
+			elapsed := time.Since(start)
 			if s.metrics != nil {
 				s.metrics.QueriesRouted.WithLabelValues(target).Inc()
-				s.metrics.QueryDuration.WithLabelValues(target).Observe(time.Since(start).Seconds())
+				s.metrics.QueryDuration.WithLabelValues(target).Observe(elapsed.Seconds())
 			}
+			s.emitAuditEvent(clientConn, "(extended query)", target, elapsed, false)
 
 			// Reset batch state
 			extBuf = extBuf[:0]
@@ -1373,4 +1401,38 @@ func parseSize(s string) int {
 	}
 	n, _ := strconv.Atoi(s)
 	return n
+}
+
+// emitAuditEvent sends a query audit event to the audit logger if enabled.
+func (s *Server) emitAuditEvent(clientConn net.Conn, query, target string, elapsed time.Duration, cached bool) {
+	if s.auditLogger == nil {
+		return
+	}
+
+	durationMS := float64(elapsed.Microseconds()) / 1000.0
+
+	// Record slow query metric
+	if s.metrics != nil && durationMS >= float64(s.cfg.Audit.SlowQueryThreshold.Milliseconds()) {
+		s.metrics.SlowQueries.WithLabelValues(target).Inc()
+	}
+
+	sourceIP := ""
+	if addr := clientConn.RemoteAddr(); addr != nil {
+		sourceIP = addr.String()
+	}
+
+	s.auditLogger.Log(audit.Event{
+		Timestamp:  time.Now(),
+		User:       s.cfg.Backend.User,
+		SourceIP:   sourceIP,
+		Query:      query,
+		DurationMS: durationMS,
+		Target:     target,
+		Cached:     cached,
+	})
+}
+
+// AuditLogger returns the audit logger for external access (e.g., admin API).
+func (s *Server) AuditLogger() *audit.Logger {
+	return s.auditLogger
 }

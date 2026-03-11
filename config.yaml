@@ -26,3 +26,12 @@ cache:
   cache_ttl: 10s
   max_cache_entries: 10000
   max_result_size: "1MB"
+
+audit:
+  enabled: false
+  slow_query_threshold: 500ms
+  log_all_queries: false
+  webhook:
+    enabled: false
+    url: ""
+    timeout: 5s

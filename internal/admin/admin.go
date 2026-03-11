@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/jyukki97/db-proxy/internal/audit"
 	"github.com/jyukki97/db-proxy/internal/cache"
 	"github.com/jyukki97/db-proxy/internal/config"
 	"github.com/jyukki97/db-proxy/internal/pool"
@@ -22,6 +23,7 @@ type Server struct {
 	invalidator *cache.Invalidator
 	writerPool  *pool.Pool
 	readerPools map[string]*pool.Pool
+	auditLogger *audit.Logger
 	reloadFunc  func() error
 	mu          sync.RWMutex
 }
@@ -32,13 +34,14 @@ func (s *Server) SetReloadFunc(fn func() error) {
 }
 
 // New creates a new Admin server.
-func New(cfg *config.Config, c *cache.Cache, inv *cache.Invalidator, writerPool *pool.Pool, readerPools map[string]*pool.Pool) *Server {
+func New(cfg *config.Config, c *cache.Cache, inv *cache.Invalidator, writerPool *pool.Pool, readerPools map[string]*pool.Pool, auditLogger *audit.Logger) *Server {
 	return &Server{
 		cfg:         cfg,
 		cache:       c,
 		invalidator: inv,
 		writerPool:  writerPool,
 		readerPools: readerPools,
+		auditLogger: auditLogger,
 	}
 }
 
@@ -128,6 +131,15 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{
 		"pool":  poolStats,
 		"cache": cacheStats,
+	}
+
+	if s.auditLogger != nil {
+		slow, sent, errors := s.auditLogger.Stats()
+		resp["audit"] = map[string]any{
+			"slow_queries":   slow,
+			"webhook_sent":   sent,
+			"webhook_errors": errors,
+		}
 	}
 
 	writeJSON(w, resp)

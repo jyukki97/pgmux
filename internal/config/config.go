@@ -23,6 +23,20 @@ type Config struct {
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
 	RateLimit      RateLimitConfig      `yaml:"rate_limit"`
 	Firewall       FirewallConfig       `yaml:"firewall"`
+	Audit          AuditConfig          `yaml:"audit"`
+}
+
+type AuditConfig struct {
+	Enabled            bool                `yaml:"enabled"`
+	SlowQueryThreshold time.Duration       `yaml:"slow_query_threshold"`
+	LogAllQueries      bool                `yaml:"log_all_queries"`
+	Webhook            AuditWebhookConfig  `yaml:"webhook"`
+}
+
+type AuditWebhookConfig struct {
+	Enabled bool          `yaml:"enabled"`
+	URL     string        `yaml:"url"`
+	Timeout time.Duration `yaml:"timeout"`
 }
 
 type FirewallConfig struct {
@@ -206,6 +220,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.CircuitBreaker.WindowSize <= 0 {
 		c.CircuitBreaker.WindowSize = 10
+	}
+	if c.Audit.SlowQueryThreshold == 0 {
+		c.Audit.SlowQueryThreshold = 500 * time.Millisecond
+	}
+	if c.Audit.Webhook.Timeout == 0 {
+		c.Audit.Webhook.Timeout = 5 * time.Second
 	}
 }
 

@@ -195,6 +195,15 @@ cache:
   max_cache_entries: 10000
   max_result_size: "1MB"
 
+audit:
+  enabled: true
+  slow_query_threshold: "500ms"
+  log_all_queries: false
+  webhook:
+    enabled: false
+    url: "https://hooks.slack.com/services/..."
+    timeout: "5s"
+
 backend:
   user: "postgres"
   password: "postgres"
@@ -208,5 +217,28 @@ admin:
   enabled: true
   listen: "0.0.0.0:9091"
 ```
-### 9. 향후 고도화 아이디어 (Future Enhancements)
+### 9. Audit Logging & Slow Query Tracker
+
+쿼리 감사 로그를 기록하고, 느린 쿼리를 감지하여 알림을 전송한다.
+
+- **Slow Query 감지**
+  - 쿼리 실행 시간이 `slow_query_threshold`를 초과하면 경고 로그 기록
+  - 구조화 로그 필드: event, user, source_ip, query, duration_ms, target, cached
+- **감사 로그**
+  - `log_all_queries: true`이면 모든 쿼리를 감사 로그로 기록
+  - 비동기 채널 기반 — 쿼리 처리 경로 비블로킹
+- **Webhook 알림**
+  - Slow Query 발생 시 Webhook URL로 HTTP POST (Slack Incoming Webhook 호환)
+  - 동일 쿼리 패턴 중복 알림 방지 (최소 interval)
+  - 전용 goroutine + 버퍼 채널로 비동기 전송
+- **메트릭**
+  - `dbproxy_slow_queries_total{target}` — Slow Query 카운터
+  - `dbproxy_audit_webhook_sent_total` — Webhook 전송 횟수
+  - `dbproxy_audit_webhook_errors_total` — Webhook 실패 횟수
+
+---
+
+### 10. 향후 고도화 아이디어 (Future Enhancements)
 - **분산 추적 (OpenTelemetry)**: 쿼리가 프록시를 거쳐 처리되는 전 과정을 모니터링하기 위한 Trace ID 삽입.
+- **Serverless Data API**: HTTP REST → PG Protocol 변환. Lambda/Edge에서 TCP 비용 없이 DB 접근.
+- **Helm Chart**: Kubernetes 배포용 Helm Chart 제공.

@@ -31,6 +31,11 @@ type Metrics struct {
 
 	// Firewall
 	FirewallBlocked *prometheus.CounterVec
+
+	// Audit
+	SlowQueries    *prometheus.CounterVec
+	WebhookSent    prometheus.Counter
+	WebhookErrors  prometheus.Counter
 }
 
 // New creates and registers all Prometheus metrics.
@@ -135,6 +140,26 @@ func New() *Metrics {
 			},
 			[]string{"rule"},
 		),
+
+		SlowQueries: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "dbproxy_slow_queries_total",
+				Help: "Total number of slow queries detected.",
+			},
+			[]string{"target"},
+		),
+		WebhookSent: prometheus.NewCounter(
+			prometheus.CounterOpts{
+				Name: "dbproxy_audit_webhook_sent_total",
+				Help: "Total number of audit webhook notifications sent.",
+			},
+		),
+		WebhookErrors: prometheus.NewCounter(
+			prometheus.CounterOpts{
+				Name: "dbproxy_audit_webhook_errors_total",
+				Help: "Total number of audit webhook send errors.",
+			},
+		),
 	}
 
 	prometheus.MustRegister(
@@ -152,6 +177,9 @@ func New() *Metrics {
 		m.PoolAcquireDur,
 		m.ReaderLSNLag,
 		m.FirewallBlocked,
+		m.SlowQueries,
+		m.WebhookSent,
+		m.WebhookErrors,
 	)
 
 	return m

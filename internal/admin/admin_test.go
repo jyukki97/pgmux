@@ -44,7 +44,7 @@ func testServer() *Server {
 		TTL:        10 * time.Second,
 	})
 
-	return New(cfg, c, nil, nil, map[string]*pool.Pool{})
+	return New(cfg, c, nil, nil, map[string]*pool.Pool{}, nil)
 }
 
 func TestHandleHealth(t *testing.T) {

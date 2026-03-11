@@ -61,7 +61,7 @@ func run() error {
 
 	// Start Admin API server
 	if cfg.Admin.Enabled {
-		adminSrv := admin.New(cfg, srv.Cache(), srv.Invalidator(), srv.WriterPool(), srv.ReaderPools())
+		adminSrv := admin.New(cfg, srv.Cache(), srv.Invalidator(), srv.WriterPool(), srv.ReaderPools(), srv.AuditLogger())
 		adminSrv.SetReloadFunc(func() error {
 			return reloadConfig(cfgPath, srv)
 		})

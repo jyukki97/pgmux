@@ -27,6 +27,9 @@
 | W19 | Zero-Downtime Reload | SIGHUP 무중단 설정 리로드 | 완료 |
 | W20 | LSN 기반 Causal Consistency | Replication Lag 인지형 라우팅, Writer LSN 트래킹 | 완료 |
 | W21-22 | AST 파서 + 쿼리 방화벽 | pg_query_go AST 파서 도입, 쿼리 방화벽, Semantic Caching | 완료 |
+| W23 | Audit Logging & Slow Query | 쿼리 감사 로그, Slow Query 감지, Webhook 알림 | 진행 중 |
+| W24 | Helm Chart | K8s 배포용 Helm Chart, Dockerfile 최적화 | 미착수 |
+| W25 | Serverless Data API | HTTP REST → PG Protocol 변환, JSON 응답 | 미착수 |
 
 ---
 
@@ -36,6 +39,7 @@
 |------|------|------|
 | 완료된 Task | `docs/tasks-completed.md` | Phase 1-13 Task 목록 및 상세 정의 |
 | 초고도화 Task | `docs/tasks-enhancement.md` | Phase 12-13 Task 목록 및 상세 정의 |
+| 차기 Task | `docs/tasks-next.md` | Phase 14-16 Task 목록 및 상세 정의 |
 | Agent Teams | `docs/agent-teams.md` | Claude Code Agent Teams 활용 가이드 |
 | Git 워크플로우 | `docs/git-workflow.md` | 브랜치 전략, 커밋, PR 규칙 |
 | 블로그 계획 | `docs/blog-plan.md` | 포스팅 시점, 주제, 템플릿 |

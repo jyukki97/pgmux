@@ -1,5 +1,7 @@
 ## 초고도화 Task (Phase 12-13)
 
+> Phase 12-13 모두 완료됨. 차기 작업(Phase 14-16)은 `docs/tasks-next.md` 참고.
+
 ---
 
 ### Phase 12: LSN 기반 Causal Consistency (W20)

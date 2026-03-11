@@ -61,6 +61,39 @@ func TestRoundRobin_HealthyCount(t *testing.T) {
 	}
 }
 
+func TestRoundRobin_UpdateBackends(t *testing.T) {
+	rb := NewRoundRobin([]string{"a:1", "b:2"})
+
+	if got := rb.HealthyCount(); got != 2 {
+		t.Fatalf("initial HealthyCount() = %d, want 2", got)
+	}
+
+	// Update to new set of backends
+	rb.UpdateBackends([]string{"c:3", "d:4", "e:5"})
+
+	if got := rb.HealthyCount(); got != 3 {
+		t.Errorf("after update HealthyCount() = %d, want 3", got)
+	}
+
+	// Verify old backends are gone and new ones are reachable
+	counts := map[string]int{}
+	for i := 0; i < 6; i++ {
+		addr := rb.Next()
+		counts[addr]++
+	}
+
+	for _, addr := range []string{"c:3", "d:4", "e:5"} {
+		if counts[addr] != 2 {
+			t.Errorf("count[%s] = %d, want 2", addr, counts[addr])
+		}
+	}
+	for _, addr := range []string{"a:1", "b:2"} {
+		if counts[addr] != 0 {
+			t.Errorf("old backend %s should not appear, got count %d", addr, counts[addr])
+		}
+	}
+}
+
 func TestRoundRobin_Recovery(t *testing.T) {
 	// Start a real TCP server to simulate recovery
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

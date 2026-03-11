@@ -1087,6 +1087,91 @@ func (s *Server) closePools() {
 	}
 }
 
+// Reload applies a new configuration without restarting the proxy.
+// Reloadable: readers, pool sizes, cache TTL, rate limit settings.
+// NOT reloadable: proxy.listen, writer address.
+func (s *Server) Reload(newCfg *config.Config) error {
+	oldCfg := s.cfg
+
+	// Update readers if changed
+	newReaderAddrs := make([]string, len(newCfg.Readers))
+	for i, r := range newCfg.Readers {
+		newReaderAddrs[i] = fmt.Sprintf("%s:%d", r.Host, r.Port)
+	}
+
+	oldReaderAddrs := make(map[string]bool)
+	for _, r := range oldCfg.Readers {
+		oldReaderAddrs[fmt.Sprintf("%s:%d", r.Host, r.Port)] = true
+	}
+
+	// Create new reader pools and close removed ones
+	newReaderPools := make(map[string]*pool.Pool)
+	for _, addr := range newReaderAddrs {
+		if existingPool, ok := s.readerPools[addr]; ok {
+			// Keep existing pool
+			newReaderPools[addr] = existingPool
+		} else {
+			// Create new pool for added reader
+			addr := addr
+			p, err := pool.New(pool.Config{
+				DialFunc: func() (net.Conn, error) {
+					return pgConnect(addr, newCfg.Backend.User, newCfg.Backend.Password, newCfg.Backend.Database)
+				},
+				MinConnections:    0,
+				MaxConnections:    newCfg.Pool.MaxConnections,
+				IdleTimeout:       newCfg.Pool.IdleTimeout,
+				MaxLifetime:       newCfg.Pool.MaxLifetime,
+				ConnectionTimeout: newCfg.Pool.ConnectionTimeout,
+			})
+			if err != nil {
+				slog.Error("reload: create reader pool", "addr", addr, "error", err)
+				continue
+			}
+			newReaderPools[addr] = p
+			slog.Info("reload: reader pool added", "addr", addr)
+		}
+	}
+
+	// Close removed reader pools
+	for addr, p := range s.readerPools {
+		found := false
+		for _, newAddr := range newReaderAddrs {
+			if addr == newAddr {
+				found = true
+				break
+			}
+		}
+		if !found {
+			p.Close()
+			slog.Info("reload: reader pool removed", "addr", addr)
+		}
+	}
+
+	s.readerPools = newReaderPools
+	s.balancer.UpdateBackends(newReaderAddrs)
+
+	// Update rate limiter
+	if newCfg.RateLimit.Enabled {
+		s.rateLimiter = resilience.NewRateLimiter(newCfg.RateLimit.Rate, newCfg.RateLimit.Burst)
+	} else {
+		s.rateLimiter = nil
+	}
+
+	// Update config reference
+	s.cfg = newCfg
+
+	slog.Info("config reloaded",
+		"readers", len(newReaderAddrs),
+		"rate_limit", newCfg.RateLimit.Enabled)
+
+	return nil
+}
+
+// CfgPath returns the config file path (stored externally by main).
+func (s *Server) Cfg() *config.Config {
+	return s.cfg
+}
+
 func routeName(r router.Route) string {
 	if r == router.RouteWriter {
 		return "writer"

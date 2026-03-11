@@ -33,15 +33,19 @@ func NewRoundRobin(addrs []string) *RoundRobin {
 // Next returns the address of the next healthy backend.
 // Returns empty string if no healthy backend is available.
 func (r *RoundRobin) Next() string {
-	n := len(r.backends)
+	r.mu.RLock()
+	backends := r.backends
+	r.mu.RUnlock()
+
+	n := len(backends)
 	if n == 0 {
 		return ""
 	}
 
 	for i := 0; i < n; i++ {
 		idx := int(r.index.Add(1)-1) % n
-		if r.backends[idx].healthy.Load() {
-			return r.backends[idx].Addr
+		if backends[idx].healthy.Load() {
+			return backends[idx].Addr
 		}
 	}
 	return ""
@@ -86,6 +90,20 @@ func (r *RoundRobin) checkBackends() {
 			}
 		}
 	}
+}
+
+// UpdateBackends replaces the backend list atomically.
+func (r *RoundRobin) UpdateBackends(addrs []string) {
+	backends := make([]*Backend, len(addrs))
+	for i, addr := range addrs {
+		b := &Backend{Addr: addr}
+		b.healthy.Store(true)
+		backends[i] = b
+	}
+	r.mu.Lock()
+	r.backends = backends
+	r.mu.Unlock()
+	slog.Info("balancer backends updated", "count", len(addrs))
 }
 
 // HealthyCount returns the number of healthy backends.

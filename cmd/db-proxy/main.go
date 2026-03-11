@@ -62,6 +62,9 @@ func run() error {
 	// Start Admin API server
 	if cfg.Admin.Enabled {
 		adminSrv := admin.New(cfg, srv.Cache(), srv.Invalidator(), srv.WriterPool(), srv.ReaderPools())
+		adminSrv.SetReloadFunc(func() error {
+			return reloadConfig(cfgPath, srv)
+		})
 		go func() {
 			if err := adminSrv.ListenAndServe(cfg.Admin.Listen); err != nil && err != http.ErrServerClosed {
 				slog.Error("admin server error", "error", err)
@@ -69,7 +72,27 @@ func run() error {
 		}()
 	}
 
+	// Handle SIGHUP for config reload
+	sighupCh := make(chan os.Signal, 1)
+	signal.Notify(sighupCh, syscall.SIGHUP)
+	go func() {
+		for range sighupCh {
+			slog.Info("received SIGHUP, reloading config...")
+			if err := reloadConfig(cfgPath, srv); err != nil {
+				slog.Error("config reload failed", "error", err)
+			}
+		}
+	}()
+
 	slog.Info("db-proxy starting", "listen", cfg.Proxy.Listen)
 
 	return srv.Start(ctx)
+}
+
+func reloadConfig(cfgPath string, srv *proxy.Server) error {
+	newCfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	return srv.Reload(newCfg)
 }

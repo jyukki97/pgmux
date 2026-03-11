@@ -170,6 +170,56 @@ func ExtractQueryText(payload []byte) string {
 	return string(payload)
 }
 
+// ParseParseMessage extracts the statement name and query text from a Parse ('P') message payload.
+// Parse payload format: statement_name (string\0) + query (string\0) + int16 param_count + param OIDs
+func ParseParseMessage(payload []byte) (stmtName, query string) {
+	nameEnd := indexOf(payload, 0)
+	if nameEnd < 0 {
+		return "", ""
+	}
+	stmtName = string(payload[:nameEnd])
+
+	rest := payload[nameEnd+1:]
+	queryEnd := indexOf(rest, 0)
+	if queryEnd < 0 {
+		return stmtName, ""
+	}
+	query = string(rest[:queryEnd])
+	return stmtName, query
+}
+
+// ParseBindMessage extracts the destination portal and source statement name from a Bind ('B') message.
+// Bind payload format: portal_name (string\0) + statement_name (string\0) + ...
+func ParseBindMessage(payload []byte) (portal, stmtName string) {
+	portalEnd := indexOf(payload, 0)
+	if portalEnd < 0 {
+		return "", ""
+	}
+	portal = string(payload[:portalEnd])
+
+	rest := payload[portalEnd+1:]
+	nameEnd := indexOf(rest, 0)
+	if nameEnd < 0 {
+		return portal, ""
+	}
+	stmtName = string(rest[:nameEnd])
+	return portal, stmtName
+}
+
+// ParseCloseMessage extracts the type ('S' for statement, 'P' for portal) and name from a Close ('C') message.
+// Close payload format: type_byte + name (string\0)
+func ParseCloseMessage(payload []byte) (closeType byte, name string) {
+	if len(payload) < 2 {
+		return 0, ""
+	}
+	closeType = payload[0]
+	nameEnd := indexOf(payload[1:], 0)
+	if nameEnd < 0 {
+		return closeType, ""
+	}
+	return closeType, string(payload[1 : 1+nameEnd])
+}
+
 func indexOf(data []byte, b byte) int {
 	for i, v := range data {
 		if v == b {

@@ -81,6 +81,86 @@ func TestReadStartupMessage_SSLRequest(t *testing.T) {
 	}
 }
 
+func TestParseParseMessage(t *testing.T) {
+	tests := []struct {
+		name     string
+		payload  []byte
+		wantStmt string
+		wantSQL  string
+	}{
+		{
+			"named statement",
+			append(append([]byte("stmt1"), 0), append([]byte("SELECT * FROM users"), 0)...),
+			"stmt1", "SELECT * FROM users",
+		},
+		{
+			"unnamed statement",
+			append([]byte{0}, append([]byte("INSERT INTO orders VALUES ($1)"), 0)...),
+			"", "INSERT INTO orders VALUES ($1)",
+		},
+		{
+			"with param OIDs",
+			func() []byte {
+				b := append([]byte("s1"), 0)
+				b = append(b, append([]byte("SELECT 1"), 0)...)
+				b = binary.BigEndian.AppendUint16(b, 0) // 0 params
+				return b
+			}(),
+			"s1", "SELECT 1",
+		},
+		{
+			"empty payload",
+			[]byte{},
+			"", "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stmt, sql := ParseParseMessage(tt.payload)
+			if stmt != tt.wantStmt {
+				t.Errorf("stmt = %q, want %q", stmt, tt.wantStmt)
+			}
+			if sql != tt.wantSQL {
+				t.Errorf("sql = %q, want %q", sql, tt.wantSQL)
+			}
+		})
+	}
+}
+
+func TestParseBindMessage(t *testing.T) {
+	// Bind: portal\0 + stmt_name\0 + ...
+	payload := append(append([]byte(""), 0), append([]byte("stmt1"), 0)...)
+	portal, stmt := ParseBindMessage(payload)
+	if portal != "" {
+		t.Errorf("portal = %q, want empty", portal)
+	}
+	if stmt != "stmt1" {
+		t.Errorf("stmt = %q, want %q", stmt, "stmt1")
+	}
+}
+
+func TestParseCloseMessage(t *testing.T) {
+	// Close statement: 'S' + name\0
+	payload := append([]byte{'S'}, append([]byte("stmt1"), 0)...)
+	closeType, name := ParseCloseMessage(payload)
+	if closeType != 'S' {
+		t.Errorf("closeType = %c, want S", closeType)
+	}
+	if name != "stmt1" {
+		t.Errorf("name = %q, want %q", name, "stmt1")
+	}
+
+	// Close portal: 'P' + name\0
+	payload2 := append([]byte{'P'}, append([]byte("p1"), 0)...)
+	closeType2, name2 := ParseCloseMessage(payload2)
+	if closeType2 != 'P' {
+		t.Errorf("closeType = %c, want P", closeType2)
+	}
+	if name2 != "p1" {
+		t.Errorf("name = %q, want %q", name2, "p1")
+	}
+}
+
 func TestExtractQueryText(t *testing.T) {
 	tests := []struct {
 		name    string

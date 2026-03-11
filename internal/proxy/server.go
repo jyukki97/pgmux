@@ -257,6 +257,11 @@ func authNeedsResponse(authType uint32) bool {
 
 // relayQueries handles the main query loop with R/W routing and caching.
 func (s *Server) relayQueries(ctx context.Context, clientConn, writerConn net.Conn, session *router.Session) {
+	// extBuf collects Extended Query messages destined for a reader, flushed on Sync.
+	var extBuf []*protocol.Message
+	var extRoute router.Route
+	var extReaderAddr string
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -275,42 +280,103 @@ func (s *Server) relayQueries(ctx context.Context, clientConn, writerConn net.Co
 			return
 		}
 
-		// Extended Query Protocol: Parse(P), Bind(B), Describe(D), Execute(E), Close(C)
-		// These are buffered by the backend until Sync(S) triggers ReadyForQuery.
-		if msg.Type != protocol.MsgQuery {
-			if err := protocol.WriteMessage(writerConn, msg.Type, msg.Payload); err != nil {
-				slog.Error("forward to writer", "error", err)
-				return
+		// --- Simple Query Protocol ---
+		if msg.Type == protocol.MsgQuery {
+			query := protocol.ExtractQueryText(msg.Payload)
+			route := session.Route(query)
+			target := routeName(route)
+			slog.Debug("query routed", "sql", query, "route", target)
+
+			start := time.Now()
+
+			if route == router.RouteWriter {
+				s.handleWriteQuery(clientConn, writerConn, msg, query)
+			} else {
+				if err := s.handleReadQuery(ctx, clientConn, writerConn, msg, query); err != nil {
+					slog.Error("handle read query", "error", err)
+					return
+				}
 			}
-			// Only relay responses after Sync — that's when backend sends ReadyForQuery
-			if msg.Type == protocol.MsgSync {
+
+			if s.metrics != nil {
+				s.metrics.QueriesRouted.WithLabelValues(target).Inc()
+				s.metrics.QueryDuration.WithLabelValues(target).Observe(time.Since(start).Seconds())
+			}
+			continue
+		}
+
+		// --- Extended Query Protocol ---
+		switch msg.Type {
+		case protocol.MsgParse:
+			stmtName, query := protocol.ParseParseMessage(msg.Payload)
+			route := session.RegisterStatement(stmtName, query)
+			slog.Debug("parse registered", "stmt", stmtName, "sql", query, "route", routeName(route))
+
+			if session.InTransaction() || route == router.RouteWriter {
+				extRoute = router.RouteWriter
+			} else {
+				extRoute = route
+			}
+			extBuf = append(extBuf, msg)
+
+		case protocol.MsgBind:
+			_, stmtName := protocol.ParseBindMessage(msg.Payload)
+			route := session.StatementRoute(stmtName)
+			// If any statement in the batch is a writer, the whole batch goes to writer
+			if route == router.RouteWriter {
+				extRoute = router.RouteWriter
+			}
+			extBuf = append(extBuf, msg)
+
+		case protocol.MsgClose:
+			closeType, name := protocol.ParseCloseMessage(msg.Payload)
+			if closeType == 'S' {
+				session.CloseStatement(name)
+			}
+			extBuf = append(extBuf, msg)
+
+		case protocol.MsgSync:
+			start := time.Now()
+			target := routeName(extRoute)
+
+			if extRoute == router.RouteReader && !session.InTransaction() {
+				// Try to send buffered messages to a reader
+				extReaderAddr = s.balancer.Next()
+				if err := s.handleExtendedRead(ctx, clientConn, writerConn, extBuf, msg, extReaderAddr); err != nil {
+					slog.Error("extended read query", "error", err)
+					return
+				}
+			} else {
+				// Send to writer
+				for _, m := range extBuf {
+					if err := protocol.WriteMessage(writerConn, m.Type, m.Payload); err != nil {
+						slog.Error("forward ext to writer", "error", err)
+						return
+					}
+				}
+				if err := protocol.WriteMessage(writerConn, msg.Type, msg.Payload); err != nil {
+					slog.Error("forward sync to writer", "error", err)
+					return
+				}
 				if err := s.relayUntilReady(clientConn, writerConn); err != nil {
 					slog.Error("relay writer response (sync)", "error", err)
 					return
 				}
 			}
-			continue
-		}
 
-		query := protocol.ExtractQueryText(msg.Payload)
-		route := session.Route(query)
-		target := routeName(route)
-		slog.Debug("query routed", "sql", query, "route", target)
-
-		start := time.Now()
-
-		if route == router.RouteWriter {
-			s.handleWriteQuery(clientConn, writerConn, msg, query)
-		} else {
-			if err := s.handleReadQuery(ctx, clientConn, writerConn, msg, query); err != nil {
-				slog.Error("handle read query", "error", err)
-				return
+			if s.metrics != nil {
+				s.metrics.QueriesRouted.WithLabelValues(target).Inc()
+				s.metrics.QueryDuration.WithLabelValues(target).Observe(time.Since(start).Seconds())
 			}
-		}
 
-		if s.metrics != nil {
-			s.metrics.QueriesRouted.WithLabelValues(target).Inc()
-			s.metrics.QueryDuration.WithLabelValues(target).Observe(time.Since(start).Seconds())
+			// Reset batch state
+			extBuf = extBuf[:0]
+			extRoute = router.RouteReader
+			extReaderAddr = ""
+
+		default:
+			// Describe(D), Execute(E), etc. — buffer them
+			extBuf = append(extBuf, msg)
 		}
 	}
 }
@@ -412,6 +478,87 @@ func (s *Server) handleReadQuery(ctx context.Context, clientConn, writerConn net
 		if err := s.relayUntilReady(clientConn, rConn); err != nil {
 			rPool.Discard(rConn)
 			return fmt.Errorf("relay reader response: %w", err)
+		}
+		rPool.Release(rConn)
+	}
+
+	return nil
+}
+
+// handleExtendedRead sends buffered Extended Query messages to a reader, falling back to writer.
+func (s *Server) handleExtendedRead(ctx context.Context, clientConn, writerConn net.Conn, buf []*protocol.Message, syncMsg *protocol.Message, readerAddr string) error {
+	// Fallback helper: send entire batch to writer
+	fallbackToWriter := func() error {
+		if s.metrics != nil {
+			s.metrics.ReaderFallback.Inc()
+		}
+		for _, m := range buf {
+			if err := protocol.WriteMessage(writerConn, m.Type, m.Payload); err != nil {
+				return fmt.Errorf("forward ext to writer: %w", err)
+			}
+		}
+		if err := protocol.WriteMessage(writerConn, syncMsg.Type, syncMsg.Payload); err != nil {
+			return fmt.Errorf("forward sync to writer: %w", err)
+		}
+		return s.relayUntilReady(clientConn, writerConn)
+	}
+
+	if readerAddr == "" {
+		slog.Warn("no healthy reader for extended query, fallback to writer")
+		return fallbackToWriter()
+	}
+
+	rPool, ok := s.readerPools[readerAddr]
+	if !ok {
+		slog.Warn("no pool for reader, fallback to writer", "addr", readerAddr)
+		return fallbackToWriter()
+	}
+
+	acquireStart := time.Now()
+	rConn, err := rPool.Acquire(ctx)
+	if err != nil {
+		slog.Warn("acquire reader failed for extended query, fallback to writer", "addr", readerAddr, "error", err)
+		return fallbackToWriter()
+	}
+	if s.metrics != nil {
+		s.metrics.PoolAcquires.WithLabelValues("reader", readerAddr).Inc()
+		s.metrics.PoolAcquireDur.WithLabelValues("reader", readerAddr).Observe(time.Since(acquireStart).Seconds())
+	}
+
+	// Forward all buffered messages + Sync to reader
+	for _, m := range buf {
+		if err := protocol.WriteMessage(rConn, m.Type, m.Payload); err != nil {
+			slog.Error("forward ext to reader", "addr", readerAddr, "error", err)
+			rPool.Discard(rConn)
+			return fallbackToWriter()
+		}
+	}
+	if err := protocol.WriteMessage(rConn, syncMsg.Type, syncMsg.Payload); err != nil {
+		slog.Error("forward sync to reader", "addr", readerAddr, "error", err)
+		rPool.Discard(rConn)
+		return fallbackToWriter()
+	}
+
+	// Relay response from reader (with optional caching)
+	if s.queryCache != nil {
+		collected, err := s.relayAndCollect(clientConn, rConn)
+		rPool.Release(rConn)
+		if err != nil {
+			return fmt.Errorf("relay reader extended response: %w", err)
+		}
+		// Cache the response keyed by the batch (first Parse query)
+		if len(buf) > 0 && buf[0].Type == protocol.MsgParse {
+			_, query := protocol.ParseParseMessage(buf[0].Payload)
+			key := cache.CacheKey(query)
+			s.queryCache.Set(key, collected, nil)
+			if s.metrics != nil {
+				s.metrics.CacheEntries.Set(float64(s.queryCache.Len()))
+			}
+		}
+	} else {
+		if err := s.relayUntilReady(clientConn, rConn); err != nil {
+			rPool.Discard(rConn)
+			return fmt.Errorf("relay reader extended response: %w", err)
 		}
 		rPool.Release(rConn)
 	}

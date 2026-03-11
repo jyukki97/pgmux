@@ -13,6 +13,10 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/jyukki97/pgmux/internal/audit"
 	"github.com/jyukki97/pgmux/internal/cache"
 	"github.com/jyukki97/pgmux/internal/config"
@@ -21,6 +25,7 @@ import (
 	"github.com/jyukki97/pgmux/internal/protocol"
 	"github.com/jyukki97/pgmux/internal/resilience"
 	"github.com/jyukki97/pgmux/internal/router"
+	"github.com/jyukki97/pgmux/internal/telemetry"
 )
 
 type Server struct {
@@ -525,6 +530,14 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 		if msg.Type == protocol.MsgQuery {
 			query := protocol.ExtractQueryText(msg.Payload)
 
+			// Start root span for query
+			queryCtx, querySpan := telemetry.Tracer().Start(ctx, "pgmux.query",
+				trace.WithAttributes(
+					attribute.String("db.system", "postgresql"),
+					attribute.String("db.statement", truncateSQL(query)),
+				),
+			)
+
 			// Firewall check
 			if s.cfg.Firewall.Enabled {
 				fwResult := router.CheckFirewall(query, router.FirewallConfig{
@@ -539,30 +552,66 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 					if s.metrics != nil {
 						s.metrics.FirewallBlocked.WithLabelValues(string(fwResult.Rule)).Inc()
 					}
+					querySpan.SetAttributes(attribute.String("pgmux.firewall.rule", string(fwResult.Rule)))
+					querySpan.SetStatus(codes.Error, "firewall blocked")
+					querySpan.End()
 					s.sendError(clientConn, fwResult.Message)
 					protocol.WriteMessage(clientConn, protocol.MsgReadyForQuery, []byte{'I'})
 					continue
 				}
 			}
 
+			// Parse/classify query
+			_, parseSpan := telemetry.Tracer().Start(queryCtx, "pgmux.parse")
 			wasInTx := session.InTransaction()
 			route := session.Route(query)
 			nowInTx := session.InTransaction()
-
 			target := routeName(route)
+			qtype := s.classifyQuery(query)
+			var dbOp string
+			if qtype == router.QueryWrite {
+				dbOp = "write"
+			} else {
+				dbOp = "read"
+			}
+			parseSpan.SetAttributes(
+				attribute.String("db.operation", dbOp),
+				attribute.String("pgmux.route", target),
+			)
+			parseSpan.End()
+
+			querySpan.SetAttributes(
+				attribute.String("db.operation", dbOp),
+				attribute.String("pgmux.route", target),
+			)
+
 			slog.Debug("query routed", "sql", query, "route", target)
 
 			start := time.Now()
 
 			if route == router.RouteWriter {
+				// Pool acquire span
+				_, acquireSpan := telemetry.Tracer().Start(queryCtx, "pgmux.pool.acquire",
+					trace.WithAttributes(attribute.String("pgmux.route", "writer")),
+				)
 				wConn, acquired, err := s.acquireWriterConn(ctx, boundWriter)
 				if err != nil {
+					acquireSpan.SetStatus(codes.Error, err.Error())
+					acquireSpan.End()
+					querySpan.SetStatus(codes.Error, "acquire writer failed")
+					querySpan.End()
 					slog.Error("acquire writer", "error", err)
 					s.sendError(clientConn, "cannot acquire backend connection")
 					return
 				}
+				acquireSpan.End()
 
+				// Backend exec span
+				_, execSpan := telemetry.Tracer().Start(queryCtx, "pgmux.backend.exec",
+					trace.WithAttributes(attribute.String("pgmux.route", "writer")),
+				)
 				s.handleWriteQuery(clientConn, wConn, msg, query, session)
+				execSpan.End()
 
 				// Transaction lifecycle management
 				switch {
@@ -579,7 +628,9 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				}
 				// If !acquired && still in transaction → keep using boundWriter
 			} else {
-				if err := s.handleReadQuery(ctx, clientConn, msg, query, session); err != nil {
+				if err := s.handleReadQueryTraced(queryCtx, ctx, clientConn, msg, query, session); err != nil {
+					querySpan.SetStatus(codes.Error, err.Error())
+					querySpan.End()
 					slog.Error("handle read query", "error", err)
 					return
 				}
@@ -591,6 +642,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				s.metrics.QueryDuration.WithLabelValues(target).Observe(elapsed.Seconds())
 			}
 			s.emitAuditEvent(clientConn, query, target, elapsed, false)
+			querySpan.End()
 			continue
 		}
 
@@ -637,25 +689,52 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 			start := time.Now()
 			target := routeName(extRoute)
 
+			// Start root span for extended query batch
+			extCtx, extSpan := telemetry.Tracer().Start(ctx, "pgmux.extended_query",
+				trace.WithAttributes(
+					attribute.String("db.system", "postgresql"),
+					attribute.String("pgmux.route", target),
+				),
+			)
+
 			if extRoute == router.RouteReader && !session.InTransaction() && boundWriter == nil {
 				// Reader path
 				readerAddr := s.balancer.Next()
-				if err := s.handleExtendedRead(ctx, clientConn, extBuf, msg, readerAddr); err != nil {
+				if err := s.handleExtendedRead(extCtx, clientConn, extBuf, msg, readerAddr); err != nil {
+					extSpan.SetStatus(codes.Error, err.Error())
+					extSpan.End()
 					slog.Error("extended read query", "error", err)
 					return
 				}
 			} else {
 				// Writer path — acquire from pool or use bound connection
+				_, acquireSpan := telemetry.Tracer().Start(extCtx, "pgmux.pool.acquire",
+					trace.WithAttributes(attribute.String("pgmux.route", "writer")),
+				)
 				wConn, acquired, err := s.acquireWriterConn(ctx, boundWriter)
 				if err != nil {
+					acquireSpan.SetStatus(codes.Error, err.Error())
+					acquireSpan.End()
+					extSpan.SetStatus(codes.Error, "acquire writer failed")
+					extSpan.End()
 					slog.Error("acquire writer for extended query", "error", err)
 					s.sendError(clientConn, "cannot acquire backend connection")
 					return
 				}
+				acquireSpan.End()
+
+				// Backend exec span
+				_, execSpan := telemetry.Tracer().Start(extCtx, "pgmux.backend.exec",
+					trace.WithAttributes(attribute.String("pgmux.route", "writer")),
+				)
 
 				// Forward all buffered messages + Sync to writer
 				writeErr := s.forwardExtBatch(wConn, extBuf, msg)
 				if writeErr != nil {
+					execSpan.SetStatus(codes.Error, writeErr.Error())
+					execSpan.End()
+					extSpan.SetStatus(codes.Error, "forward ext batch failed")
+					extSpan.End()
 					slog.Error("forward ext batch to writer", "error", writeErr)
 					if acquired {
 						s.writerPool.Discard(wConn)
@@ -667,6 +746,10 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				}
 
 				if err := s.relayUntilReady(clientConn, wConn); err != nil {
+					execSpan.SetStatus(codes.Error, err.Error())
+					execSpan.End()
+					extSpan.SetStatus(codes.Error, "relay writer response failed")
+					extSpan.End()
 					slog.Error("relay writer response (sync)", "error", err)
 					if acquired {
 						s.writerPool.Discard(wConn)
@@ -676,6 +759,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 					}
 					return
 				}
+				execSpan.End()
 
 				// Update transaction state for Extended Query
 				if extTxStart {
@@ -706,6 +790,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				s.metrics.QueryDuration.WithLabelValues(target).Observe(elapsed.Seconds())
 			}
 			s.emitAuditEvent(clientConn, "(extended query)", target, elapsed, false)
+			extSpan.End()
 
 			// Reset batch state
 			extBuf = extBuf[:0]
@@ -872,6 +957,143 @@ func (s *Server) queryCurrentLSN(writerConn net.Conn) (router.LSN, error) {
 	return router.ParseLSN(lsnStr)
 }
 
+// handleReadQueryTraced wraps handleReadQuery with OpenTelemetry child spans for
+// cache lookup, pool acquire, backend exec, and cache store.
+func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, clientConn net.Conn, msg *protocol.Message, query string, session *router.Session) error {
+	// Cache lookup span
+	_, cacheLookupSpan := telemetry.Tracer().Start(traceCtx, "pgmux.cache.lookup")
+	if s.queryCache != nil {
+		key := s.cacheKey(query)
+		if cached := s.queryCache.Get(key); cached != nil {
+			cacheLookupSpan.SetAttributes(attribute.Bool("pgmux.cached", true))
+			cacheLookupSpan.End()
+			slog.Debug("cache hit", "sql", query)
+			if s.metrics != nil {
+				s.metrics.CacheHits.Inc()
+			}
+			_, err := clientConn.Write(cached)
+			return err
+		}
+		if s.metrics != nil {
+			s.metrics.CacheMisses.Inc()
+		}
+	}
+	cacheLookupSpan.SetAttributes(attribute.Bool("pgmux.cached", false))
+	cacheLookupSpan.End()
+
+	// Determine reader address
+	var readerAddr string
+	if s.cfg.Routing.CausalConsistency {
+		minLSN := session.LastWriteLSN()
+		readerAddr = s.balancer.NextWithLSN(minLSN)
+	} else {
+		readerAddr = s.balancer.Next()
+	}
+	if readerAddr == "" {
+		slog.Warn("no healthy reader, fallback to writer")
+		if s.metrics != nil {
+			s.metrics.ReaderFallback.Inc()
+		}
+		return s.fallbackToWriter(poolCtx, clientConn, msg)
+	}
+
+	// Circuit breaker check for reader
+	if cb, ok := s.readerCBs[readerAddr]; ok {
+		if err := cb.Allow(); err != nil {
+			slog.Warn("reader circuit breaker open, fallback to writer", "addr", readerAddr)
+			if s.metrics != nil {
+				s.metrics.ReaderFallback.Inc()
+			}
+			return s.fallbackToWriter(poolCtx, clientConn, msg)
+		}
+	}
+
+	rPool, ok := s.readerPools[readerAddr]
+	if !ok {
+		slog.Warn("no pool for reader, fallback to writer", "addr", readerAddr)
+		if s.metrics != nil {
+			s.metrics.ReaderFallback.Inc()
+		}
+		return s.fallbackToWriter(poolCtx, clientConn, msg)
+	}
+
+	// Pool acquire span
+	_, acquireSpan := telemetry.Tracer().Start(traceCtx, "pgmux.pool.acquire",
+		trace.WithAttributes(attribute.String("pgmux.route", "reader")),
+	)
+	acquireStart := time.Now()
+	rConn, err := rPool.Acquire(poolCtx)
+	if err != nil {
+		acquireSpan.SetStatus(codes.Error, err.Error())
+		acquireSpan.End()
+		slog.Warn("acquire reader failed, fallback to writer", "addr", readerAddr, "error", err)
+		if s.metrics != nil {
+			s.metrics.ReaderFallback.Inc()
+		}
+		if cb, ok := s.readerCBs[readerAddr]; ok {
+			cb.RecordFailure()
+		}
+		return s.fallbackToWriter(poolCtx, clientConn, msg)
+	}
+	acquireSpan.End()
+	if s.metrics != nil {
+		s.metrics.PoolAcquires.WithLabelValues("reader", readerAddr).Inc()
+		s.metrics.PoolAcquireDur.WithLabelValues("reader", readerAddr).Observe(time.Since(acquireStart).Seconds())
+	}
+
+	// Backend exec span
+	_, execSpan := telemetry.Tracer().Start(traceCtx, "pgmux.backend.exec",
+		trace.WithAttributes(attribute.String("pgmux.route", "reader")),
+	)
+
+	// Forward query to reader
+	if err := protocol.WriteMessage(rConn, msg.Type, msg.Payload); err != nil {
+		execSpan.SetStatus(codes.Error, err.Error())
+		execSpan.End()
+		slog.Error("forward to reader", "addr", readerAddr, "error", err)
+		rPool.Discard(rConn)
+		return s.fallbackToWriter(poolCtx, clientConn, msg)
+	}
+
+	// Relay response and collect bytes for caching
+	if s.queryCache != nil {
+		collected, err := s.relayAndCollect(clientConn, rConn)
+		rPool.Release(rConn)
+		execSpan.End()
+		if err != nil {
+			return fmt.Errorf("relay reader response: %w", err)
+		}
+		if collected != nil {
+			// Cache store span
+			_, storeSpan := telemetry.Tracer().Start(traceCtx, "pgmux.cache.store")
+			key := s.cacheKey(query)
+			s.queryCache.Set(key, collected, nil)
+			if s.metrics != nil {
+				s.metrics.CacheEntries.Set(float64(s.queryCache.Len()))
+			}
+			slog.Debug("cache set", "sql", query, "size", len(collected))
+			storeSpan.End()
+		}
+	} else {
+		if err := s.relayUntilReady(clientConn, rConn); err != nil {
+			execSpan.SetStatus(codes.Error, err.Error())
+			execSpan.End()
+			rPool.Discard(rConn)
+			if cb, ok := s.readerCBs[readerAddr]; ok {
+				cb.RecordFailure()
+			}
+			return fmt.Errorf("relay reader response: %w", err)
+		}
+		rPool.Release(rConn)
+		execSpan.End()
+	}
+
+	if cb, ok := s.readerCBs[readerAddr]; ok {
+		cb.RecordSuccess()
+	}
+	return nil
+}
+
 // handleReadQuery checks cache, acquires a reader from pool, or falls back to writer.
 func (s *Server) handleReadQuery(ctx context.Context, clientConn net.Conn, msg *protocol.Message, query string, session *router.Session) error {
 	// Check cache
@@ -1018,19 +1240,33 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, bu
 		return fallbackToWriter()
 	}
 
+	// Pool acquire span
+	_, acquireSpan := telemetry.Tracer().Start(ctx, "pgmux.pool.acquire",
+		trace.WithAttributes(attribute.String("pgmux.route", "reader")),
+	)
 	acquireStart := time.Now()
 	rConn, err := rPool.Acquire(ctx)
 	if err != nil {
+		acquireSpan.SetStatus(codes.Error, err.Error())
+		acquireSpan.End()
 		slog.Warn("acquire reader failed for extended query, fallback to writer", "addr", readerAddr, "error", err)
 		return fallbackToWriter()
 	}
+	acquireSpan.End()
 	if s.metrics != nil {
 		s.metrics.PoolAcquires.WithLabelValues("reader", readerAddr).Inc()
 		s.metrics.PoolAcquireDur.WithLabelValues("reader", readerAddr).Observe(time.Since(acquireStart).Seconds())
 	}
 
+	// Backend exec span
+	_, execSpan := telemetry.Tracer().Start(ctx, "pgmux.backend.exec",
+		trace.WithAttributes(attribute.String("pgmux.route", "reader")),
+	)
+
 	// Forward all buffered messages + Sync to reader
 	if err := s.forwardExtBatch(rConn, buf, syncMsg); err != nil {
+		execSpan.SetStatus(codes.Error, err.Error())
+		execSpan.End()
 		slog.Error("forward ext to reader", "addr", readerAddr, "error", err)
 		rPool.Discard(rConn)
 		return fallbackToWriter()
@@ -1040,6 +1276,7 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, bu
 	if s.queryCache != nil {
 		collected, err := s.relayAndCollect(clientConn, rConn)
 		rPool.Release(rConn)
+		execSpan.End()
 		if err != nil {
 			return fmt.Errorf("relay reader extended response: %w", err)
 		}
@@ -1054,10 +1291,13 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, bu
 		}
 	} else {
 		if err := s.relayUntilReady(clientConn, rConn); err != nil {
+			execSpan.SetStatus(codes.Error, err.Error())
+			execSpan.End()
 			rPool.Discard(rConn)
 			return fmt.Errorf("relay reader extended response: %w", err)
 		}
 		rPool.Release(rConn)
+		execSpan.End()
 	}
 
 	return nil
@@ -1394,6 +1634,14 @@ func (s *Server) extractQueryTables(query string) []string {
 		return router.ExtractTablesAST(query)
 	}
 	return router.ExtractTables(query)
+}
+
+// truncateSQL returns the first 100 characters of a SQL statement for span attributes.
+func truncateSQL(sql string) string {
+	if len(sql) > 100 {
+		return sql[:100]
+	}
+	return sql
 }
 
 func routeName(r router.Route) string {

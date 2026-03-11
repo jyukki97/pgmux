@@ -41,6 +41,7 @@ internal/
   router/router.go, parser.go, balancer.go  # 쿼리 라우팅
   cache/cache.go               # LRU 캐시 + 테이블별 무효화
   metrics/metrics.go           # Prometheus 메트릭 (Phase 7)
+  telemetry/telemetry.go       # OpenTelemetry 분산 추적 (Phase 17)
   audit/audit.go               # Audit Logging + Slow Query Tracker
   dataapi/handler.go           # Serverless Data API (HTTP → PG)
   admin/admin.go               # Admin API (Phase 7)

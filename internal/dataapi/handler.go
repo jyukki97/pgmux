@@ -11,6 +11,12 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/jyukki97/pgmux/internal/cache"
 	"github.com/jyukki97/pgmux/internal/config"
 	"github.com/jyukki97/pgmux/internal/metrics"
@@ -18,6 +24,7 @@ import (
 	"github.com/jyukki97/pgmux/internal/protocol"
 	"github.com/jyukki97/pgmux/internal/resilience"
 	"github.com/jyukki97/pgmux/internal/router"
+	"github.com/jyukki97/pgmux/internal/telemetry"
 )
 
 // QueryRequest is the HTTP request body for /v1/query.
@@ -84,6 +91,10 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Extract trace context from HTTP headers (traceparent, etc.)
+	propagator := otel.GetTextMapPropagator()
+	ctx := propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+
 	// Auth check
 	if len(s.apiKeys) > 0 {
 		token := extractBearerToken(r)
@@ -113,6 +124,15 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Start root span for Data API query
+	ctx, querySpan := telemetry.Tracer().Start(ctx, "pgmux.dataapi.query",
+		trace.WithAttributes(
+			attribute.String("db.system", "postgresql"),
+			attribute.String("db.statement", truncateSQL(req.SQL)),
+		),
+	)
+	defer querySpan.End()
+
 	// Firewall check
 	if s.cfg.Firewall.Enabled {
 		fwResult := router.CheckFirewall(req.SQL, router.FirewallConfig{
@@ -126,17 +146,30 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 			if s.met != nil {
 				s.met.FirewallBlocked.WithLabelValues(string(fwResult.Rule)).Inc()
 			}
+			querySpan.SetAttributes(attribute.String("pgmux.firewall.rule", string(fwResult.Rule)))
+			querySpan.SetStatus(codes.Error, "firewall blocked")
 			writeError(w, http.StatusForbidden, fwResult.Message)
 			return
 		}
 	}
 
 	// Classify query
+	_, parseSpan := telemetry.Tracer().Start(ctx, "pgmux.parse")
 	qtype := s.classifyQuery(req.SQL)
 	target := "reader"
 	if qtype == router.QueryWrite {
 		target = "writer"
 	}
+	parseSpan.SetAttributes(
+		attribute.String("db.operation", target),
+		attribute.String("pgmux.route", target),
+	)
+	parseSpan.End()
+
+	querySpan.SetAttributes(
+		attribute.String("db.operation", target),
+		attribute.String("pgmux.route", target),
+	)
 
 	start := time.Now()
 
@@ -144,9 +177,9 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	if qtype == router.QueryWrite {
-		resp, err = s.executeWrite(r.Context(), req.SQL)
+		resp, err = s.executeWrite(ctx, req.SQL)
 	} else {
-		resp, err = s.executeRead(r.Context(), req.SQL)
+		resp, err = s.executeRead(ctx, req.SQL)
 	}
 
 	elapsed := time.Since(start)
@@ -156,6 +189,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
+		querySpan.SetStatus(codes.Error, err.Error())
 		slog.Error("data api query error", "sql", req.SQL, "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -166,13 +200,16 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) executeRead(ctx context.Context, sql string) (*QueryResponse, error) {
-	// Check cache
+	// Cache lookup span
+	_, cacheLookupSpan := telemetry.Tracer().Start(ctx, "pgmux.cache.lookup")
 	if s.queryCache != nil {
 		key := s.cacheKey(sql)
 		if cached := s.queryCache.Get(key); cached != nil {
 			if s.met != nil {
 				s.met.CacheHits.Inc()
 			}
+			cacheLookupSpan.SetAttributes(attribute.Bool("pgmux.cached", true))
+			cacheLookupSpan.End()
 			// Decode cached JSON response
 			var resp QueryResponse
 			if err := json.Unmarshal(cached, &resp); err == nil {
@@ -183,6 +220,8 @@ func (s *Server) executeRead(ctx context.Context, sql string) (*QueryResponse, e
 			s.met.CacheMisses.Inc()
 		}
 	}
+	cacheLookupSpan.SetAttributes(attribute.Bool("pgmux.cached", false))
+	cacheLookupSpan.End()
 
 	var readerAddr string
 	if s.balancer != nil {
@@ -206,8 +245,9 @@ func (s *Server) executeRead(ctx context.Context, sql string) (*QueryResponse, e
 		return s.executeOnPool(ctx, sql, s.writerPool)
 	}
 
-	// Cache the result
+	// Cache store span
 	if s.queryCache != nil && resp != nil {
+		_, storeSpan := telemetry.Tracer().Start(ctx, "pgmux.cache.store")
 		key := s.cacheKey(sql)
 		if data, err := json.Marshal(resp); err == nil {
 			tables := s.extractTables(sql)
@@ -216,6 +256,7 @@ func (s *Server) executeRead(ctx context.Context, sql string) (*QueryResponse, e
 				s.met.CacheEntries.Set(float64(s.queryCache.Len()))
 			}
 		}
+		storeSpan.End()
 	}
 
 	return resp, nil
@@ -246,16 +287,27 @@ func (s *Server) executeOnPool(ctx context.Context, sql string, p *pool.Pool) (*
 	if p == nil {
 		return nil, fmt.Errorf("no connection pool available")
 	}
+
+	// Pool acquire span
+	_, acquireSpan := telemetry.Tracer().Start(ctx, "pgmux.pool.acquire")
 	conn, err := p.Acquire(ctx)
 	if err != nil {
+		acquireSpan.SetStatus(codes.Error, err.Error())
+		acquireSpan.End()
 		return nil, fmt.Errorf("acquire connection: %w", err)
 	}
+	acquireSpan.End()
 
+	// Backend exec span
+	_, execSpan := telemetry.Tracer().Start(ctx, "pgmux.backend.exec")
 	resp, execErr := executeQuery(conn, sql)
 	if execErr != nil {
+		execSpan.SetStatus(codes.Error, execErr.Error())
+		execSpan.End()
 		p.Discard(conn)
 		return nil, execErr
 	}
+	execSpan.End()
 
 	// Reset session state before returning to pool
 	resetPayload := append([]byte(s.cfg.Pool.ResetQuery), 0)
@@ -532,6 +584,14 @@ func (s *Server) extractTables(sql string) []string {
 		return router.ExtractTablesAST(sql)
 	}
 	return router.ExtractTables(sql)
+}
+
+// truncateSQL returns the first 100 characters of a SQL statement for span attributes.
+func truncateSQL(sql string) string {
+	if len(sql) > 100 {
+		return sql[:100]
+	}
+	return sql
 }
 
 func extractBearerToken(r *http.Request) string {

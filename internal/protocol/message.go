@@ -33,6 +33,10 @@ const (
 // SSLRequestCode is the magic number for SSL negotiation
 const SSLRequestCode = 80877103
 
+// MaxMessageSize is the maximum allowed payload size for a single PG message (16 MB).
+// Prevents OOM from malicious length headers.
+const MaxMessageSize = 16 * 1024 * 1024
+
 // Message represents a PG wire protocol message.
 // For startup messages, Type is 0.
 type Message struct {
@@ -76,7 +80,12 @@ func ReadMessage(r io.Reader) (*Message, error) {
 		return nil, fmt.Errorf("invalid message length: %d", length)
 	}
 
-	payload := make([]byte, length-4)
+	payloadLen := int(length - 4)
+	if payloadLen > MaxMessageSize {
+		return nil, fmt.Errorf("message too large: %d bytes (max %d)", payloadLen, MaxMessageSize)
+	}
+
+	payload := make([]byte, payloadLen)
 	if len(payload) > 0 {
 		if _, err := io.ReadFull(r, payload); err != nil {
 			return nil, fmt.Errorf("read message payload: %w", err)

@@ -33,7 +33,7 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	srv := proxy.NewServer(cfg.Proxy.Listen)
+	srv := proxy.NewServer(cfg)
 	slog.Info("db-proxy starting", "listen", cfg.Proxy.Listen)
 
 	return srv.Start(ctx)

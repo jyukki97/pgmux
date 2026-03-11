@@ -28,6 +28,9 @@ type Metrics struct {
 
 	// LSN replication lag
 	ReaderLSNLag *prometheus.GaugeVec
+
+	// Firewall
+	FirewallBlocked *prometheus.CounterVec
 }
 
 // New creates and registers all Prometheus metrics.
@@ -124,6 +127,14 @@ func New() *Metrics {
 			},
 			[]string{"addr"},
 		),
+
+		FirewallBlocked: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "dbproxy_firewall_blocked_total",
+				Help: "Total number of queries blocked by firewall rules.",
+			},
+			[]string{"rule"},
+		),
 	}
 
 	prometheus.MustRegister(
@@ -140,6 +151,7 @@ func New() *Metrics {
 		m.PoolAcquires,
 		m.PoolAcquireDur,
 		m.ReaderLSNLag,
+		m.FirewallBlocked,
 	)
 
 	return m

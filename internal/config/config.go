@@ -22,6 +22,15 @@ type Config struct {
 	Auth           AuthConfig           `yaml:"auth"`
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
 	RateLimit      RateLimitConfig      `yaml:"rate_limit"`
+	Firewall       FirewallConfig       `yaml:"firewall"`
+}
+
+type FirewallConfig struct {
+	Enabled                 bool `yaml:"enabled"`
+	BlockDeleteWithoutWhere bool `yaml:"block_delete_without_where"`
+	BlockUpdateWithoutWhere bool `yaml:"block_update_without_where"`
+	BlockDropTable          bool `yaml:"block_drop_table"`
+	BlockTruncate           bool `yaml:"block_truncate"`
 }
 
 type MetricsConfig struct {

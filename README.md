@@ -98,6 +98,13 @@ routing:
   causal_consistency: false       # true: LSN 기반 Causal Consistency (read_after_write_delay 무시)
   ast_parser: false               # true: pg_query_go AST 파서 사용 (정확도↑, 성능 약간↓)
 
+firewall:
+  enabled: true
+  block_delete_without_where: true
+  block_update_without_where: true
+  block_drop_table: false
+  block_truncate: false
+
 cache:
   enabled: true
   cache_ttl: 10s
@@ -183,6 +190,7 @@ tests/
 - `dbproxy_cache_entries` — 현재 캐시 항목 수
 - `dbproxy_cache_invalidations_total` — 캐시 무효화 횟수
 - `dbproxy_reader_lsn_lag_bytes` — Reader별 WAL replay LSN (Causal Consistency 활성 시)
+- `dbproxy_firewall_blocked_total` — 방화벽 차단 횟수 (rule별)
 
 ## 라이선스
 

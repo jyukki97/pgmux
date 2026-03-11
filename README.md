@@ -181,6 +181,7 @@ tests/
 - `dbproxy_cache_hits_total` / `dbproxy_cache_misses_total` — 캐시 히트/미스
 - `dbproxy_cache_entries` — 현재 캐시 항목 수
 - `dbproxy_cache_invalidations_total` — 캐시 무효화 횟수
+- `dbproxy_reader_lsn_lag_bytes` — Reader별 WAL replay LSN (Causal Consistency 활성 시)
 
 ## 라이선스
 

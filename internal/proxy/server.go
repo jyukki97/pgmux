@@ -206,6 +206,11 @@ func (s *Server) Start(ctx context.Context) error {
 		go s.invalidator.Subscribe(ctx)
 	}
 
+	// Start LSN polling for causal consistency
+	if s.cfg.Routing.CausalConsistency {
+		s.startLSNPolling(ctx, time.Second)
+	}
+
 	go func() {
 		<-ctx.Done()
 		ln.Close()
@@ -530,7 +535,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				}
 				// If !acquired && still in transaction → keep using boundWriter
 			} else {
-				if err := s.handleReadQuery(ctx, clientConn, msg, query); err != nil {
+				if err := s.handleReadQuery(ctx, clientConn, msg, query, session); err != nil {
 					slog.Error("handle read query", "error", err)
 					return
 				}
@@ -820,7 +825,7 @@ func (s *Server) queryCurrentLSN(writerConn net.Conn) (router.LSN, error) {
 }
 
 // handleReadQuery checks cache, acquires a reader from pool, or falls back to writer.
-func (s *Server) handleReadQuery(ctx context.Context, clientConn net.Conn, msg *protocol.Message, query string) error {
+func (s *Server) handleReadQuery(ctx context.Context, clientConn net.Conn, msg *protocol.Message, query string, session *router.Session) error {
 	// Check cache
 	if s.queryCache != nil {
 		key := cache.CacheKey(query)
@@ -838,7 +843,13 @@ func (s *Server) handleReadQuery(ctx context.Context, clientConn net.Conn, msg *
 	}
 
 	// Try to acquire a reader connection from pool
-	readerAddr := s.balancer.Next()
+	var readerAddr string
+	if s.cfg.Routing.CausalConsistency {
+		minLSN := session.LastWriteLSN()
+		readerAddr = s.balancer.NextWithLSN(minLSN)
+	} else {
+		readerAddr = s.balancer.Next()
+	}
 	if readerAddr == "" {
 		slog.Warn("no healthy reader, fallback to writer")
 		if s.metrics != nil {
@@ -1118,6 +1129,88 @@ func (s *Server) WriterPool() *pool.Pool {
 // Invalidator returns the server's cache invalidator (may be nil).
 func (s *Server) Invalidator() *cache.Invalidator {
 	return s.invalidator
+}
+
+// startLSNPolling periodically queries each reader's replay LSN and updates the balancer.
+func (s *Server) startLSNPolling(ctx context.Context, interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.pollReaderLSNs(ctx)
+			}
+		}
+	}()
+	slog.Info("LSN polling started", "interval", interval)
+}
+
+// pollReaderLSNs queries each reader's replay LSN and updates the balancer.
+func (s *Server) pollReaderLSNs(ctx context.Context) {
+	for _, addr := range s.balancer.Backends() {
+		rPool, ok := s.readerPools[addr]
+		if !ok {
+			continue
+		}
+
+		conn, err := rPool.Acquire(ctx)
+		if err != nil {
+			slog.Debug("LSN poll: acquire reader failed", "addr", addr, "error", err)
+			continue
+		}
+
+		lsn, err := s.queryReplayLSN(conn)
+		rPool.Release(conn)
+		if err != nil {
+			slog.Debug("LSN poll: query replay LSN failed", "addr", addr, "error", err)
+			continue
+		}
+
+		s.balancer.SetReplayLSN(addr, lsn)
+
+		if s.metrics != nil {
+			s.metrics.ReaderLSNLag.WithLabelValues(addr).Set(float64(lsn))
+		}
+
+		slog.Debug("LSN poll updated", "addr", addr, "replay_lsn", lsn)
+	}
+}
+
+// queryReplayLSN queries the replay LSN from a reader connection.
+func (s *Server) queryReplayLSN(readerConn net.Conn) (router.LSN, error) {
+	payload := append([]byte("SELECT pg_last_wal_replay_lsn()"), 0)
+	if err := protocol.WriteMessage(readerConn, protocol.MsgQuery, payload); err != nil {
+		return 0, fmt.Errorf("send replay LSN query: %w", err)
+	}
+
+	var lsnStr string
+	for {
+		msg, err := protocol.ReadMessage(readerConn)
+		if err != nil {
+			return 0, fmt.Errorf("read replay LSN response: %w", err)
+		}
+		if msg.Type == protocol.MsgDataRow && len(msg.Payload) >= 6 {
+			colLen := int(binary.BigEndian.Uint32(msg.Payload[2:6]))
+			if colLen > 0 && 6+colLen <= len(msg.Payload) {
+				lsnStr = string(msg.Payload[6 : 6+colLen])
+			}
+		}
+		if msg.Type == protocol.MsgErrorResponse {
+			return 0, fmt.Errorf("replay LSN query returned error")
+		}
+		if msg.Type == protocol.MsgReadyForQuery {
+			break
+		}
+	}
+
+	if lsnStr == "" {
+		return 0, fmt.Errorf("no replay LSN value returned")
+	}
+	return router.ParseLSN(lsnStr)
 }
 
 func (s *Server) closePools() {

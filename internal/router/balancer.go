@@ -10,8 +10,9 @@ import (
 )
 
 type Backend struct {
-	Addr    string
-	healthy atomic.Bool
+	Addr      string
+	healthy   atomic.Bool
+	replayLSN atomic.Uint64 // latest replay LSN for this reader
 }
 
 type RoundRobin struct {
@@ -104,6 +105,67 @@ func (r *RoundRobin) UpdateBackends(addrs []string) {
 	r.backends = backends
 	r.mu.Unlock()
 	slog.Info("balancer backends updated", "count", len(addrs))
+}
+
+// NextWithLSN returns the next healthy backend whose replayLSN >= minLSN.
+// Returns empty string if no backend meets the criteria.
+func (r *RoundRobin) NextWithLSN(minLSN LSN) string {
+	if minLSN.IsZero() {
+		return r.Next()
+	}
+
+	r.mu.RLock()
+	backends := r.backends
+	r.mu.RUnlock()
+
+	n := len(backends)
+	if n == 0 {
+		return ""
+	}
+
+	for i := 0; i < n; i++ {
+		idx := int(r.index.Add(1)-1) % n
+		b := backends[idx]
+		if b.healthy.Load() && LSN(b.replayLSN.Load()) >= minLSN {
+			return b.Addr
+		}
+	}
+	return ""
+}
+
+// SetReplayLSN updates the replay LSN for a backend.
+func (r *RoundRobin) SetReplayLSN(addr string, lsn LSN) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, b := range r.backends {
+		if b.Addr == addr {
+			b.replayLSN.Store(uint64(lsn))
+			return
+		}
+	}
+}
+
+// ReplayLSN returns the replay LSN for a backend.
+func (r *RoundRobin) ReplayLSN(addr string) LSN {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, b := range r.backends {
+		if b.Addr == addr {
+			return LSN(b.replayLSN.Load())
+		}
+	}
+	return InvalidLSN
+}
+
+// Backends returns the list of backend addresses.
+func (r *RoundRobin) Backends() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	addrs := make([]string, len(r.backends))
+	for i, b := range r.backends {
+		addrs[i] = b.Addr
+	}
+	return addrs
 }
 
 // HealthyCount returns the number of healthy backends.

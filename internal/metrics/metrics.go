@@ -21,10 +21,13 @@ type Metrics struct {
 	RateLimited prometheus.Counter
 
 	// Pool
-	PoolOpenConns *prometheus.GaugeVec
-	PoolIdleConns *prometheus.GaugeVec
-	PoolAcquires  *prometheus.CounterVec
+	PoolOpenConns  *prometheus.GaugeVec
+	PoolIdleConns  *prometheus.GaugeVec
+	PoolAcquires   *prometheus.CounterVec
 	PoolAcquireDur *prometheus.HistogramVec
+
+	// LSN replication lag
+	ReaderLSNLag *prometheus.GaugeVec
 }
 
 // New creates and registers all Prometheus metrics.
@@ -113,6 +116,14 @@ func New() *Metrics {
 			},
 			[]string{"role", "addr"},
 		),
+
+		ReaderLSNLag: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "dbproxy_reader_lsn_lag_bytes",
+				Help: "Reader replication lag in bytes (writer LSN - reader replay LSN).",
+			},
+			[]string{"addr"},
+		),
 	}
 
 	prometheus.MustRegister(
@@ -128,6 +139,7 @@ func New() *Metrics {
 		m.PoolIdleConns,
 		m.PoolAcquires,
 		m.PoolAcquireDur,
+		m.ReaderLSNLag,
 	)
 
 	return m

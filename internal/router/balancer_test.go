@@ -94,6 +94,74 @@ func TestRoundRobin_UpdateBackends(t *testing.T) {
 	}
 }
 
+func TestRoundRobin_NextWithLSN(t *testing.T) {
+	rb := NewRoundRobin([]string{"a:1", "b:2", "c:3"})
+
+	// Set replay LSNs: a=100, b=200, c=150
+	rb.SetReplayLSN("a:1", LSN(100))
+	rb.SetReplayLSN("b:2", LSN(200))
+	rb.SetReplayLSN("c:3", LSN(150))
+
+	// minLSN=0 → same as Next(), returns any healthy
+	addr := rb.NextWithLSN(InvalidLSN)
+	if addr == "" {
+		t.Error("NextWithLSN(0) should return a backend")
+	}
+
+	// minLSN=180 → only b:2 qualifies (200 >= 180)
+	counts := map[string]int{}
+	for i := 0; i < 6; i++ {
+		addr := rb.NextWithLSN(LSN(180))
+		counts[addr]++
+	}
+	if counts["b:2"] != 6 {
+		t.Errorf("expected only b:2 for minLSN=180, got %v", counts)
+	}
+
+	// minLSN=250 → none qualify
+	if addr := rb.NextWithLSN(LSN(250)); addr != "" {
+		t.Errorf("NextWithLSN(250) = %q, want empty", addr)
+	}
+}
+
+func TestRoundRobin_NextWithLSN_SkipsUnhealthy(t *testing.T) {
+	rb := NewRoundRobin([]string{"a:1", "b:2"})
+	rb.SetReplayLSN("a:1", LSN(200))
+	rb.SetReplayLSN("b:2", LSN(200))
+
+	rb.MarkUnhealthy("a:1")
+
+	// Only b:2 is healthy and has sufficient LSN
+	for i := 0; i < 4; i++ {
+		addr := rb.NextWithLSN(LSN(100))
+		if addr != "b:2" {
+			t.Errorf("expected b:2, got %q", addr)
+		}
+	}
+}
+
+func TestRoundRobin_SetReplayLSN(t *testing.T) {
+	rb := NewRoundRobin([]string{"a:1", "b:2"})
+
+	rb.SetReplayLSN("a:1", LSN(12345))
+	if got := rb.ReplayLSN("a:1"); got != LSN(12345) {
+		t.Errorf("ReplayLSN(a:1) = %d, want 12345", got)
+	}
+
+	// Unknown addr returns InvalidLSN
+	if got := rb.ReplayLSN("unknown:1"); got != InvalidLSN {
+		t.Errorf("ReplayLSN(unknown) = %d, want 0", got)
+	}
+}
+
+func TestRoundRobin_Backends(t *testing.T) {
+	rb := NewRoundRobin([]string{"a:1", "b:2", "c:3"})
+	addrs := rb.Backends()
+	if len(addrs) != 3 {
+		t.Errorf("Backends() len = %d, want 3", len(addrs))
+	}
+}
+
 func TestRoundRobin_Recovery(t *testing.T) {
 	// Start a real TCP server to simulate recovery
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

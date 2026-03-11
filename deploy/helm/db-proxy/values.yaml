@@ -1,0 +1,100 @@
+replicaCount: 2
+
+image:
+  repository: db-proxy
+  tag: latest
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# db-proxy config.yaml contents
+config:
+  proxy:
+    listen: "0.0.0.0:5432"
+  writer:
+    host: "primary.db.internal"
+    port: 5432
+  readers:
+    - host: "replica-1.db.internal"
+      port: 5432
+  pool:
+    min_connections: 5
+    max_connections: 50
+    idle_timeout: "10m"
+    max_lifetime: "1h"
+    connection_timeout: "5s"
+    reset_query: "DISCARD ALL"
+  routing:
+    read_after_write_delay: "500ms"
+    causal_consistency: false
+    ast_parser: false
+  cache:
+    enabled: true
+    cache_ttl: "10s"
+    max_cache_entries: 10000
+    max_result_size: "1MB"
+  firewall:
+    enabled: true
+    block_delete_without_where: true
+    block_update_without_where: true
+    block_drop_table: false
+    block_truncate: false
+  audit:
+    enabled: false
+    slow_query_threshold: "500ms"
+    log_all_queries: false
+  backend:
+    user: "postgres"
+    password: "postgres"
+    database: "testdb"
+  metrics:
+    enabled: true
+    listen: "0.0.0.0:9090"
+  admin:
+    enabled: true
+    listen: "0.0.0.0:9091"
+
+service:
+  type: ClusterIP
+  port: 5432
+
+metricsService:
+  enabled: true
+  port: 9090
+
+adminService:
+  enabled: true
+  port: 9091
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+serviceMonitor:
+  enabled: false
+  interval: 15s
+  labels: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podAnnotations: {}
+podSecurityContext: {}
+securityContext: {}

@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "db-proxy.fullname" . }}
+  labels:
+    {{- include "db-proxy.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "db-proxy.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "db-proxy.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - /etc/db-proxy/config.yaml
+          ports:
+            - name: pg
+              containerPort: 5432
+              protocol: TCP
+            {{- if .Values.metricsService.enabled }}
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.adminService.enabled }}
+            - name: admin
+              containerPort: 9091
+              protocol: TCP
+            {{- end }}
+          livenessProbe:
+            tcpSocket:
+              port: pg
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            {{- if .Values.adminService.enabled }}
+            httpGet:
+              path: /admin/health
+              port: admin
+            {{- else }}
+            tcpSocket:
+              port: pg
+            {{- end }}
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          volumeMounts:
+            - name: config
+              mountPath: /etc/db-proxy
+              readOnly: true
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "db-proxy.fullname" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,7 +1,7 @@
 BINARY_NAME=db-proxy
 BUILD_DIR=bin
 
-.PHONY: build run test test-integration test-coverage bench lint clean docker-up docker-down
+.PHONY: build run test test-integration test-coverage bench lint clean docker-up docker-down docker-build
 
 build:
 	go build -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/db-proxy
@@ -33,6 +33,9 @@ docker-up:
 
 docker-down:
 	docker-compose down -v
+
+docker-build:
+	docker build -t $(BINARY_NAME):latest .
 
 clean:
 	rm -rf $(BUILD_DIR) coverage.out coverage.html

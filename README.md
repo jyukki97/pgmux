@@ -182,6 +182,8 @@ internal/
   admin/admin.go                  # Admin HTTP API
 tests/
   e2e_test.go                     # Docker 기반 E2E 테스트
+Dockerfile                        # Multi-stage 빌드
+deploy/helm/db-proxy/             # Kubernetes Helm Chart
 ```
 
 ## Admin API
@@ -213,6 +215,33 @@ tests/
 - `dbproxy_slow_queries_total` — Slow Query 감지 횟수 (target별)
 - `dbproxy_audit_webhook_sent_total` — Audit Webhook 전송 횟수
 - `dbproxy_audit_webhook_errors_total` — Audit Webhook 실패 횟수
+
+## Kubernetes 배포 (Helm)
+
+### Docker 이미지 빌드
+
+```bash
+make docker-build
+```
+
+### Helm Chart 설치
+
+```bash
+# values.yaml에서 writer/readers 주소를 실제 DB로 수정한 뒤:
+helm install db-proxy deploy/helm/db-proxy/ \
+  --set config.writer.host=primary.db.internal \
+  --set config.backend.password=mypassword
+```
+
+### 주요 values
+
+| 키 | 기본값 | 설명 |
+|---|---|---|
+| `replicaCount` | 2 | 프록시 Pod 수 |
+| `config.*` | (config.yaml 전체) | db-proxy 설정 |
+| `autoscaling.enabled` | false | HPA 활성화 |
+| `podDisruptionBudget.enabled` | true | PDB 활성화 |
+| `serviceMonitor.enabled` | false | Prometheus Operator ServiceMonitor |
 
 ## 라이선스
 

@@ -1,0 +1,14 @@
+apiVersion: v2
+name: db-proxy
+description: A lightweight PostgreSQL proxy with connection pooling, R/W routing, and query caching
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - postgresql
+  - proxy
+  - connection-pooling
+  - database
+home: https://github.com/jyukki97/db-proxy
+sources:
+  - https://github.com/jyukki97/db-proxy

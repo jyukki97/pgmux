@@ -19,6 +19,7 @@ type Config struct {
 	Metrics MetricsConfig `yaml:"metrics"`
 	Admin   AdminConfig   `yaml:"admin"`
 	TLS     TLSConfig     `yaml:"tls"`
+	Auth    AuthConfig    `yaml:"auth"`
 }
 
 type MetricsConfig struct {
@@ -35,6 +36,16 @@ type TLSConfig struct {
 	Enabled  bool   `yaml:"enabled"`
 	CertFile string `yaml:"cert_file"`
 	KeyFile  string `yaml:"key_file"`
+}
+
+type AuthConfig struct {
+	Enabled bool       `yaml:"enabled"`
+	Users   []AuthUser `yaml:"users"`
+}
+
+type AuthUser struct {
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
 }
 
 type BackendConfig struct {
@@ -184,6 +195,9 @@ func (c *Config) validate() error {
 		if _, err := os.Stat(c.TLS.KeyFile); err != nil {
 			return fmt.Errorf("tls.key_file: %w", err)
 		}
+	}
+	if c.Auth.Enabled && len(c.Auth.Users) == 0 {
+		return fmt.Errorf("auth.users is required when auth is enabled")
 	}
 	if c.Pool.MinConnections < 0 {
 		return fmt.Errorf("pool.min_connections must be >= 0, got %d", c.Pool.MinConnections)

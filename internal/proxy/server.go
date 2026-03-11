@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/binary"
 	"fmt"
@@ -255,38 +256,41 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 	_, _, params := protocol.ParseStartupParams(startup.Payload)
 	slog.Info("client startup", "user", params["user"], "database", params["database"])
 
-	// 3. Authenticate client via temporary backend connection.
-	//    Pool connections are pre-authenticated via pgConnect(), so we only need
-	//    a temporary connection to relay the client's auth handshake.
-	authConn, err := net.Dial("tcp", s.writerAddr)
-	if err != nil {
-		slog.Error("connect to writer for auth", "addr", s.writerAddr, "error", err)
-		s.sendError(clientConn, "cannot connect to backend database")
-		return
-	}
+	// 3. Authenticate client
+	if s.cfg.Auth.Enabled {
+		// Front-end auth: proxy authenticates the client directly using MD5.
+		if err := s.frontendAuth(clientConn, params["user"]); err != nil {
+			slog.Warn("frontend auth failed", "user", params["user"], "remote", rawConn.RemoteAddr(), "error", err)
+			return
+		}
+		slog.Info("frontend auth success", "user", params["user"], "remote", rawConn.RemoteAddr())
+	} else {
+		// Backend auth relay: temporary connection to relay the client's auth handshake.
+		authConn, err := net.Dial("tcp", s.writerAddr)
+		if err != nil {
+			slog.Error("connect to writer for auth", "addr", s.writerAddr, "error", err)
+			s.sendError(clientConn, "cannot connect to backend database")
+			return
+		}
 
-	// Forward startup message to auth connection
-	startupRaw := make([]byte, 4+len(startup.Payload))
-	binary.BigEndian.PutUint32(startupRaw[0:4], uint32(4+len(startup.Payload)))
-	copy(startupRaw[4:], startup.Payload)
-	if err := protocol.WriteRaw(authConn, startupRaw); err != nil {
+		startupRaw := make([]byte, 4+len(startup.Payload))
+		binary.BigEndian.PutUint32(startupRaw[0:4], uint32(4+len(startup.Payload)))
+		copy(startupRaw[4:], startup.Payload)
+		if err := protocol.WriteRaw(authConn, startupRaw); err != nil {
+			authConn.Close()
+			slog.Error("forward startup to writer", "error", err)
+			return
+		}
+
+		if err := s.relayAuth(clientConn, authConn); err != nil {
+			authConn.Close()
+			slog.Error("auth relay", "error", err)
+			return
+		}
 		authConn.Close()
-		slog.Error("forward startup to writer", "error", err)
-		return
 	}
 
-	// Relay authentication between client and auth connection
-	if err := s.relayAuth(clientConn, authConn); err != nil {
-		authConn.Close()
-		slog.Error("auth relay", "error", err)
-		return
-	}
-
-	// Auth complete — close temporary connection.
-	// All further queries use pooled connections.
-	authConn.Close()
-
-	slog.Info("handshake complete", "remote", clientConn.RemoteAddr())
+	slog.Info("handshake complete", "remote", rawConn.RemoteAddr())
 
 	// 4. Create per-client session router
 	session := router.NewSession(s.cfg.Routing.ReadAfterWriteDelay)
@@ -330,6 +334,70 @@ func (s *Server) relayAuth(clientConn, backendConn net.Conn) error {
 			}
 		}
 	}
+}
+
+// frontendAuth authenticates the client directly at the proxy using MD5 auth.
+// If the user is not in the configured auth.users list, returns an error.
+func (s *Server) frontendAuth(clientConn net.Conn, username string) error {
+	// Look up user in config
+	var password string
+	found := false
+	for _, u := range s.cfg.Auth.Users {
+		if u.Username == username {
+			password = u.Password
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		s.sendError(clientConn, fmt.Sprintf("user \"%s\" is not allowed to connect", username))
+		return fmt.Errorf("user %q not in auth.users", username)
+	}
+
+	// Send MD5 auth challenge (AuthenticationMD5Password, type=5)
+	salt := make([]byte, 4)
+	if _, err := rand.Read(salt); err != nil {
+		return fmt.Errorf("generate salt: %w", err)
+	}
+	authPayload := make([]byte, 8)
+	binary.BigEndian.PutUint32(authPayload[0:4], 5) // MD5Password
+	copy(authPayload[4:8], salt)
+	if err := protocol.WriteMessage(clientConn, protocol.MsgAuthentication, authPayload); err != nil {
+		return fmt.Errorf("send MD5 challenge: %w", err)
+	}
+
+	// Read client's password response ('p')
+	msg, err := protocol.ReadMessage(clientConn)
+	if err != nil {
+		return fmt.Errorf("read password response: %w", err)
+	}
+	if msg.Type != 'p' {
+		return fmt.Errorf("expected password message, got %c", msg.Type)
+	}
+
+	// Client sends: "md5" + md5(md5(password + user) + salt) + \0
+	clientHash := strings.TrimRight(string(msg.Payload), "\x00")
+	expectedHash := pgMD5Password(username, password, salt)
+
+	if clientHash != expectedHash {
+		s.sendError(clientConn, "password authentication failed for user \""+username+"\"")
+		return fmt.Errorf("MD5 password mismatch for user %q", username)
+	}
+
+	// Send AuthenticationOk (type=0)
+	okPayload := make([]byte, 4)
+	binary.BigEndian.PutUint32(okPayload[0:4], 0)
+	if err := protocol.WriteMessage(clientConn, protocol.MsgAuthentication, okPayload); err != nil {
+		return fmt.Errorf("send auth ok: %w", err)
+	}
+
+	// Send ReadyForQuery ('Z', status='I' for idle)
+	if err := protocol.WriteMessage(clientConn, protocol.MsgReadyForQuery, []byte{'I'}); err != nil {
+		return fmt.Errorf("send ready for query: %w", err)
+	}
+
+	return nil
 }
 
 // authNeedsResponse returns true if the PG auth type requires a client response.

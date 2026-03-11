@@ -217,6 +217,66 @@ readers:
 	}
 }
 
+func TestLoad_Auth_Disabled(t *testing.T) {
+	content := `
+writer:
+  host: "primary.db.internal"
+  port: 5432
+readers:
+  - host: "replica-1.db.internal"
+    port: 5432
+`
+	cfg := loadFromString(t, content)
+	if cfg.Auth.Enabled {
+		t.Error("Auth.Enabled should be false by default")
+	}
+}
+
+func TestLoad_Auth_Enabled(t *testing.T) {
+	content := `
+writer:
+  host: "primary.db.internal"
+  port: 5432
+readers:
+  - host: "replica-1.db.internal"
+    port: 5432
+auth:
+  enabled: true
+  users:
+    - username: "app_user"
+      password: "secret"
+    - username: "readonly"
+      password: "readonly_pass"
+`
+	cfg := loadFromString(t, content)
+	if !cfg.Auth.Enabled {
+		t.Error("Auth.Enabled should be true")
+	}
+	if len(cfg.Auth.Users) != 2 {
+		t.Fatalf("len(Auth.Users) = %d, want 2", len(cfg.Auth.Users))
+	}
+	if cfg.Auth.Users[0].Username != "app_user" {
+		t.Errorf("Auth.Users[0].Username = %q, want app_user", cfg.Auth.Users[0].Username)
+	}
+}
+
+func TestLoad_Auth_EnabledNoUsers(t *testing.T) {
+	content := `
+writer:
+  host: "primary.db.internal"
+  port: 5432
+readers:
+  - host: "replica-1.db.internal"
+    port: 5432
+auth:
+  enabled: true
+`
+	_, err := loadFromStringRaw(t, content)
+	if err == nil {
+		t.Error("expected error for auth.enabled with no users")
+	}
+}
+
 func TestLoad_TLS_Disabled(t *testing.T) {
 	content := `
 writer:

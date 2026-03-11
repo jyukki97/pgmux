@@ -136,6 +136,15 @@ func (s *Session) InTransaction() bool {
 	return s.inTransaction
 }
 
+// SetInTransaction explicitly sets the transaction state.
+// Used by the Extended Query path where transaction control (BEGIN/COMMIT)
+// comes via Parse messages rather than Simple Query.
+func (s *Session) SetInTransaction(v bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.inTransaction = v
+}
+
 // RegisterStatement records the route for a prepared statement.
 // The unnamed statement ("") is also tracked and overwritten on each Parse.
 func (s *Session) RegisterStatement(name, query string) Route {

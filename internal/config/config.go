@@ -51,6 +51,7 @@ type PoolConfig struct {
 	IdleTimeout       time.Duration `yaml:"idle_timeout"`
 	MaxLifetime       time.Duration `yaml:"max_lifetime"`
 	ConnectionTimeout time.Duration `yaml:"connection_timeout"`
+	ResetQuery        string        `yaml:"reset_query"`
 }
 
 type RoutingConfig struct {
@@ -121,6 +122,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Cache.MaxResultSize == "" {
 		c.Cache.MaxResultSize = "1MB"
+	}
+	if c.Pool.ResetQuery == "" {
+		c.Pool.ResetQuery = "DISCARD ALL"
 	}
 	if c.Cache.Invalidation.Mode == "" {
 		c.Cache.Invalidation.Mode = "local"

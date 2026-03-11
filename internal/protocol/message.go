@@ -156,6 +156,20 @@ func ParseStartupParams(payload []byte) (major, minor uint16, params map[string]
 	return major, minor, params
 }
 
+// ExtractQueryText extracts the SQL string from a Query message payload.
+// Query payload is a null-terminated string.
+func ExtractQueryText(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	// Remove trailing null terminator
+	end := indexOf(payload, 0)
+	if end >= 0 {
+		return string(payload[:end])
+	}
+	return string(payload)
+}
+
 func indexOf(data []byte, b byte) int {
 	for i, v := range data {
 		if v == b {

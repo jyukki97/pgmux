@@ -145,38 +145,64 @@ func (s *Server) relayAuth(clientConn, backendConn net.Conn) error {
 	}
 }
 
-// relayQueries relays messages between client and backend bidirectionally.
-// TODO: T2-3에서 본격 구현 (현재는 단순 릴레이)
+// relayQueries reads client messages one at a time, forwards to backend,
+// and relays backend responses back to client. Message-level relay enables
+// future routing/caching hooks.
 func (s *Server) relayQueries(ctx context.Context, clientConn, backendConn net.Conn) {
-	done := make(chan struct{}, 2)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 
-	// Client → Backend
-	go func() {
-		defer func() { done <- struct{}{} }()
-		relay(clientConn, backendConn)
-	}()
+		// Read one message from client
+		msg, err := protocol.ReadMessage(clientConn)
+		if err != nil {
+			slog.Debug("client disconnected", "error", err)
+			return
+		}
 
-	// Backend → Client
-	go func() {
-		defer func() { done <- struct{}{} }()
-		relay(backendConn, clientConn)
-	}()
+		// Terminate message — close session
+		if msg.Type == protocol.MsgTerminate {
+			slog.Info("client terminated", "remote", clientConn.RemoteAddr())
+			return
+		}
 
-	select {
-	case <-done:
-	case <-ctx.Done():
+		// Extract query text for logging (Query messages: SQL + null terminator)
+		if msg.Type == protocol.MsgQuery {
+			query := protocol.ExtractQueryText(msg.Payload)
+			slog.Debug("query", "sql", query)
+		}
+
+		// Forward message to backend
+		if err := protocol.WriteMessage(backendConn, msg.Type, msg.Payload); err != nil {
+			slog.Error("forward to backend", "error", err)
+			return
+		}
+
+		// Relay backend responses until ReadyForQuery
+		if err := s.relayUntilReady(clientConn, backendConn); err != nil {
+			slog.Error("relay backend response", "error", err)
+			return
+		}
 	}
 }
 
-func relay(src, dst net.Conn) {
-	buf := make([]byte, 32*1024)
+// relayUntilReady forwards backend messages to client until ReadyForQuery ('Z').
+func (s *Server) relayUntilReady(clientConn, backendConn net.Conn) error {
 	for {
-		n, err := src.Read(buf)
+		msg, err := protocol.ReadMessage(backendConn)
 		if err != nil {
-			return
+			return fmt.Errorf("read backend response: %w", err)
 		}
-		if _, err := dst.Write(buf[:n]); err != nil {
-			return
+
+		if err := protocol.WriteMessage(clientConn, msg.Type, msg.Payload); err != nil {
+			return fmt.Errorf("forward to client: %w", err)
+		}
+
+		if msg.Type == protocol.MsgReadyForQuery {
+			return nil
 		}
 	}
 }

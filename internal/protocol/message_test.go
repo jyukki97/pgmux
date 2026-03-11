@@ -80,3 +80,24 @@ func TestReadStartupMessage_SSLRequest(t *testing.T) {
 		t.Errorf("code = %d, want %d", code, SSLRequestCode)
 	}
 }
+
+func TestExtractQueryText(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload []byte
+		want    string
+	}{
+		{"normal", []byte("SELECT 1\x00"), "SELECT 1"},
+		{"no null", []byte("SELECT 1"), "SELECT 1"},
+		{"empty", []byte{}, ""},
+		{"just null", []byte{0}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExtractQueryText(tt.payload)
+			if got != tt.want {
+				t.Errorf("ExtractQueryText() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

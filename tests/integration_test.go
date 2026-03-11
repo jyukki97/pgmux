@@ -168,6 +168,87 @@ func TestIntegration_CacheTTLAndEviction(t *testing.T) {
 	}
 }
 
+// TestIntegration_CausalConsistency tests LSN-based causal consistency routing.
+func TestIntegration_CausalConsistency(t *testing.T) {
+	rb := router.NewRoundRobin([]string{"reader1:5432", "reader2:5432"})
+	session := router.NewSession(0, true)
+
+	// 1. Before any write, reads go to reader (no LSN constraint)
+	route := session.Route("SELECT * FROM users")
+	if route != router.RouteReader {
+		t.Errorf("SELECT before write → %d, want RouteReader", route)
+	}
+	addr := rb.NextWithLSN(session.LastWriteLSN())
+	if addr == "" {
+		t.Error("NextWithLSN(0) should return a reader")
+	}
+
+	// 2. Write query sets LSN
+	route = session.Route("INSERT INTO users (name) VALUES ('test')")
+	if route != router.RouteWriter {
+		t.Errorf("INSERT → %d, want RouteWriter", route)
+	}
+
+	// Simulate server behavior: set LSN after write
+	writeLSN, _ := router.ParseLSN("0/16B4000")
+	session.SetLastWriteLSN(writeLSN)
+
+	// 3. Readers haven't caught up yet → NextWithLSN returns empty
+	rb.SetReplayLSN("reader1:5432", router.LSN(0x16B3000)) // behind
+	rb.SetReplayLSN("reader2:5432", router.LSN(0x16B3500)) // behind
+
+	addr = rb.NextWithLSN(session.LastWriteLSN())
+	if addr != "" {
+		t.Errorf("NextWithLSN with lagging readers = %q, want empty (writer fallback)", addr)
+	}
+
+	// 4. Reader1 catches up
+	rb.SetReplayLSN("reader1:5432", router.LSN(0x16B4000)) // caught up
+
+	addr = rb.NextWithLSN(session.LastWriteLSN())
+	if addr == "" {
+		t.Error("NextWithLSN should return reader1 after catch-up")
+	}
+
+	// 5. Verify only caught-up readers are selected
+	counts := map[string]int{}
+	for i := 0; i < 6; i++ {
+		counts[rb.NextWithLSN(session.LastWriteLSN())]++
+	}
+	if counts["reader2:5432"] > 0 {
+		t.Errorf("lagging reader2 should not be selected, got count %d", counts["reader2:5432"])
+	}
+	if counts["reader1:5432"] != 6 {
+		t.Errorf("only reader1 should be selected, got %v", counts)
+	}
+
+	// 6. Both readers catch up → even distribution
+	rb.SetReplayLSN("reader2:5432", router.LSN(0x16B5000)) // ahead
+
+	counts = map[string]int{}
+	for i := 0; i < 6; i++ {
+		counts[rb.NextWithLSN(session.LastWriteLSN())]++
+	}
+	if counts["reader1:5432"] != 3 || counts["reader2:5432"] != 3 {
+		t.Errorf("expected even distribution after both catch up, got %v", counts)
+	}
+}
+
+// TestIntegration_CausalConsistency_NoTimerFallback verifies that causal mode
+// doesn't use the timer-based read-after-write delay.
+func TestIntegration_CausalConsistency_NoTimerFallback(t *testing.T) {
+	session := router.NewSession(500*time.Millisecond, true)
+
+	// Write
+	session.Route("INSERT INTO users (name) VALUES ('test')")
+
+	// In causal mode, reads immediately return RouteReader (not timer-based RouteWriter)
+	route := session.Route("SELECT * FROM users")
+	if route != router.RouteReader {
+		t.Errorf("causal mode: SELECT after write → %d, want RouteReader (LSN-based, not timer)", route)
+	}
+}
+
 // TestIntegration_PoolAcquireRelease tests pool under concurrent load.
 func TestIntegration_PoolConcurrency(t *testing.T) {
 	// Uses the pool package directly — see pool_test.go for detailed tests.

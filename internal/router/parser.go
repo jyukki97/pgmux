@@ -53,8 +53,9 @@ func Classify(query string) QueryType {
 }
 
 // containsWriteKeyword checks if a WITH/CTE query contains write operations.
+// String literals are stripped first to avoid false positives from keywords inside quotes.
 func containsWriteKeyword(query string) bool {
-	upper := strings.ToUpper(query)
+	upper := strings.ToUpper(stripStringLiterals(query))
 	for kw := range writeKeywords {
 		// Look for write keywords that aren't just substrings of table/column names
 		idx := strings.Index(upper, kw)
@@ -77,7 +78,8 @@ func containsWriteKeyword(query string) bool {
 }
 
 func extractHint(query string) string {
-	matches := hintRegex.FindStringSubmatch(query)
+	sanitized := stripStringLiterals(query)
+	matches := hintRegex.FindStringSubmatch(sanitized)
 	if len(matches) >= 2 {
 		return matches[1]
 	}
@@ -149,8 +151,10 @@ func extractTablesFromStmt(stmt string) []string {
 
 // extractCTETables extracts table names from CTE (WITH ... AS (...)) queries
 // that contain write operations (UPDATE, INSERT, DELETE).
+// String literals are stripped first to avoid false positives.
 func extractCTETables(query string) []string {
-	upper := strings.ToUpper(query)
+	sanitized := stripStringLiterals(query)
+	upper := strings.ToUpper(sanitized)
 	var tables []string
 
 	// Find all write keywords and extract table names after them
@@ -164,7 +168,7 @@ func extractCTETables(query string) []string {
 	} {
 		idx := strings.Index(upper, kw.keyword)
 		for idx >= 0 {
-			sub := query[idx:]
+			sub := sanitized[idx:]
 			subUpper := upper[idx:]
 			t := extractAfter(sub, subUpper, kw.prefix)
 			if t != "" {
@@ -179,6 +183,47 @@ func extractCTETables(query string) []string {
 	}
 
 	return tables
+}
+
+// stripStringLiterals replaces content inside single/double-quoted strings with empty strings.
+// Handles PostgreSQL escaped quotes ('') correctly.
+// Example: "SELECT * FROM t WHERE x = 'INSERT INTO foo'" → "SELECT * FROM t WHERE x = ''"
+func stripStringLiterals(query string) string {
+	var result strings.Builder
+	result.Grow(len(query))
+	inSingle := false
+	inDouble := false
+
+	for i := 0; i < len(query); i++ {
+		ch := query[i]
+		switch {
+		case ch == '\'' && !inDouble:
+			result.WriteByte(ch)
+			if inSingle {
+				// Check for escaped quote ('')
+				if i+1 < len(query) && query[i+1] == '\'' {
+					result.WriteByte('\'')
+					i++
+				} else {
+					inSingle = false
+				}
+			} else {
+				inSingle = true
+			}
+		case ch == '"' && !inSingle:
+			result.WriteByte(ch)
+			if inDouble {
+				inDouble = false
+			} else {
+				inDouble = true
+			}
+		case inSingle || inDouble:
+			// skip content inside quotes
+		default:
+			result.WriteByte(ch)
+		}
+	}
+	return result.String()
 }
 
 func extractAfter(query, upper, keyword string) string {

@@ -131,3 +131,113 @@ func TestLoad_InvalidYAML(t *testing.T) {
 		t.Error("Load() expected error for invalid YAML, got nil")
 	}
 }
+
+func TestLoad_Defaults(t *testing.T) {
+	content := `
+writer:
+  host: "primary.db.internal"
+  port: 5432
+readers:
+  - host: "replica-1.db.internal"
+    port: 5432
+`
+	cfg := loadFromString(t, content)
+
+	if cfg.Proxy.Listen != "0.0.0.0:5432" {
+		t.Errorf("default Proxy.Listen = %q, want %q", cfg.Proxy.Listen, "0.0.0.0:5432")
+	}
+	if cfg.Pool.MinConnections != 2 {
+		t.Errorf("default Pool.MinConnections = %d, want 2", cfg.Pool.MinConnections)
+	}
+	if cfg.Pool.MaxConnections != 10 {
+		t.Errorf("default Pool.MaxConnections = %d, want 10", cfg.Pool.MaxConnections)
+	}
+	if cfg.Pool.IdleTimeout != 10*time.Minute {
+		t.Errorf("default Pool.IdleTimeout = %v, want 10m", cfg.Pool.IdleTimeout)
+	}
+	if cfg.Cache.MaxResultSize != "1MB" {
+		t.Errorf("default Cache.MaxResultSize = %q, want %q", cfg.Cache.MaxResultSize, "1MB")
+	}
+}
+
+func TestLoad_Validation_MissingWriter(t *testing.T) {
+	content := `
+readers:
+  - host: "replica-1.db.internal"
+    port: 5432
+`
+	_, err := loadFromStringRaw(t, content)
+	if err == nil {
+		t.Error("expected error for missing writer host")
+	}
+}
+
+func TestLoad_Validation_NoReaders(t *testing.T) {
+	content := `
+writer:
+  host: "primary.db.internal"
+  port: 5432
+`
+	_, err := loadFromStringRaw(t, content)
+	if err == nil {
+		t.Error("expected error for no readers")
+	}
+}
+
+func TestLoad_Validation_MinGreaterThanMax(t *testing.T) {
+	content := `
+writer:
+  host: "primary.db.internal"
+  port: 5432
+readers:
+  - host: "replica-1.db.internal"
+    port: 5432
+pool:
+  min_connections: 100
+  max_connections: 10
+`
+	_, err := loadFromStringRaw(t, content)
+	if err == nil {
+		t.Error("expected error for min > max connections")
+	}
+}
+
+func TestLoad_Validation_InvalidPort(t *testing.T) {
+	content := `
+writer:
+  host: "primary.db.internal"
+  port: 99999
+readers:
+  - host: "replica-1.db.internal"
+    port: 5432
+`
+	_, err := loadFromStringRaw(t, content)
+	if err == nil {
+		t.Error("expected error for invalid writer port")
+	}
+}
+
+func loadFromString(t *testing.T, content string) *Config {
+	t.Helper()
+	cfg, err := loadFromStringRaw(t, content)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	return cfg
+}
+
+func loadFromStringRaw(t *testing.T, content string) (*Config, error) {
+	t.Helper()
+	tmpFile, err := os.CreateTemp("", "config-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatal(err)
+	}
+	tmpFile.Close()
+
+	return Load(tmpFile.Name())
+}

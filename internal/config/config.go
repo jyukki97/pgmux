@@ -56,5 +56,74 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
+	cfg.applyDefaults()
+
+	if err := cfg.validate(); err != nil {
+		return nil, fmt.Errorf("validate config: %w", err)
+	}
+
 	return &cfg, nil
+}
+
+func (c *Config) applyDefaults() {
+	if c.Proxy.Listen == "" {
+		c.Proxy.Listen = "0.0.0.0:5432"
+	}
+	if c.Pool.MinConnections == 0 {
+		c.Pool.MinConnections = 2
+	}
+	if c.Pool.MaxConnections == 0 {
+		c.Pool.MaxConnections = 10
+	}
+	if c.Pool.IdleTimeout == 0 {
+		c.Pool.IdleTimeout = 10 * time.Minute
+	}
+	if c.Pool.MaxLifetime == 0 {
+		c.Pool.MaxLifetime = time.Hour
+	}
+	if c.Pool.ConnectionTimeout == 0 {
+		c.Pool.ConnectionTimeout = 5 * time.Second
+	}
+	if c.Routing.ReadAfterWriteDelay == 0 {
+		c.Routing.ReadAfterWriteDelay = 500 * time.Millisecond
+	}
+	if c.Cache.CacheTTL == 0 {
+		c.Cache.CacheTTL = 10 * time.Second
+	}
+	if c.Cache.MaxCacheEntries == 0 {
+		c.Cache.MaxCacheEntries = 10000
+	}
+	if c.Cache.MaxResultSize == "" {
+		c.Cache.MaxResultSize = "1MB"
+	}
+}
+
+func (c *Config) validate() error {
+	if c.Writer.Host == "" {
+		return fmt.Errorf("writer.host is required")
+	}
+	if c.Writer.Port <= 0 || c.Writer.Port > 65535 {
+		return fmt.Errorf("writer.port must be between 1 and 65535, got %d", c.Writer.Port)
+	}
+	if len(c.Readers) == 0 {
+		return fmt.Errorf("at least one reader is required")
+	}
+	for i, r := range c.Readers {
+		if r.Host == "" {
+			return fmt.Errorf("readers[%d].host is required", i)
+		}
+		if r.Port <= 0 || r.Port > 65535 {
+			return fmt.Errorf("readers[%d].port must be between 1 and 65535, got %d", i, r.Port)
+		}
+	}
+	if c.Pool.MinConnections < 0 {
+		return fmt.Errorf("pool.min_connections must be >= 0, got %d", c.Pool.MinConnections)
+	}
+	if c.Pool.MaxConnections < 1 {
+		return fmt.Errorf("pool.max_connections must be >= 1, got %d", c.Pool.MaxConnections)
+	}
+	if c.Pool.MinConnections > c.Pool.MaxConnections {
+		return fmt.Errorf("pool.min_connections (%d) must be <= pool.max_connections (%d)", c.Pool.MinConnections, c.Pool.MaxConnections)
+	}
+	return nil
 }

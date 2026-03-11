@@ -217,6 +217,76 @@ readers:
 	}
 }
 
+func TestLoad_TLS_Disabled(t *testing.T) {
+	content := `
+writer:
+  host: "primary.db.internal"
+  port: 5432
+readers:
+  - host: "replica-1.db.internal"
+    port: 5432
+`
+	cfg := loadFromString(t, content)
+	if cfg.TLS.Enabled {
+		t.Error("TLS.Enabled should be false by default")
+	}
+}
+
+func TestLoad_TLS_MissingCertFile(t *testing.T) {
+	content := `
+writer:
+  host: "primary.db.internal"
+  port: 5432
+readers:
+  - host: "replica-1.db.internal"
+    port: 5432
+tls:
+  enabled: true
+  key_file: "/tmp/nonexistent.key"
+`
+	_, err := loadFromStringRaw(t, content)
+	if err == nil {
+		t.Error("expected error for missing cert_file")
+	}
+}
+
+func TestLoad_TLS_MissingKeyFile(t *testing.T) {
+	content := `
+writer:
+  host: "primary.db.internal"
+  port: 5432
+readers:
+  - host: "replica-1.db.internal"
+    port: 5432
+tls:
+  enabled: true
+  cert_file: "/tmp/nonexistent.crt"
+`
+	_, err := loadFromStringRaw(t, content)
+	if err == nil {
+		t.Error("expected error for missing key_file")
+	}
+}
+
+func TestLoad_TLS_FileNotFound(t *testing.T) {
+	content := `
+writer:
+  host: "primary.db.internal"
+  port: 5432
+readers:
+  - host: "replica-1.db.internal"
+    port: 5432
+tls:
+  enabled: true
+  cert_file: "/tmp/nonexistent.crt"
+  key_file: "/tmp/nonexistent.key"
+`
+	_, err := loadFromStringRaw(t, content)
+	if err == nil {
+		t.Error("expected error for nonexistent TLS files")
+	}
+}
+
 func loadFromString(t *testing.T, content string) *Config {
 	t.Helper()
 	cfg, err := loadFromStringRaw(t, content)

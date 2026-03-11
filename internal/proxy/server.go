@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/binary"
 	"fmt"
 	"log/slog"
@@ -30,6 +31,7 @@ type Server struct {
 	invalidator *cache.Invalidator
 	metrics     *metrics.Metrics
 	listener    net.Listener
+	tlsConfig   *tls.Config
 	wg          sync.WaitGroup
 }
 
@@ -124,10 +126,24 @@ func NewServer(cfg *config.Config) *Server {
 		slog.Info("reader pool created", "addr", addr, "max_conn", cfg.Pool.MaxConnections)
 	}
 
+	// Load TLS certificate if enabled
+	if cfg.TLS.Enabled {
+		cert, err := tls.LoadX509KeyPair(cfg.TLS.CertFile, cfg.TLS.KeyFile)
+		if err != nil {
+			slog.Error("load TLS certificate", "error", err)
+		} else {
+			s.tlsConfig = &tls.Config{
+				Certificates: []tls.Certificate{cert},
+			}
+			slog.Info("TLS enabled", "cert", cfg.TLS.CertFile)
+		}
+	}
+
 	slog.Info("server initialized",
 		"writer", writerAddr,
 		"readers", len(readerAddrs),
 		"cache", cfg.Cache.Enabled,
+		"tls", cfg.TLS.Enabled,
 		"pooling", "transaction")
 
 	return s
@@ -192,8 +208,9 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 }
 
-func (s *Server) handleConn(ctx context.Context, clientConn net.Conn) {
-	defer clientConn.Close()
+func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
+	defer rawConn.Close()
+	clientConn := rawConn // may be upgraded to TLS below
 	slog.Info("new connection", "remote", clientConn.RemoteAddr())
 
 	// 1. Read startup message from client
@@ -203,17 +220,33 @@ func (s *Server) handleConn(ctx context.Context, clientConn net.Conn) {
 		return
 	}
 
-	// 2. Handle SSL request — reject and wait for real startup
+	// 2. Handle SSL request
 	if len(startup.Payload) >= 4 {
 		code := binary.BigEndian.Uint32(startup.Payload[0:4])
 		if code == protocol.SSLRequestCode {
-			if _, err := clientConn.Write([]byte{'N'}); err != nil {
-				slog.Error("write ssl reject", "error", err)
-				return
+			if s.tlsConfig != nil {
+				// Accept TLS — respond 'S' and upgrade connection
+				if _, err := clientConn.Write([]byte{'S'}); err != nil {
+					slog.Error("write ssl accept", "error", err)
+					return
+				}
+				tlsConn := tls.Server(clientConn, s.tlsConfig)
+				if err := tlsConn.Handshake(); err != nil {
+					slog.Error("TLS handshake", "error", err)
+					return
+				}
+				clientConn = tlsConn
+				slog.Debug("TLS connection established", "remote", clientConn.RemoteAddr())
+			} else {
+				// No TLS configured — reject
+				if _, err := clientConn.Write([]byte{'N'}); err != nil {
+					slog.Error("write ssl reject", "error", err)
+					return
+				}
 			}
 			startup, err = protocol.ReadStartupMessage(clientConn)
 			if err != nil {
-				slog.Error("read startup after ssl reject", "error", err)
+				slog.Error("read startup after ssl", "error", err)
 				return
 			}
 		}

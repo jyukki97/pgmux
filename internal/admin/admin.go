@@ -141,6 +141,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		Pool    config.PoolConfig    `json:"pool"`
 		Routing config.RoutingConfig `json:"routing"`
 		Cache   config.CacheConfig   `json:"cache"`
+		TLS     config.TLSConfig     `json:"tls"`
 		Backend struct {
 			User     string `json:"user"`
 			Password string `json:"password"`
@@ -153,6 +154,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		Pool:    s.cfg.Pool,
 		Routing: s.cfg.Routing,
 		Cache:   s.cfg.Cache,
+		TLS:     s.cfg.TLS,
 	}
 	safe.Backend.User = s.cfg.Backend.User
 	safe.Backend.Password = "********"

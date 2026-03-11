@@ -18,6 +18,7 @@ type Config struct {
 	Backend BackendConfig `yaml:"backend"`
 	Metrics MetricsConfig `yaml:"metrics"`
 	Admin   AdminConfig   `yaml:"admin"`
+	TLS     TLSConfig     `yaml:"tls"`
 }
 
 type MetricsConfig struct {
@@ -28,6 +29,12 @@ type MetricsConfig struct {
 type AdminConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	Listen  string `yaml:"listen"`
+}
+
+type TLSConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
 }
 
 type BackendConfig struct {
@@ -162,6 +169,20 @@ func (c *Config) validate() error {
 		}
 		if r.Port <= 0 || r.Port > 65535 {
 			return fmt.Errorf("readers[%d].port must be between 1 and 65535, got %d", i, r.Port)
+		}
+	}
+	if c.TLS.Enabled {
+		if c.TLS.CertFile == "" {
+			return fmt.Errorf("tls.cert_file is required when tls is enabled")
+		}
+		if c.TLS.KeyFile == "" {
+			return fmt.Errorf("tls.key_file is required when tls is enabled")
+		}
+		if _, err := os.Stat(c.TLS.CertFile); err != nil {
+			return fmt.Errorf("tls.cert_file: %w", err)
+		}
+		if _, err := os.Stat(c.TLS.KeyFile); err != nil {
+			return fmt.Errorf("tls.key_file: %w", err)
 		}
 	}
 	if c.Pool.MinConnections < 0 {

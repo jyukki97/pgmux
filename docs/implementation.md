@@ -311,3 +311,189 @@ func (inv *Invalidator) OnWrite(query string) {
 | **3단계** | 쿼리 파서 + R/W 라우팅 | SELECT는 Reader, INSERT는 Writer로 가는지 확인 |
 | **4단계** | 라운드로빈 + 장애 감지 | Reader 여러 대에 분산, 하나 죽여도 나머지로 동작 |
 | **5단계** | 쿼리 캐싱 + 무효화 | 동일 SELECT 두 번째는 캐시 히트, 쓰기 후 캐시 미스 |
+| **6단계** | Prometheus 메트릭 | `/metrics` 엔드포인트에서 풀/캐시/라우팅 메트릭 수집 |
+| **7단계** | Prepared Statement 라우팅 | Extended Query의 SELECT도 reader로 라우팅 |
+| **8단계** | Admin API | `/admin/stats`, `/admin/health`, `/admin/cache/flush` 동작 |
+
+---
+
+### 4. Prometheus 메트릭 구현
+
+#### 메트릭 레지스트리
+
+`prometheus/client_golang`을 사용한다. 각 컴포넌트가 자체 메트릭을 등록하고, HTTP 핸들러가 `/metrics`로 노출한다.
+
+```go
+// internal/metrics/metrics.go
+type Metrics struct {
+    // Pool
+    PoolOpenConns    *prometheus.GaugeVec     // {role="writer|reader", addr="..."}
+    PoolIdleConns    *prometheus.GaugeVec
+    PoolAcquireDur   *prometheus.HistogramVec
+
+    // Router
+    QueriesRouted    *prometheus.CounterVec   // {target="writer|reader"}
+    QueryDuration    *prometheus.HistogramVec // {target="writer|reader"}
+    ReaderFallback   prometheus.Counter
+
+    // Cache
+    CacheHits        prometheus.Counter
+    CacheMisses      prometheus.Counter
+    CacheEntries     prometheus.Gauge
+    CacheInvalidations prometheus.Counter
+}
+
+func New() *Metrics {
+    m := &Metrics{
+        QueriesRouted: prometheus.NewCounterVec(
+            prometheus.CounterOpts{
+                Name: "dbproxy_queries_routed_total",
+                Help: "Total queries routed",
+            },
+            []string{"target"},
+        ),
+        QueryDuration: prometheus.NewHistogramVec(
+            prometheus.HistogramOpts{
+                Name:    "dbproxy_query_duration_seconds",
+                Help:    "Query processing duration",
+                Buckets: prometheus.DefBuckets,
+            },
+            []string{"target"},
+        ),
+        // ...
+    }
+    prometheus.MustRegister(m.QueriesRouted, m.QueryDuration, ...)
+    return m
+}
+```
+
+#### 서버에서 메트릭 기록
+
+```go
+// proxy/server.go — relayQueries 내부
+start := time.Now()
+if route == RouteWriter {
+    s.handleWriteQuery(...)
+    s.metrics.QueriesRouted.WithLabelValues("writer").Inc()
+} else {
+    s.handleReadQuery(...)
+    s.metrics.QueriesRouted.WithLabelValues("reader").Inc()
+}
+s.metrics.QueryDuration.WithLabelValues(routeName(route)).Observe(time.Since(start).Seconds())
+```
+
+#### HTTP 엔드포인트
+
+```go
+// cmd/db-proxy/main.go
+if cfg.Metrics.Enabled {
+    go func() {
+        mux := http.NewServeMux()
+        mux.Handle("/metrics", promhttp.Handler())
+        http.ListenAndServe(cfg.Metrics.Listen, mux)
+    }()
+}
+```
+
+---
+
+### 5. Prepared Statement 라우팅 구현
+
+#### Parse 메시지 파싱
+
+PG Extended Query Protocol의 `Parse` 메시지 포맷:
+
+```
+'P' + int32(length) + string(statement_name) + string(query) + int16(num_params) + int32[](param_oids)
+```
+
+쿼리 텍스트를 추출하여 라우팅에 활용한다.
+
+```go
+// internal/protocol/message.go
+func ExtractParseQuery(payload []byte) (stmtName, query string) {
+    // statement name: null-terminated string
+    nameEnd := indexOf(payload, 0)
+    stmtName = string(payload[:nameEnd])
+    rest := payload[nameEnd+1:]
+    // query: null-terminated string
+    queryEnd := indexOf(rest, 0)
+    query = string(rest[:queryEnd])
+    return stmtName, query
+}
+```
+
+#### 세션별 Statement 라우팅 맵
+
+```go
+// proxy/server.go — clientSession에 추가
+type extendedQueryState struct {
+    stmtRoutes map[string]router.Route  // statement name → route
+    pendingRoute router.Route           // 현재 Parse~Sync 사이의 라우팅 결과
+}
+
+// Parse 메시지 수신 시:
+stmtName, query := protocol.ExtractParseQuery(msg.Payload)
+route := session.Route(query)
+eqState.stmtRoutes[stmtName] = route
+eqState.pendingRoute = route
+
+// Bind/Execute/Describe는 pendingRoute에 따라 writer 또는 reader로 전달
+// Sync에서 relayUntilReady
+```
+
+#### 라우팅 흐름
+
+```
+Parse(P) → SQL 추출 → Classify → Route 결정 → 대상 백엔드로 전달
+Bind(B)  → pendingRoute의 백엔드로 전달
+Execute(E) → pendingRoute의 백엔드로 전달
+Sync(S) → 대상 백엔드로 전달 → relayUntilReady
+```
+
+---
+
+### 6. Admin API 구현
+
+#### HTTP 핸들러
+
+```go
+// internal/admin/admin.go
+type Handler struct {
+    pools    map[string]*pool.Pool
+    cache    *cache.Cache
+    balancer *router.RoundRobin
+    cfg      *config.Config
+}
+
+func (h *Handler) Register(mux *http.ServeMux) {
+    mux.HandleFunc("GET /admin/stats", h.handleStats)
+    mux.HandleFunc("GET /admin/health", h.handleHealth)
+    mux.HandleFunc("GET /admin/config", h.handleConfig)
+    mux.HandleFunc("POST /admin/cache/flush", h.handleCacheFlush)
+    mux.HandleFunc("POST /admin/cache/flush/{table}", h.handleCacheFlushTable)
+}
+```
+
+#### Stats 응답 예시
+
+```json
+{
+  "pool": {
+    "writer": {"open": 5, "idle": 3},
+    "readers": {
+      "replica-1:5432": {"open": 8, "idle": 4},
+      "replica-2:5432": {"open": 7, "idle": 5}
+    }
+  },
+  "cache": {
+    "entries": 1523,
+    "hit_rate": 0.847
+  },
+  "routing": {
+    "writer_queries": 12450,
+    "reader_queries": 89230,
+    "fallback_count": 3
+  }
+}
+```

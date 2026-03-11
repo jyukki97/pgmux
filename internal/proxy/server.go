@@ -36,6 +36,7 @@ type Server struct {
 	tlsConfig    *tls.Config
 	writerCB     *resilience.CircuitBreaker
 	readerCBs    map[string]*resilience.CircuitBreaker
+	rateLimiter  *resilience.RateLimiter
 	wg           sync.WaitGroup
 }
 
@@ -128,6 +129,12 @@ func NewServer(cfg *config.Config) *Server {
 		}
 		s.readerPools[addr] = p
 		slog.Info("reader pool created", "addr", addr, "max_conn", cfg.Pool.MaxConnections)
+	}
+
+	// Initialize Rate Limiter
+	if cfg.RateLimit.Enabled {
+		s.rateLimiter = resilience.NewRateLimiter(cfg.RateLimit.Rate, cfg.RateLimit.Burst)
+		slog.Info("rate limiter enabled", "rate", cfg.RateLimit.Rate, "burst", cfg.RateLimit.Burst)
 	}
 
 	// Initialize Circuit Breakers
@@ -471,6 +478,18 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 		if msg.Type == protocol.MsgTerminate {
 			slog.Info("client terminated", "remote", clientConn.RemoteAddr())
 			return
+		}
+
+		// Rate limit check
+		if s.rateLimiter != nil && !s.rateLimiter.Allow() {
+			slog.Warn("rate limited", "remote", clientConn.RemoteAddr())
+			if s.metrics != nil {
+				s.metrics.RateLimited.Inc()
+			}
+			s.sendError(clientConn, "too many requests")
+			// Send ReadyForQuery so the client can continue
+			protocol.WriteMessage(clientConn, protocol.MsgReadyForQuery, []byte{'I'})
+			continue
 		}
 
 		// --- Simple Query Protocol ---

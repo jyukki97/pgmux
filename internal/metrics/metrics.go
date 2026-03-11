@@ -17,6 +17,9 @@ type Metrics struct {
 	CacheEntries       prometheus.Gauge
 	CacheInvalidations prometheus.Counter
 
+	// Rate limiting
+	RateLimited prometheus.Counter
+
 	// Pool
 	PoolOpenConns *prometheus.GaugeVec
 	PoolIdleConns *prometheus.GaugeVec
@@ -74,6 +77,13 @@ func New() *Metrics {
 			},
 		),
 
+		RateLimited: prometheus.NewCounter(
+			prometheus.CounterOpts{
+				Name: "dbproxy_rate_limited_total",
+				Help: "Total number of rate-limited requests.",
+			},
+		),
+
 		PoolOpenConns: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name: "dbproxy_pool_connections_open",
@@ -109,6 +119,7 @@ func New() *Metrics {
 		m.QueriesRouted,
 		m.QueryDuration,
 		m.ReaderFallback,
+		m.RateLimited,
 		m.CacheHits,
 		m.CacheMisses,
 		m.CacheEntries,

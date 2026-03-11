@@ -21,6 +21,7 @@ type Config struct {
 	TLS            TLSConfig            `yaml:"tls"`
 	Auth           AuthConfig           `yaml:"auth"`
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
+	RateLimit      RateLimitConfig      `yaml:"rate_limit"`
 }
 
 type MetricsConfig struct {
@@ -55,6 +56,12 @@ type CircuitBreakerConfig struct {
 	OpenDuration   time.Duration `yaml:"open_duration"`
 	HalfOpenMax    int           `yaml:"half_open_max"`
 	WindowSize     int           `yaml:"window_size"`
+}
+
+type RateLimitConfig struct {
+	Enabled bool    `yaml:"enabled"`
+	Rate    float64 `yaml:"rate"`  // queries per second
+	Burst   int     `yaml:"burst"` // max burst size
 }
 
 type BackendConfig struct {
@@ -170,6 +177,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Admin.Listen == "" {
 		c.Admin.Listen = "0.0.0.0:9091"
+	}
+	if c.RateLimit.Rate <= 0 {
+		c.RateLimit.Rate = 1000
+	}
+	if c.RateLimit.Burst <= 0 {
+		c.RateLimit.Burst = 100
 	}
 	if c.CircuitBreaker.ErrorThreshold <= 0 {
 		c.CircuitBreaker.ErrorThreshold = 0.5

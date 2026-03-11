@@ -501,6 +501,26 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 		if msg.Type == protocol.MsgQuery {
 			query := protocol.ExtractQueryText(msg.Payload)
 
+			// Firewall check
+			if s.cfg.Firewall.Enabled {
+				fwResult := router.CheckFirewall(query, router.FirewallConfig{
+					Enabled:                 s.cfg.Firewall.Enabled,
+					BlockDeleteWithoutWhere: s.cfg.Firewall.BlockDeleteWithoutWhere,
+					BlockUpdateWithoutWhere: s.cfg.Firewall.BlockUpdateWithoutWhere,
+					BlockDropTable:          s.cfg.Firewall.BlockDropTable,
+					BlockTruncate:           s.cfg.Firewall.BlockTruncate,
+				})
+				if fwResult.Blocked {
+					slog.Warn("firewall blocked query", "rule", fwResult.Rule, "sql", query)
+					if s.metrics != nil {
+						s.metrics.FirewallBlocked.WithLabelValues(string(fwResult.Rule)).Inc()
+					}
+					s.sendError(clientConn, fwResult.Message)
+					protocol.WriteMessage(clientConn, protocol.MsgReadyForQuery, []byte{'I'})
+					continue
+				}
+			}
+
 			wasInTx := session.InTransaction()
 			route := session.Route(query)
 			nowInTx := session.InTransaction()

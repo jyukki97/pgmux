@@ -20,16 +20,17 @@ import (
 )
 
 type Server struct {
-	cfg          *config.Config
-	listenAddr   string
-	writerAddr   string
-	readerPools  map[string]*pool.Pool
-	balancer     *router.RoundRobin
-	queryCache   *cache.Cache
-	invalidator  *cache.Invalidator
-	metrics      *metrics.Metrics
-	listener     net.Listener
-	wg           sync.WaitGroup
+	cfg         *config.Config
+	listenAddr  string
+	writerAddr  string
+	writerPool  *pool.Pool
+	readerPools map[string]*pool.Pool
+	balancer    *router.RoundRobin
+	queryCache  *cache.Cache
+	invalidator *cache.Invalidator
+	metrics     *metrics.Metrics
+	listener    net.Listener
+	wg          sync.WaitGroup
 }
 
 func NewServer(cfg *config.Config) *Server {
@@ -84,6 +85,24 @@ func NewServer(cfg *config.Config) *Server {
 		}
 	}
 
+	// Initialize writer connection pool
+	writerPool, err := pool.New(pool.Config{
+		DialFunc: func() (net.Conn, error) {
+			return pgConnect(writerAddr, cfg.Backend.User, cfg.Backend.Password, cfg.Backend.Database)
+		},
+		MinConnections:    0, // lazy creation; backend may not be ready at startup
+		MaxConnections:    cfg.Pool.MaxConnections,
+		IdleTimeout:       cfg.Pool.IdleTimeout,
+		MaxLifetime:       cfg.Pool.MaxLifetime,
+		ConnectionTimeout: cfg.Pool.ConnectionTimeout,
+	})
+	if err != nil {
+		slog.Error("create writer pool", "addr", writerAddr, "error", err)
+	} else {
+		s.writerPool = writerPool
+		slog.Info("writer pool created", "addr", writerAddr, "max_conn", cfg.Pool.MaxConnections)
+	}
+
 	// Initialize reader connection pools (PG-aware via DialFunc)
 	for _, addr := range readerAddrs {
 		addr := addr // capture for closure
@@ -108,7 +127,8 @@ func NewServer(cfg *config.Config) *Server {
 	slog.Info("server initialized",
 		"writer", writerAddr,
 		"readers", len(readerAddrs),
-		"cache", cfg.Cache.Enabled)
+		"cache", cfg.Cache.Enabled,
+		"pooling", "transaction")
 
 	return s
 }
@@ -120,6 +140,12 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	s.listener = ln
 	slog.Info("proxy listening", "addr", s.listenAddr)
+
+	// Start writer pool health check
+	if s.writerPool != nil {
+		s.writerPool.StartHealthCheck(ctx, s.cfg.Pool.IdleTimeout/2)
+		slog.Debug("writer health check started", "addr", s.writerAddr)
+	}
 
 	// Start reader health checks
 	for addr, p := range s.readerPools {
@@ -146,7 +172,7 @@ func (s *Server) Start(ctx context.Context) error {
 			select {
 			case <-ctx.Done():
 				s.wg.Wait()
-				s.closeReaderPools()
+				s.closePools()
 				if s.invalidator != nil {
 					s.invalidator.Close()
 				}
@@ -196,37 +222,44 @@ func (s *Server) handleConn(ctx context.Context, clientConn net.Conn) {
 	_, _, params := protocol.ParseStartupParams(startup.Payload)
 	slog.Info("client startup", "user", params["user"], "database", params["database"])
 
-	// 3. Connect to writer backend (dedicated per client session)
-	writerConn, err := net.Dial("tcp", s.writerAddr)
+	// 3. Authenticate client via temporary backend connection.
+	//    Pool connections are pre-authenticated via pgConnect(), so we only need
+	//    a temporary connection to relay the client's auth handshake.
+	authConn, err := net.Dial("tcp", s.writerAddr)
 	if err != nil {
-		slog.Error("connect to writer", "addr", s.writerAddr, "error", err)
+		slog.Error("connect to writer for auth", "addr", s.writerAddr, "error", err)
 		s.sendError(clientConn, "cannot connect to backend database")
 		return
 	}
-	defer writerConn.Close()
 
-	// 4. Forward startup message to writer
+	// Forward startup message to auth connection
 	startupRaw := make([]byte, 4+len(startup.Payload))
 	binary.BigEndian.PutUint32(startupRaw[0:4], uint32(4+len(startup.Payload)))
 	copy(startupRaw[4:], startup.Payload)
-	if err := protocol.WriteRaw(writerConn, startupRaw); err != nil {
+	if err := protocol.WriteRaw(authConn, startupRaw); err != nil {
+		authConn.Close()
 		slog.Error("forward startup to writer", "error", err)
 		return
 	}
 
-	// 5. Relay authentication between client and writer until ReadyForQuery
-	if err := s.relayAuth(clientConn, writerConn); err != nil {
+	// Relay authentication between client and auth connection
+	if err := s.relayAuth(clientConn, authConn); err != nil {
+		authConn.Close()
 		slog.Error("auth relay", "error", err)
 		return
 	}
 
+	// Auth complete — close temporary connection.
+	// All further queries use pooled connections.
+	authConn.Close()
+
 	slog.Info("handshake complete", "remote", clientConn.RemoteAddr())
 
-	// 6. Create per-client session router
+	// 4. Create per-client session router
 	session := router.NewSession(s.cfg.Routing.ReadAfterWriteDelay)
 
-	// 7. Relay queries with routing and caching
-	s.relayQueries(ctx, clientConn, writerConn, session)
+	// 5. Relay queries with transaction-level pooling
+	s.relayQueries(ctx, clientConn, session)
 }
 
 // relayAuth relays the full bidirectional authentication flow between client and backend.
@@ -282,12 +315,23 @@ func authNeedsResponse(authType uint32) bool {
 	}
 }
 
-// relayQueries handles the main query loop with R/W routing and caching.
-func (s *Server) relayQueries(ctx context.Context, clientConn, writerConn net.Conn, session *router.Session) {
-	// extBuf collects Extended Query messages destined for a reader, flushed on Sync.
+// relayQueries handles the main query loop with transaction-level connection pooling.
+// Writer connections are acquired from writerPool per query/transaction and released back.
+func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session *router.Session) {
+	// boundWriter is non-nil when a transaction is in progress.
+	// The connection stays bound from BEGIN until COMMIT/ROLLBACK.
+	var boundWriter *pool.Conn
+
+	defer func() {
+		if boundWriter != nil {
+			s.resetAndReleaseWriter(boundWriter)
+		}
+	}()
+
+	// Extended Query protocol state
 	var extBuf []*protocol.Message
 	var extRoute router.Route
-	var extReaderAddr string
+	var extTxStart, extTxEnd bool
 
 	for {
 		select {
@@ -310,16 +354,42 @@ func (s *Server) relayQueries(ctx context.Context, clientConn, writerConn net.Co
 		// --- Simple Query Protocol ---
 		if msg.Type == protocol.MsgQuery {
 			query := protocol.ExtractQueryText(msg.Payload)
+
+			wasInTx := session.InTransaction()
 			route := session.Route(query)
+			nowInTx := session.InTransaction()
+
 			target := routeName(route)
 			slog.Debug("query routed", "sql", query, "route", target)
 
 			start := time.Now()
 
 			if route == router.RouteWriter {
-				s.handleWriteQuery(clientConn, writerConn, msg, query)
+				wConn, acquired, err := s.acquireWriterConn(ctx, boundWriter)
+				if err != nil {
+					slog.Error("acquire writer", "error", err)
+					s.sendError(clientConn, "cannot acquire backend connection")
+					return
+				}
+
+				s.handleWriteQuery(clientConn, wConn, msg, query)
+
+				// Transaction lifecycle management
+				switch {
+				case !wasInTx && nowInTx:
+					// BEGIN — bind writer for transaction duration
+					boundWriter = wConn
+				case wasInTx && !nowInTx:
+					// COMMIT/ROLLBACK — unbind and release
+					boundWriter = nil
+					s.resetAndReleaseWriter(wConn)
+				case acquired:
+					// Single statement outside transaction — release immediately
+					s.resetAndReleaseWriter(wConn)
+				}
+				// If !acquired && still in transaction → keep using boundWriter
 			} else {
-				if err := s.handleReadQuery(ctx, clientConn, writerConn, msg, query); err != nil {
+				if err := s.handleReadQuery(ctx, clientConn, msg, query); err != nil {
 					slog.Error("handle read query", "error", err)
 					return
 				}
@@ -339,7 +409,16 @@ func (s *Server) relayQueries(ctx context.Context, clientConn, writerConn net.Co
 			route := session.RegisterStatement(stmtName, query)
 			slog.Debug("parse registered", "stmt", stmtName, "sql", query, "route", routeName(route))
 
-			if session.InTransaction() || route == router.RouteWriter {
+			// Track transaction lifecycle in Extended Query
+			upper := strings.ToUpper(strings.TrimSpace(query))
+			if strings.HasPrefix(upper, "BEGIN") || strings.HasPrefix(upper, "START TRANSACTION") {
+				extTxStart = true
+			}
+			if strings.HasPrefix(upper, "COMMIT") || strings.HasPrefix(upper, "ROLLBACK") || strings.HasPrefix(upper, "END") {
+				extTxEnd = true
+			}
+
+			if session.InTransaction() || boundWriter != nil || route == router.RouteWriter {
 				extRoute = router.RouteWriter
 			} else {
 				extRoute = route
@@ -366,28 +445,66 @@ func (s *Server) relayQueries(ctx context.Context, clientConn, writerConn net.Co
 			start := time.Now()
 			target := routeName(extRoute)
 
-			if extRoute == router.RouteReader && !session.InTransaction() {
-				// Try to send buffered messages to a reader
-				extReaderAddr = s.balancer.Next()
-				if err := s.handleExtendedRead(ctx, clientConn, writerConn, extBuf, msg, extReaderAddr); err != nil {
+			if extRoute == router.RouteReader && !session.InTransaction() && boundWriter == nil {
+				// Reader path
+				readerAddr := s.balancer.Next()
+				if err := s.handleExtendedRead(ctx, clientConn, extBuf, msg, readerAddr); err != nil {
 					slog.Error("extended read query", "error", err)
 					return
 				}
 			} else {
-				// Send to writer
-				for _, m := range extBuf {
-					if err := protocol.WriteMessage(writerConn, m.Type, m.Payload); err != nil {
-						slog.Error("forward ext to writer", "error", err)
-						return
+				// Writer path — acquire from pool or use bound connection
+				wConn, acquired, err := s.acquireWriterConn(ctx, boundWriter)
+				if err != nil {
+					slog.Error("acquire writer for extended query", "error", err)
+					s.sendError(clientConn, "cannot acquire backend connection")
+					return
+				}
+
+				// Forward all buffered messages + Sync to writer
+				writeErr := s.forwardExtBatch(wConn, extBuf, msg)
+				if writeErr != nil {
+					slog.Error("forward ext batch to writer", "error", writeErr)
+					if acquired {
+						s.writerPool.Discard(wConn)
+					} else if boundWriter != nil {
+						s.writerPool.Discard(boundWriter)
+						boundWriter = nil
 					}
-				}
-				if err := protocol.WriteMessage(writerConn, msg.Type, msg.Payload); err != nil {
-					slog.Error("forward sync to writer", "error", err)
 					return
 				}
-				if err := s.relayUntilReady(clientConn, writerConn); err != nil {
+
+				if err := s.relayUntilReady(clientConn, wConn); err != nil {
 					slog.Error("relay writer response (sync)", "error", err)
+					if acquired {
+						s.writerPool.Discard(wConn)
+					} else if boundWriter != nil {
+						s.writerPool.Discard(boundWriter)
+						boundWriter = nil
+					}
 					return
+				}
+
+				// Update transaction state for Extended Query
+				if extTxStart {
+					session.SetInTransaction(true)
+				}
+				if extTxEnd {
+					session.SetInTransaction(false)
+				}
+
+				// Transaction lifecycle
+				switch {
+				case extTxStart && !extTxEnd:
+					// BEGIN — bind writer
+					boundWriter = wConn
+				case extTxEnd:
+					// COMMIT/ROLLBACK — unbind and release
+					boundWriter = nil
+					s.resetAndReleaseWriter(wConn)
+				case acquired:
+					// Single batch outside transaction — release
+					s.resetAndReleaseWriter(wConn)
 				}
 			}
 
@@ -399,7 +516,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn, writerConn net.Co
 			// Reset batch state
 			extBuf = extBuf[:0]
 			extRoute = router.RouteReader
-			extReaderAddr = ""
+			extTxStart, extTxEnd = false, false
 
 		default:
 			// Describe(D), Execute(E), etc. — buffer them
@@ -408,8 +525,77 @@ func (s *Server) relayQueries(ctx context.Context, clientConn, writerConn net.Co
 	}
 }
 
+// acquireWriterConn returns the bound transaction connection or acquires a new one from the pool.
+// The bool return indicates whether the connection was newly acquired (true) or was already bound (false).
+func (s *Server) acquireWriterConn(ctx context.Context, bound *pool.Conn) (*pool.Conn, bool, error) {
+	if bound != nil {
+		return bound, false, nil
+	}
+	acquireStart := time.Now()
+	conn, err := s.writerPool.Acquire(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("acquire writer: %w", err)
+	}
+	if s.metrics != nil {
+		s.metrics.PoolAcquires.WithLabelValues("writer", s.writerAddr).Inc()
+		s.metrics.PoolAcquireDur.WithLabelValues("writer", s.writerAddr).Observe(time.Since(acquireStart).Seconds())
+	}
+	return conn, true, nil
+}
+
+// resetAndReleaseWriter sends a reset query (DISCARD ALL) and returns the connection to the pool.
+// If the reset fails, the connection is discarded instead.
+func (s *Server) resetAndReleaseWriter(conn *pool.Conn) {
+	if err := s.resetConn(conn); err != nil {
+		slog.Warn("reset writer conn failed, discarding", "error", err)
+		s.writerPool.Discard(conn)
+		return
+	}
+	s.writerPool.Release(conn)
+}
+
+// resetConn sends the configured reset query (e.g. DISCARD ALL) to clean up session state
+// before returning a connection to the pool.
+func (s *Server) resetConn(conn net.Conn) error {
+	resetQuery := s.cfg.Pool.ResetQuery
+	if resetQuery == "" {
+		return nil
+	}
+	payload := append([]byte(resetQuery), 0)
+	if err := protocol.WriteMessage(conn, protocol.MsgQuery, payload); err != nil {
+		return fmt.Errorf("send reset query: %w", err)
+	}
+	for {
+		msg, err := protocol.ReadMessage(conn)
+		if err != nil {
+			return fmt.Errorf("read reset response: %w", err)
+		}
+		if msg.Type == protocol.MsgErrorResponse {
+			return fmt.Errorf("reset query error")
+		}
+		if msg.Type == protocol.MsgReadyForQuery {
+			return nil
+		}
+	}
+}
+
+// fallbackToWriter acquires a writer connection from the pool and forwards the query.
+func (s *Server) fallbackToWriter(ctx context.Context, clientConn net.Conn, msg *protocol.Message) error {
+	wConn, err := s.writerPool.Acquire(ctx)
+	if err != nil {
+		s.sendError(clientConn, "no available backend connections")
+		return fmt.Errorf("acquire writer for fallback: %w", err)
+	}
+	if s.metrics != nil {
+		s.metrics.PoolAcquires.WithLabelValues("writer", s.writerAddr).Inc()
+	}
+	err = s.forwardAndRelay(clientConn, wConn, msg)
+	s.resetAndReleaseWriter(wConn)
+	return err
+}
+
 // handleWriteQuery forwards a write query to the writer and invalidates cache.
-func (s *Server) handleWriteQuery(clientConn, writerConn net.Conn, msg *protocol.Message, query string) {
+func (s *Server) handleWriteQuery(clientConn net.Conn, writerConn net.Conn, msg *protocol.Message, query string) {
 	if err := s.forwardAndRelay(clientConn, writerConn, msg); err != nil {
 		slog.Error("forward write to writer", "error", err)
 		return
@@ -434,7 +620,7 @@ func (s *Server) handleWriteQuery(clientConn, writerConn net.Conn, msg *protocol
 }
 
 // handleReadQuery checks cache, acquires a reader from pool, or falls back to writer.
-func (s *Server) handleReadQuery(ctx context.Context, clientConn, writerConn net.Conn, msg *protocol.Message, query string) error {
+func (s *Server) handleReadQuery(ctx context.Context, clientConn net.Conn, msg *protocol.Message, query string) error {
 	// Check cache
 	if s.queryCache != nil {
 		key := cache.CacheKey(query)
@@ -458,7 +644,7 @@ func (s *Server) handleReadQuery(ctx context.Context, clientConn, writerConn net
 		if s.metrics != nil {
 			s.metrics.ReaderFallback.Inc()
 		}
-		return s.forwardAndRelay(clientConn, writerConn, msg)
+		return s.fallbackToWriter(ctx, clientConn, msg)
 	}
 
 	rPool, ok := s.readerPools[readerAddr]
@@ -467,7 +653,7 @@ func (s *Server) handleReadQuery(ctx context.Context, clientConn, writerConn net
 		if s.metrics != nil {
 			s.metrics.ReaderFallback.Inc()
 		}
-		return s.forwardAndRelay(clientConn, writerConn, msg)
+		return s.fallbackToWriter(ctx, clientConn, msg)
 	}
 
 	acquireStart := time.Now()
@@ -477,7 +663,7 @@ func (s *Server) handleReadQuery(ctx context.Context, clientConn, writerConn net
 		if s.metrics != nil {
 			s.metrics.ReaderFallback.Inc()
 		}
-		return s.forwardAndRelay(clientConn, writerConn, msg)
+		return s.fallbackToWriter(ctx, clientConn, msg)
 	}
 	if s.metrics != nil {
 		s.metrics.PoolAcquires.WithLabelValues("reader", readerAddr).Inc()
@@ -489,7 +675,7 @@ func (s *Server) handleReadQuery(ctx context.Context, clientConn, writerConn net
 		slog.Error("forward to reader", "addr", readerAddr, "error", err)
 		rPool.Discard(rConn)
 		// Fallback to writer
-		return s.forwardAndRelay(clientConn, writerConn, msg)
+		return s.fallbackToWriter(ctx, clientConn, msg)
 	}
 
 	// Relay response and collect bytes for caching
@@ -519,21 +705,27 @@ func (s *Server) handleReadQuery(ctx context.Context, clientConn, writerConn net
 }
 
 // handleExtendedRead sends buffered Extended Query messages to a reader, falling back to writer.
-func (s *Server) handleExtendedRead(ctx context.Context, clientConn, writerConn net.Conn, buf []*protocol.Message, syncMsg *protocol.Message, readerAddr string) error {
-	// Fallback helper: send entire batch to writer
+func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, buf []*protocol.Message, syncMsg *protocol.Message, readerAddr string) error {
+	// Fallback helper: send entire batch to writer via pool
 	fallbackToWriter := func() error {
 		if s.metrics != nil {
 			s.metrics.ReaderFallback.Inc()
 		}
-		for _, m := range buf {
-			if err := protocol.WriteMessage(writerConn, m.Type, m.Payload); err != nil {
-				return fmt.Errorf("forward ext to writer: %w", err)
-			}
+		wConn, err := s.writerPool.Acquire(ctx)
+		if err != nil {
+			s.sendError(clientConn, "no available backend connections")
+			return fmt.Errorf("acquire writer for ext fallback: %w", err)
 		}
-		if err := protocol.WriteMessage(writerConn, syncMsg.Type, syncMsg.Payload); err != nil {
-			return fmt.Errorf("forward sync to writer: %w", err)
+		if err := s.forwardExtBatch(wConn, buf, syncMsg); err != nil {
+			s.writerPool.Discard(wConn)
+			return fmt.Errorf("forward ext to writer: %w", err)
 		}
-		return s.relayUntilReady(clientConn, writerConn)
+		if err := s.relayUntilReady(clientConn, wConn); err != nil {
+			s.writerPool.Discard(wConn)
+			return err
+		}
+		s.resetAndReleaseWriter(wConn)
+		return nil
 	}
 
 	if readerAddr == "" {
@@ -559,15 +751,8 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn, writerConn 
 	}
 
 	// Forward all buffered messages + Sync to reader
-	for _, m := range buf {
-		if err := protocol.WriteMessage(rConn, m.Type, m.Payload); err != nil {
-			slog.Error("forward ext to reader", "addr", readerAddr, "error", err)
-			rPool.Discard(rConn)
-			return fallbackToWriter()
-		}
-	}
-	if err := protocol.WriteMessage(rConn, syncMsg.Type, syncMsg.Payload); err != nil {
-		slog.Error("forward sync to reader", "addr", readerAddr, "error", err)
+	if err := s.forwardExtBatch(rConn, buf, syncMsg); err != nil {
+		slog.Error("forward ext to reader", "addr", readerAddr, "error", err)
 		rPool.Discard(rConn)
 		return fallbackToWriter()
 	}
@@ -596,6 +781,19 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn, writerConn 
 		rPool.Release(rConn)
 	}
 
+	return nil
+}
+
+// forwardExtBatch sends a batch of Extended Query messages followed by a Sync message.
+func (s *Server) forwardExtBatch(backendConn net.Conn, buf []*protocol.Message, syncMsg *protocol.Message) error {
+	for _, m := range buf {
+		if err := protocol.WriteMessage(backendConn, m.Type, m.Payload); err != nil {
+			return fmt.Errorf("forward ext message: %w", err)
+		}
+	}
+	if err := protocol.WriteMessage(backendConn, syncMsg.Type, syncMsg.Payload); err != nil {
+		return fmt.Errorf("forward sync: %w", err)
+	}
 	return nil
 }
 
@@ -692,12 +890,21 @@ func (s *Server) ReaderPools() map[string]*pool.Pool {
 	return s.readerPools
 }
 
+// WriterPool returns the server's writer connection pool.
+func (s *Server) WriterPool() *pool.Pool {
+	return s.writerPool
+}
+
 // Invalidator returns the server's cache invalidator (may be nil).
 func (s *Server) Invalidator() *cache.Invalidator {
 	return s.invalidator
 }
 
-func (s *Server) closeReaderPools() {
+func (s *Server) closePools() {
+	if s.writerPool != nil {
+		s.writerPool.Close()
+		slog.Debug("writer pool closed", "addr", s.writerAddr)
+	}
 	for addr, p := range s.readerPools {
 		p.Close()
 		slog.Debug("reader pool closed", "addr", addr)

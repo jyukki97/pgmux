@@ -61,7 +61,7 @@ func run() error {
 
 	// Start Admin API server
 	if cfg.Admin.Enabled {
-		adminSrv := admin.New(cfg, srv.Cache(), srv.Invalidator(), srv.ReaderPools())
+		adminSrv := admin.New(cfg, srv.Cache(), srv.Invalidator(), srv.WriterPool(), srv.ReaderPools())
 		go func() {
 			if err := adminSrv.ListenAndServe(cfg.Admin.Listen); err != nil && err != http.ErrServerClosed {
 				slog.Error("admin server error", "error", err)

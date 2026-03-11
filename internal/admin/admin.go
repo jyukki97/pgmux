@@ -20,16 +20,18 @@ type Server struct {
 	cfg         *config.Config
 	cache       *cache.Cache
 	invalidator *cache.Invalidator
+	writerPool  *pool.Pool
 	readerPools map[string]*pool.Pool
 	mu          sync.RWMutex
 }
 
 // New creates a new Admin server.
-func New(cfg *config.Config, c *cache.Cache, inv *cache.Invalidator, readerPools map[string]*pool.Pool) *Server {
+func New(cfg *config.Config, c *cache.Cache, inv *cache.Invalidator, writerPool *pool.Pool, readerPools map[string]*pool.Pool) *Server {
 	return &Server{
 		cfg:         cfg,
 		cache:       c,
 		invalidator: inv,
+		writerPool:  writerPool,
 		readerPools: readerPools,
 	}
 }
@@ -86,13 +88,28 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	poolStats := make(map[string]any)
+
+	// Writer pool stats
+	if s.writerPool != nil {
+		wOpen, wIdle := s.writerPool.Stats()
+		writerAddr := fmt.Sprintf("%s:%d", s.cfg.Writer.Host, s.cfg.Writer.Port)
+		poolStats["writer"] = map[string]any{
+			"addr": writerAddr,
+			"open": wOpen,
+			"idle": wIdle,
+		}
+	}
+
+	// Reader pool stats
+	readerStats := make(map[string]any)
 	for addr, p := range s.readerPools {
 		open, idle := p.Stats()
-		poolStats[addr] = map[string]any{
+		readerStats[addr] = map[string]any{
 			"open": open,
 			"idle": idle,
 		}
 	}
+	poolStats["readers"] = readerStats
 
 	cacheStats := map[string]any{
 		"enabled": s.cache != nil,

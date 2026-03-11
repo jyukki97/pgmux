@@ -141,6 +141,7 @@ pool:
   idle_timeout: "10m"
   max_lifetime: "1h"
   connection_timeout: "5s"
+  reset_query: "DISCARD ALL"
 
 routing:
   read_after_write_delay: "500ms"
@@ -164,3 +165,10 @@ admin:
   enabled: true
   listen: "0.0.0.0:9091"
 ```
+### 7. 향후 고도화 아이디어 (Future Enhancements)
+- **Transaction/Statement Pooling**: 클라이언트 커넥션을 다중화하여 백엔드 커넥션을 극단적으로 절약하는 진정한 Connection Multiplexing.
+- **SSL/TLS Termination**: 프록시에 인증서를 탑재하여 보안 통신 지원.
+- **Circuit Breaker & Rate Limiting**: DB 과부하 시 연쇄 장애 방어 및 악성 유저 Throttling.
+- **AST 기반 쿼리 제어**: pg_query_go 등을 활용한 완벽한 쿼리 파싱 및 위험 쿼리(예: 조건 없는 DELETE) 방화벽(Firewall).
+- **분산 추적 (OpenTelemetry)**: 쿼리가 프록시를 거쳐 처리되는 전 과정을 모니터링하기 위한 Trace ID 삽입.
+- **무중단 리로드 (Zero-Downtime Reload)**: SIGHUP 등을 통한 안전한 설정/커넥션 풀 동적 교체 기능.

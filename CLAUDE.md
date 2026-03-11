@@ -55,6 +55,7 @@ tests/
 - 커밋 메시지: conventional commits (예: `feat(pool): add Acquire/Release (#3)`)
 - PR → Squash merge → 브랜치 삭제
 - 작업 순서: Issue 등록 → 브랜치 → 작업 → PR → 리뷰 → 머지
+- **이슈는 반드시 1건 1이슈로 분리** — 버그 수정, 기능 추가 등 성격이 다른 작업을 하나의 이슈/PR에 몰아넣지 말 것. Critical 버그는 즉시 개별 핫픽스 PR, Major 이하는 묶어도 되지만 커밋은 건별로 분리
 
 ## 작업 방식
 

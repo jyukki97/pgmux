@@ -430,3 +430,10 @@
 | Task | 작업 | 이슈/PR |
 |------|------|---------|
 | T16-1~5 | Data API HTTP 서버 + PG→JSON 변환 + 인증 + 기능 통합 + 테스트 | #82 / #83 |
+
+### Hotfix: Audit Channel Blocking & Connection Poisoning
+
+| Task | 작업 | 이슈/PR |
+|------|------|---------|
+| - | Audit Webhook 동기 호출 → 비동기 고루틴 분리 (Channel Blocking 방지) | #86 / #88 |
+| - | drainUntilReady 에러 반환 추가 → 죽은 커넥션 Discard 처리 (Connection Poisoning 방지) | #87 / #89 |

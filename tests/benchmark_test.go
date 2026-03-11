@@ -116,6 +116,59 @@ func BenchmarkCacheInvalidateTable(b *testing.B) {
 	}
 }
 
+// === AST Parser Benchmarks ===
+
+func BenchmarkClassifyAST_SELECT(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		router.ClassifyAST("SELECT * FROM users WHERE id = 1")
+	}
+}
+
+func BenchmarkClassifyAST_INSERT(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		router.ClassifyAST("INSERT INTO users (name, email) VALUES ('alice', 'alice@example.com')")
+	}
+}
+
+func BenchmarkClassifyAST_ComplexJoin(b *testing.B) {
+	q := "SELECT u.name, o.total FROM users u JOIN orders o ON u.id = o.user_id WHERE o.total > 100 AND u.active = true ORDER BY o.total DESC LIMIT 10"
+	for i := 0; i < b.N; i++ {
+		router.ClassifyAST(q)
+	}
+}
+
+func BenchmarkClassifyAST_CTE(b *testing.B) {
+	q := "WITH active AS (SELECT * FROM users WHERE active = true) SELECT * FROM active JOIN orders ON active.id = orders.user_id"
+	for i := 0; i < b.N; i++ {
+		router.ClassifyAST(q)
+	}
+}
+
+func BenchmarkExtractTablesAST(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		router.ExtractTablesAST("INSERT INTO users (name) VALUES ('alice')")
+	}
+}
+
+func BenchmarkSemanticCacheKey(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		cache.SemanticCacheKey("SELECT * FROM users WHERE id = 1")
+	}
+}
+
+func BenchmarkCheckFirewall(b *testing.B) {
+	cfg := router.FirewallConfig{
+		Enabled:                 true,
+		BlockDeleteWithoutWhere: true,
+		BlockUpdateWithoutWhere: true,
+		BlockDropTable:          true,
+		BlockTruncate:           true,
+	}
+	for i := 0; i < b.N; i++ {
+		router.CheckFirewall("DELETE FROM users WHERE id = 1", cfg)
+	}
+}
+
 func BenchmarkRoundRobin_Next(b *testing.B) {
 	rb := router.NewRoundRobin([]string{
 		"reader1:5432",

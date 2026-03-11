@@ -142,7 +142,7 @@ func (l *Logger) handleEvent(e Event) {
 		)
 
 		if l.httpClient != nil {
-			l.sendWebhook(e)
+			go l.sendWebhook(e)
 		}
 	} else if l.cfg.LogAllQueries {
 		e.EventType = "query"

@@ -25,6 +25,11 @@ type Config struct {
 	Firewall       FirewallConfig       `yaml:"firewall"`
 	Audit          AuditConfig          `yaml:"audit"`
 	DataAPI        DataAPIConfig        `yaml:"data_api"`
+	ConfigOptions  ConfigOptionsConfig  `yaml:"config"`
+}
+
+type ConfigOptionsConfig struct {
+	Watch bool `yaml:"watch"`
 }
 
 type DataAPIConfig struct {

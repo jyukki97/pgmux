@@ -95,6 +95,25 @@ func run() error {
 		}
 	}()
 
+	// Start config file watcher if enabled
+	if cfg.ConfigOptions.Watch {
+		fw, err := config.NewFileWatcher(cfgPath, func() {
+			slog.Info("config file changed, reloading", "path", cfgPath)
+			if err := reloadConfig(cfgPath, srv); err != nil {
+				slog.Error("config reload failed", "error", err)
+			}
+		})
+		if err != nil {
+			return fmt.Errorf("create config file watcher: %w", err)
+		}
+		defer fw.Stop()
+		go func() {
+			if err := fw.Start(ctx); err != nil {
+				slog.Error("config file watcher error", "error", err)
+			}
+		}()
+	}
+
 	slog.Info("pgmux starting", "listen", cfg.Proxy.Listen)
 
 	return srv.Start(ctx)

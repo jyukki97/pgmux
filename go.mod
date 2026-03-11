@@ -3,6 +3,7 @@ module github.com/jyukki97/pgmux
 go 1.25.1
 
 require (
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/lib/pq v1.11.2
 	github.com/pganalyze/pg_query_go/v5 v5.1.0
 	github.com/prometheus/client_golang v1.23.2

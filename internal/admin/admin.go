@@ -22,7 +22,13 @@ type Server struct {
 	invalidator *cache.Invalidator
 	writerPool  *pool.Pool
 	readerPools map[string]*pool.Pool
+	reloadFunc  func() error
 	mu          sync.RWMutex
+}
+
+// SetReloadFunc sets the function to call when reload is requested.
+func (s *Server) SetReloadFunc(fn func() error) {
+	s.reloadFunc = fn
 }
 
 // New creates a new Admin server.
@@ -43,6 +49,7 @@ func (s *Server) ListenAndServe(addr string) error {
 	mux.HandleFunc("/admin/stats", s.handleStats)
 	mux.HandleFunc("/admin/config", s.handleConfig)
 	mux.HandleFunc("/admin/cache/flush", s.handleCacheFlush)
+	mux.HandleFunc("/admin/reload", s.handleReload)
 
 	slog.Info("admin server starting", "listen", addr)
 	return http.ListenAndServe(addr, mux)
@@ -212,6 +219,32 @@ func (s *Server) handleCacheFlush(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("admin: full cache flush")
 	writeJSON(w, map[string]string{"status": "flushed"})
+}
+
+// handleReload triggers a config reload via the registered reload function.
+func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	s.mu.RLock()
+	fn := s.reloadFunc
+	s.mu.RUnlock()
+
+	if fn == nil {
+		http.Error(w, "reload not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	if err := fn(); err != nil {
+		slog.Error("admin: reload failed", "error", err)
+		writeJSON(w, map[string]any{"status": "error", "error": err.Error()})
+		return
+	}
+
+	slog.Info("admin: config reloaded")
+	writeJSON(w, map[string]string{"status": "reloaded"})
 }
 
 func checkTCP(addr string) bool {

@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -160,6 +161,76 @@ func TestHandleHealth_MethodNotAllowed(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/admin/health", nil)
 	w := httptest.NewRecorder()
 	srv.handleHealth(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", w.Code)
+	}
+}
+
+func TestHandleReload_Success(t *testing.T) {
+	srv := testServer()
+	srv.SetReloadFunc(func() error {
+		return nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/reload", nil)
+	w := httptest.NewRecorder()
+	srv.handleReload(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+
+	var resp map[string]string
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "reloaded" {
+		t.Errorf("status = %q, want reloaded", resp["status"])
+	}
+}
+
+func TestHandleReload_Error(t *testing.T) {
+	srv := testServer()
+	srv.SetReloadFunc(func() error {
+		return fmt.Errorf("config parse error")
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/reload", nil)
+	w := httptest.NewRecorder()
+	srv.handleReload(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "error" {
+		t.Errorf("status = %q, want error", resp["status"])
+	}
+	if resp["error"] == nil {
+		t.Error("expected error field in response")
+	}
+}
+
+func TestHandleReload_NotConfigured(t *testing.T) {
+	srv := testServer()
+	// No reload func set
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/reload", nil)
+	w := httptest.NewRecorder()
+	srv.handleReload(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", w.Code)
+	}
+}
+
+func TestHandleReload_MethodNotAllowed(t *testing.T) {
+	srv := testServer()
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/reload", nil)
+	w := httptest.NewRecorder()
+	srv.handleReload(w, req)
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", w.Code)

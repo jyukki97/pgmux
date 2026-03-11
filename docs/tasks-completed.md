@@ -1,4 +1,4 @@
-## 완료된 Task (Phase 1-13)
+## 완료된 Task (Phase 1-16)
 
 모든 Task 완료됨.
 
@@ -403,3 +403,30 @@
 | T13-3 | 쿼리 방화벽 (Query Firewall) | #64 / #65 |
 | T13-4 | Semantic Cache Key (AST 정규화) | #66 / #67 |
 | T13-5 | AST 파서 테스트 및 벤치마크 | #68 / #69 |
+
+### Phase 13.5: 보안 QA & 핫픽스
+
+| Task | 작업 | 이슈/PR |
+|------|------|---------|
+| - | 캐시 충돌 수정 (Fingerprint → Parse+Deparse) | #70 / #71 |
+| - | 무한 재귀 수정 (cacheKey self-call) | #70 / #71 |
+| - | CTE 방화벽 우회 수정 | #72 / #75 |
+| - | Dollar Quoting 힌트 주입 수정 | #72 / #75 |
+
+### Phase 14: Audit Logging & Slow Query Tracker (W23)
+
+| Task | 작업 | 이슈/PR |
+|------|------|---------|
+| T14-1~5 | Audit 설정 + Logger + Slow Query + Webhook + 메트릭 | #78 / #79 |
+
+### Phase 15: Helm Chart (W24)
+
+| Task | 작업 | 이슈/PR |
+|------|------|---------|
+| T15-1~4 | Multi-stage Dockerfile + Helm Chart + 문서화 | #80 / #81 |
+
+### Phase 16: Serverless Data API (W25)
+
+| Task | 작업 | 이슈/PR |
+|------|------|---------|
+| T16-1~5 | Data API HTTP 서버 + PG→JSON 변환 + 인증 + 기능 통합 + 테스트 | #82 / #83 |

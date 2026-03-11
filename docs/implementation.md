@@ -36,10 +36,18 @@ db-proxy/
 │   │   ├── balancer.go          # Reader 라운드로빈 + LSN-aware 라우팅
 │   │   ├── lsn.go               # PostgreSQL LSN 타입 파싱/비교
 │   │   └── firewall.go          # 쿼리 방화벽 (위험 쿼리 차단)
-│   └── cache/
-│       ├── cache.go             # LRU 캐시 구현
-│       ├── invalidator.go       # 쓰기 시 테이블별 캐시 무효화
-│       └── normalize.go         # 시맨틱 캐시 키 (AST Fingerprint)
+│   ├── cache/
+│   │   ├── cache.go             # LRU 캐시 구현
+│   │   ├── invalidator.go       # 쓰기 시 테이블별 캐시 무효화
+│   │   └── normalize.go         # 시맨틱 캐시 키 (AST Fingerprint)
+│   ├── audit/
+│   │   └── audit.go             # 비동기 감사 로그 + Slow Query + Webhook
+│   └── dataapi/
+│       └── handler.go           # Serverless Data API HTTP 서버
+├── deploy/
+│   └── helm/
+│       └── db-proxy/            # Helm Chart (Chart.yaml, values.yaml, templates/)
+├── Dockerfile                   # Multi-stage 빌드
 ├── docs/
 │   ├── spec.md
 │   └── implementation.md
@@ -326,6 +334,9 @@ func (inv *Invalidator) OnWrite(query string) {
 | **12단계** | Zero-Downtime Reload | SIGHUP + HTTP API, Reader Pool 핫스왑 |
 | **13단계** | LSN Causal Consistency | WAL LSN 추적, Reader 폴링, Causal Read |
 | **14단계** | AST Parser + Firewall | pg_query_go, AST 분류, 쿼리 방화벽, 시맨틱 캐시 키 |
+| **15단계** | Audit Logging | 비동기 감사 로그, Slow Query 감지, Webhook 알림 |
+| **16단계** | Helm Chart | Multi-stage Dockerfile, K8s Helm Chart |
+| **17단계** | Serverless Data API | HTTP REST → PG Wire Protocol → JSON 응답 |
 
 ---
 
@@ -599,3 +610,80 @@ func SemanticCacheKey(query string) uint64 {
     return h.Sum64() // 공백, 대소문자 무관 / 리터럴 값 보존
 }
 ```
+
+---
+
+### 11. Audit Logging 구현
+
+#### 비동기 이벤트 채널
+
+쿼리 처리 경로를 블로킹하지 않기 위해 버퍼 채널 기반의 비동기 처리 패턴을 사용한다.
+
+```go
+type Logger struct {
+    cfg     Config
+    eventCh chan Event        // 버퍼 채널 (1024)
+    // ...
+}
+
+func (l *Logger) Log(e Event) {
+    select {
+    case l.eventCh <- e:  // 논블로킹
+    default:              // 채널 가득 차면 드롭
+    }
+}
+```
+
+전용 goroutine이 채널에서 이벤트를 소비하며, Slow Query 감지(`duration > threshold`), 구조화 로그(`slog.Warn/Info`), Webhook 알림을 처리한다.
+
+#### Webhook Rate Limiting
+
+동일 쿼리 패턴에 대한 중복 알림을 방지하기 위해 쿼리 앞 50자를 키로 사용하여 최소 1분 간격을 보장한다.
+
+```go
+func (l *Logger) shouldSendWebhook(query string) bool {
+    key := truncateQuery(query, 50)
+    if last, ok := l.lastWebhook[key]; ok {
+        if time.Since(last) < l.webhookInterval {
+            return false
+        }
+    }
+    l.lastWebhook[key] = time.Now()
+    return true
+}
+```
+
+---
+
+### 12. Serverless Data API 구현
+
+#### HTTP → PG Wire Protocol 변환
+
+`POST /v1/query`로 받은 SQL을 커넥션 풀에서 획득한 PG 커넥션으로 Simple Query Protocol을 사용하여 실행하고, 응답 메시지를 JSON으로 변환한다.
+
+```
+HTTP Request → Pool.Acquire → WriteMessage(Query) → ReadMessage loop → JSON Response
+```
+
+#### RowDescription OID 타입 매핑
+
+PG RowDescription 메시지의 type OID를 JSON 타입으로 변환한다.
+
+```go
+func convertValue(val string, oid uint32) any {
+    switch oid {
+    case 16:          return val == "t"        // bool
+    case 20, 21, 23:  return parseInt64(val)   // int8/int2/int4
+    case 700, 701:    return parseFloat64(val) // float4/float8
+    default:          return val               // text, timestamp 등
+    }
+}
+```
+
+#### 기존 기능 통합
+
+Data API는 기존 모든 컴포넌트를 재사용한다:
+- `router.Classify()` / `router.ClassifyAST()` — R/W 분류
+- `cache.Cache` — 읽기 결과 캐싱 + 쓰기 시 무효화
+- `router.CheckFirewall()` — 위험 쿼리 차단
+- `resilience.RateLimiter` — 요청 제한

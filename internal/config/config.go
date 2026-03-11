@@ -24,6 +24,13 @@ type Config struct {
 	RateLimit      RateLimitConfig      `yaml:"rate_limit"`
 	Firewall       FirewallConfig       `yaml:"firewall"`
 	Audit          AuditConfig          `yaml:"audit"`
+	DataAPI        DataAPIConfig        `yaml:"data_api"`
+}
+
+type DataAPIConfig struct {
+	Enabled bool     `yaml:"enabled"`
+	Listen  string   `yaml:"listen"`
+	APIKeys []string `yaml:"api_keys"`
 }
 
 type AuditConfig struct {
@@ -226,6 +233,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Audit.Webhook.Timeout == 0 {
 		c.Audit.Webhook.Timeout = 5 * time.Second
+	}
+	if c.DataAPI.Listen == "" {
+		c.DataAPI.Listen = "0.0.0.0:8080"
 	}
 }
 

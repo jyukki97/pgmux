@@ -27,9 +27,9 @@
 | W19 | Zero-Downtime Reload | SIGHUP 무중단 설정 리로드 | 완료 |
 | W20 | LSN 기반 Causal Consistency | Replication Lag 인지형 라우팅, Writer LSN 트래킹 | 완료 |
 | W21-22 | AST 파서 + 쿼리 방화벽 | pg_query_go AST 파서 도입, 쿼리 방화벽, Semantic Caching | 완료 |
-| W23 | Audit Logging & Slow Query | 쿼리 감사 로그, Slow Query 감지, Webhook 알림 | 진행 중 |
-| W24 | Helm Chart | K8s 배포용 Helm Chart, Dockerfile 최적화 | 진행 중 |
-| W25 | Serverless Data API | HTTP REST → PG Protocol 변환, JSON 응답 | 미착수 |
+| W23 | Audit Logging & Slow Query | 쿼리 감사 로그, Slow Query 감지, Webhook 알림 | 완료 |
+| W24 | Helm Chart | K8s 배포용 Helm Chart, Dockerfile 최적화 | 완료 |
+| W25 | Serverless Data API | HTTP REST → PG Protocol 변환, JSON 응답 | 진행 중 |
 
 ---
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/jyukki97/db-proxy/internal/admin"
 	"github.com/jyukki97/db-proxy/internal/config"
+	"github.com/jyukki97/db-proxy/internal/dataapi"
 	"github.com/jyukki97/db-proxy/internal/proxy"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -68,6 +69,16 @@ func run() error {
 		go func() {
 			if err := adminSrv.ListenAndServe(cfg.Admin.Listen); err != nil && err != http.ErrServerClosed {
 				slog.Error("admin server error", "error", err)
+			}
+		}()
+	}
+
+	// Start Data API server
+	if cfg.DataAPI.Enabled {
+		apiSrv := dataapi.New(cfg, srv.WriterPool(), srv.ReaderPools(), srv.Balancer(), srv.Cache(), srv.ProxyMetrics(), srv.RateLimiter())
+		go func() {
+			if err := apiSrv.ListenAndServe(cfg.DataAPI.Listen); err != nil && err != http.ErrServerClosed {
+				slog.Error("data api server error", "error", err)
 			}
 		}()
 	}

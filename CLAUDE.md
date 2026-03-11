@@ -44,6 +44,7 @@ internal/
   cache/cache.go               # LRU 캐시 + 테이블별 무효화
   metrics/metrics.go           # Prometheus 메트릭 (Phase 7)
   audit/audit.go               # Audit Logging + Slow Query Tracker
+  dataapi/handler.go           # Serverless Data API (HTTP → PG)
   admin/admin.go               # Admin API (Phase 7)
 tests/
   e2e_test.go                  # Docker E2E 테스트

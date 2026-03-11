@@ -35,3 +35,8 @@ audit:
     enabled: false
     url: ""
     timeout: 5s
+
+data_api:
+  enabled: false
+  listen: "0.0.0.0:8080"
+  api_keys: []

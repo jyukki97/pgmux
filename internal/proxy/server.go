@@ -1179,6 +1179,21 @@ func (s *Server) Invalidator() *cache.Invalidator {
 	return s.invalidator
 }
 
+// Balancer returns the server's reader load balancer.
+func (s *Server) Balancer() *router.RoundRobin {
+	return s.balancer
+}
+
+// ProxyMetrics returns the server's Prometheus metrics (may be nil).
+func (s *Server) ProxyMetrics() *metrics.Metrics {
+	return s.metrics
+}
+
+// RateLimiter returns the server's rate limiter (may be nil).
+func (s *Server) RateLimiter() *resilience.RateLimiter {
+	return s.rateLimiter
+}
+
 // startLSNPolling periodically queries each reader's replay LSN and updates the balancer.
 func (s *Server) startLSNPolling(ctx context.Context, interval time.Duration) {
 	go func() {

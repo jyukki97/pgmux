@@ -91,6 +91,7 @@ type PoolConfig struct {
 type RoutingConfig struct {
 	ReadAfterWriteDelay time.Duration `yaml:"read_after_write_delay"`
 	CausalConsistency   bool          `yaml:"causal_consistency"`
+	ASTParser           bool          `yaml:"ast_parser"`
 }
 
 type CacheConfig struct {

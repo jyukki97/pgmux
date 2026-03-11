@@ -763,7 +763,7 @@ func (s *Server) handleWriteQuery(clientConn net.Conn, writerConn net.Conn, msg 
 	}
 
 	// Track WAL LSN for causal consistency
-	if s.cfg.Routing.CausalConsistency && router.Classify(query) == router.QueryWrite {
+	if s.cfg.Routing.CausalConsistency && s.classifyQuery(query) == router.QueryWrite {
 		if lsn, err := s.queryCurrentLSN(writerConn); err != nil {
 			slog.Warn("query WAL LSN after write", "error", err)
 		} else {
@@ -773,8 +773,8 @@ func (s *Server) handleWriteQuery(clientConn net.Conn, writerConn net.Conn, msg 
 	}
 
 	// Invalidate cache for affected tables
-	if s.queryCache != nil && router.Classify(query) == router.QueryWrite {
-		tables := router.ExtractTables(query)
+	if s.queryCache != nil && s.classifyQuery(query) == router.QueryWrite {
+		tables := s.extractQueryTables(query)
 		for _, table := range tables {
 			s.queryCache.InvalidateTable(table)
 			if s.metrics != nil {
@@ -1307,6 +1307,22 @@ func (s *Server) Reload(newCfg *config.Config) error {
 // CfgPath returns the config file path (stored externally by main).
 func (s *Server) Cfg() *config.Config {
 	return s.cfg
+}
+
+// classifyQuery uses AST or string parser based on config.
+func (s *Server) classifyQuery(query string) router.QueryType {
+	if s.cfg.Routing.ASTParser {
+		return router.ClassifyAST(query)
+	}
+	return router.Classify(query)
+}
+
+// extractQueryTables uses AST or string parser based on config.
+func (s *Server) extractQueryTables(query string) []string {
+	if s.cfg.Routing.ASTParser {
+		return router.ExtractTablesAST(query)
+	}
+	return router.ExtractTables(query)
 }
 
 func routeName(r router.Route) string {

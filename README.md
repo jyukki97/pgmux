@@ -96,6 +96,7 @@ pool:
 routing:
   read_after_write_delay: 500ms  # 타이머 기반 (causal_consistency와 양자택일)
   causal_consistency: false       # true: LSN 기반 Causal Consistency (read_after_write_delay 무시)
+  ast_parser: false               # true: pg_query_go AST 파서 사용 (정확도↑, 성능 약간↓)
 
 cache:
   enabled: true

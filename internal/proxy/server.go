@@ -29,6 +29,7 @@ import (
 )
 
 type Server struct {
+	mu           sync.RWMutex // protects cfg, readerPools, readerCBs, rateLimiter
 	cfg          *config.Config
 	listenAddr   string
 	writerAddr   string
@@ -323,7 +324,8 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 	slog.Info("client startup", "user", params["user"], "database", params["database"])
 
 	// 3. Authenticate client
-	if s.cfg.Auth.Enabled {
+	cfg := s.getConfig()
+	if cfg.Auth.Enabled {
 		// Front-end auth: proxy authenticates the client directly using MD5.
 		if err := s.frontendAuth(clientConn, params["user"]); err != nil {
 			slog.Warn("frontend auth failed", "user", params["user"], "remote", rawConn.RemoteAddr(), "error", err)
@@ -359,7 +361,7 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 	slog.Info("handshake complete", "remote", rawConn.RemoteAddr())
 
 	// 4. Create per-client session router
-	session := router.NewSession(s.cfg.Routing.ReadAfterWriteDelay, s.cfg.Routing.CausalConsistency)
+	session := router.NewSession(cfg.Routing.ReadAfterWriteDelay, cfg.Routing.CausalConsistency)
 
 	// 5. Relay queries with transaction-level pooling
 	s.relayQueries(ctx, clientConn, session)
@@ -406,9 +408,10 @@ func (s *Server) relayAuth(clientConn, backendConn net.Conn) error {
 // If the user is not in the configured auth.users list, returns an error.
 func (s *Server) frontendAuth(clientConn net.Conn, username string) error {
 	// Look up user in config
+	cfg := s.getConfig()
 	var password string
 	found := false
-	for _, u := range s.cfg.Auth.Users {
+	for _, u := range cfg.Auth.Users {
 		if u.Username == username {
 			password = u.Password
 			found = true
@@ -519,7 +522,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 		}
 
 		// Rate limit check
-		if s.rateLimiter != nil && !s.rateLimiter.Allow() {
+		if rl := s.getRateLimiter(); rl != nil && !rl.Allow() {
 			slog.Warn("rate limited", "remote", clientConn.RemoteAddr())
 			if s.metrics != nil {
 				s.metrics.RateLimited.Inc()
@@ -543,13 +546,14 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 			)
 
 			// Firewall check
-			if s.cfg.Firewall.Enabled {
+			queryCfg := s.getConfig()
+			if queryCfg.Firewall.Enabled {
 				fwResult := router.CheckFirewall(query, router.FirewallConfig{
-					Enabled:                 s.cfg.Firewall.Enabled,
-					BlockDeleteWithoutWhere: s.cfg.Firewall.BlockDeleteWithoutWhere,
-					BlockUpdateWithoutWhere: s.cfg.Firewall.BlockUpdateWithoutWhere,
-					BlockDropTable:          s.cfg.Firewall.BlockDropTable,
-					BlockTruncate:           s.cfg.Firewall.BlockTruncate,
+					Enabled:                 queryCfg.Firewall.Enabled,
+					BlockDeleteWithoutWhere: queryCfg.Firewall.BlockDeleteWithoutWhere,
+					BlockUpdateWithoutWhere: queryCfg.Firewall.BlockUpdateWithoutWhere,
+					BlockDropTable:          queryCfg.Firewall.BlockDropTable,
+					BlockTruncate:           queryCfg.Firewall.BlockTruncate,
 				})
 				if fwResult.Blocked {
 					slog.Warn("firewall blocked query", "rule", fwResult.Rule, "sql", query)
@@ -849,7 +853,7 @@ func (s *Server) resetAndReleaseWriter(conn *pool.Conn) {
 // resetConn sends the configured reset query (e.g. DISCARD ALL) to clean up session state
 // before returning a connection to the pool.
 func (s *Server) resetConn(conn net.Conn) error {
-	resetQuery := s.cfg.Pool.ResetQuery
+	resetQuery := s.getConfig().Pool.ResetQuery
 	if resetQuery == "" {
 		return nil
 	}
@@ -900,7 +904,7 @@ func (s *Server) handleWriteQuery(clientConn net.Conn, writerConn net.Conn, msg 
 	}
 
 	// Track WAL LSN for causal consistency
-	if s.cfg.Routing.CausalConsistency && s.classifyQuery(query) == router.QueryWrite {
+	if s.getConfig().Routing.CausalConsistency && s.classifyQuery(query) == router.QueryWrite {
 		if lsn, err := s.queryCurrentLSN(writerConn); err != nil {
 			slog.Warn("query WAL LSN after write", "error", err)
 		} else {
@@ -987,7 +991,7 @@ func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, client
 
 	// Determine reader address
 	var readerAddr string
-	if s.cfg.Routing.CausalConsistency {
+	if s.getConfig().Routing.CausalConsistency {
 		minLSN := session.LastWriteLSN()
 		readerAddr = s.balancer.NextWithLSN(minLSN)
 	} else {
@@ -1002,7 +1006,7 @@ func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, client
 	}
 
 	// Circuit breaker check for reader
-	if cb, ok := s.readerCBs[readerAddr]; ok {
+	if cb, ok := s.getReaderCB(readerAddr); ok {
 		if err := cb.Allow(); err != nil {
 			slog.Warn("reader circuit breaker open, fallback to writer", "addr", readerAddr)
 			if s.metrics != nil {
@@ -1012,7 +1016,7 @@ func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, client
 		}
 	}
 
-	rPool, ok := s.readerPools[readerAddr]
+	rPool, ok := s.getReaderPool(readerAddr)
 	if !ok {
 		slog.Warn("no pool for reader, fallback to writer", "addr", readerAddr)
 		if s.metrics != nil {
@@ -1034,7 +1038,7 @@ func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, client
 		if s.metrics != nil {
 			s.metrics.ReaderFallback.Inc()
 		}
-		if cb, ok := s.readerCBs[readerAddr]; ok {
+		if cb, ok := s.getReaderCB(readerAddr); ok {
 			cb.RecordFailure()
 		}
 		return s.fallbackToWriter(poolCtx, clientConn, msg)
@@ -1083,7 +1087,7 @@ func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, client
 			execSpan.SetStatus(codes.Error, err.Error())
 			execSpan.End()
 			rPool.Discard(rConn)
-			if cb, ok := s.readerCBs[readerAddr]; ok {
+			if cb, ok := s.getReaderCB(readerAddr); ok {
 				cb.RecordFailure()
 			}
 			return fmt.Errorf("relay reader response: %w", err)
@@ -1092,7 +1096,7 @@ func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, client
 		execSpan.End()
 	}
 
-	if cb, ok := s.readerCBs[readerAddr]; ok {
+	if cb, ok := s.getReaderCB(readerAddr); ok {
 		cb.RecordSuccess()
 	}
 	return nil
@@ -1118,7 +1122,7 @@ func (s *Server) handleReadQuery(ctx context.Context, clientConn net.Conn, msg *
 
 	// Try to acquire a reader connection from pool
 	var readerAddr string
-	if s.cfg.Routing.CausalConsistency {
+	if s.getConfig().Routing.CausalConsistency {
 		minLSN := session.LastWriteLSN()
 		readerAddr = s.balancer.NextWithLSN(minLSN)
 	} else {
@@ -1133,7 +1137,7 @@ func (s *Server) handleReadQuery(ctx context.Context, clientConn net.Conn, msg *
 	}
 
 	// Circuit breaker check for reader
-	if cb, ok := s.readerCBs[readerAddr]; ok {
+	if cb, ok := s.getReaderCB(readerAddr); ok {
 		if err := cb.Allow(); err != nil {
 			slog.Warn("reader circuit breaker open, fallback to writer", "addr", readerAddr)
 			if s.metrics != nil {
@@ -1143,7 +1147,7 @@ func (s *Server) handleReadQuery(ctx context.Context, clientConn net.Conn, msg *
 		}
 	}
 
-	rPool, ok := s.readerPools[readerAddr]
+	rPool, ok := s.getReaderPool(readerAddr)
 	if !ok {
 		slog.Warn("no pool for reader, fallback to writer", "addr", readerAddr)
 		if s.metrics != nil {
@@ -1159,7 +1163,7 @@ func (s *Server) handleReadQuery(ctx context.Context, clientConn net.Conn, msg *
 		if s.metrics != nil {
 			s.metrics.ReaderFallback.Inc()
 		}
-		if cb, ok := s.readerCBs[readerAddr]; ok {
+		if cb, ok := s.getReaderCB(readerAddr); ok {
 			cb.RecordFailure()
 		}
 		return s.fallbackToWriter(ctx, clientConn, msg)
@@ -1195,7 +1199,7 @@ func (s *Server) handleReadQuery(ctx context.Context, clientConn net.Conn, msg *
 	} else {
 		if err := s.relayUntilReady(clientConn, rConn); err != nil {
 			rPool.Discard(rConn)
-			if cb, ok := s.readerCBs[readerAddr]; ok {
+			if cb, ok := s.getReaderCB(readerAddr); ok {
 				cb.RecordFailure()
 			}
 			return fmt.Errorf("relay reader response: %w", err)
@@ -1203,7 +1207,7 @@ func (s *Server) handleReadQuery(ctx context.Context, clientConn net.Conn, msg *
 		rPool.Release(rConn)
 	}
 
-	if cb, ok := s.readerCBs[readerAddr]; ok {
+	if cb, ok := s.getReaderCB(readerAddr); ok {
 		cb.RecordSuccess()
 	}
 	return nil
@@ -1238,7 +1242,7 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, bu
 		return fallbackToWriter()
 	}
 
-	rPool, ok := s.readerPools[readerAddr]
+	rPool, ok := s.getReaderPool(readerAddr)
 	if !ok {
 		slog.Warn("no pool for reader, fallback to writer", "addr", readerAddr)
 		return fallbackToWriter()
@@ -1350,7 +1354,7 @@ func (s *Server) relayUntilReady(clientConn, backendConn net.Conn) error {
 // If the collected size exceeds maxResultSize, collection is abandoned (returns nil)
 // but relay to client continues until ReadyForQuery.
 func (s *Server) relayAndCollect(clientConn, backendConn net.Conn) ([]byte, error) {
-	maxSize := parseSize(s.cfg.Cache.MaxResultSize)
+	maxSize := parseSize(s.getConfig().Cache.MaxResultSize)
 	var buf []byte
 	oversize := false
 
@@ -1408,9 +1412,9 @@ func (s *Server) Cache() *cache.Cache {
 	return s.queryCache
 }
 
-// ReaderPools returns the server's reader connection pools.
+// ReaderPools returns the server's reader connection pools (thread-safe).
 func (s *Server) ReaderPools() map[string]*pool.Pool {
-	return s.readerPools
+	return s.getReaderPools()
 }
 
 // WriterPool returns the server's writer connection pool.
@@ -1433,9 +1437,9 @@ func (s *Server) ProxyMetrics() *metrics.Metrics {
 	return s.metrics
 }
 
-// RateLimiter returns the server's rate limiter (may be nil).
+// RateLimiter returns the server's rate limiter (thread-safe, may be nil).
 func (s *Server) RateLimiter() *resilience.RateLimiter {
-	return s.rateLimiter
+	return s.getRateLimiter()
 }
 
 // startLSNPolling periodically queries each reader's replay LSN and updates the balancer.
@@ -1458,8 +1462,9 @@ func (s *Server) startLSNPolling(ctx context.Context, interval time.Duration) {
 
 // pollReaderLSNs queries each reader's replay LSN and updates the balancer.
 func (s *Server) pollReaderLSNs(ctx context.Context) {
+	readers := s.getReaderPools()
 	for _, addr := range s.balancer.Backends() {
-		rPool, ok := s.readerPools[addr]
+		rPool, ok := readers[addr]
 		if !ok {
 			continue
 		}
@@ -1525,16 +1530,59 @@ func (s *Server) closePools() {
 		s.writerPool.Close()
 		slog.Debug("writer pool closed", "addr", s.writerAddr)
 	}
-	for addr, p := range s.readerPools {
+	for addr, p := range s.getReaderPools() {
 		p.Close()
 		slog.Debug("reader pool closed", "addr", addr)
 	}
+}
+
+// getConfig returns the current config snapshot (thread-safe).
+func (s *Server) getConfig() *config.Config {
+	s.mu.RLock()
+	cfg := s.cfg
+	s.mu.RUnlock()
+	return cfg
+}
+
+// getReaderPool returns the pool for the given reader address (thread-safe).
+func (s *Server) getReaderPool(addr string) (*pool.Pool, bool) {
+	s.mu.RLock()
+	p, ok := s.readerPools[addr]
+	s.mu.RUnlock()
+	return p, ok
+}
+
+// getReaderPools returns the current reader pools map snapshot (thread-safe).
+func (s *Server) getReaderPools() map[string]*pool.Pool {
+	s.mu.RLock()
+	pools := s.readerPools
+	s.mu.RUnlock()
+	return pools
+}
+
+// getRateLimiter returns the current rate limiter (thread-safe).
+func (s *Server) getRateLimiter() *resilience.RateLimiter {
+	s.mu.RLock()
+	rl := s.rateLimiter
+	s.mu.RUnlock()
+	return rl
+}
+
+// getReaderCBs returns the circuit breaker for the given reader address (thread-safe).
+func (s *Server) getReaderCB(addr string) (*resilience.CircuitBreaker, bool) {
+	s.mu.RLock()
+	cb, ok := s.readerCBs[addr]
+	s.mu.RUnlock()
+	return cb, ok
 }
 
 // Reload applies a new configuration without restarting the proxy.
 // Reloadable: readers, pool sizes, cache TTL, rate limit settings.
 // NOT reloadable: proxy.listen, writer address.
 func (s *Server) Reload(newCfg *config.Config) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	oldCfg := s.cfg
 
 	// Update readers if changed
@@ -1611,14 +1659,14 @@ func (s *Server) Reload(newCfg *config.Config) error {
 	return nil
 }
 
-// CfgPath returns the config file path (stored externally by main).
+// Cfg returns the current config (thread-safe).
 func (s *Server) Cfg() *config.Config {
-	return s.cfg
+	return s.getConfig()
 }
 
 // cacheKey uses semantic or plain cache key based on config.
 func (s *Server) cacheKey(query string) uint64 {
-	if s.cfg.Routing.ASTParser {
+	if s.getConfig().Routing.ASTParser {
 		return cache.SemanticCacheKey(query)
 	}
 	return cache.CacheKey(query)
@@ -1626,7 +1674,7 @@ func (s *Server) cacheKey(query string) uint64 {
 
 // classifyQuery uses AST or string parser based on config.
 func (s *Server) classifyQuery(query string) router.QueryType {
-	if s.cfg.Routing.ASTParser {
+	if s.getConfig().Routing.ASTParser {
 		return router.ClassifyAST(query)
 	}
 	return router.Classify(query)
@@ -1634,7 +1682,7 @@ func (s *Server) classifyQuery(query string) router.QueryType {
 
 // extractQueryTables uses AST or string parser based on config.
 func (s *Server) extractQueryTables(query string) []string {
-	if s.cfg.Routing.ASTParser {
+	if s.getConfig().Routing.ASTParser {
 		return router.ExtractTablesAST(query)
 	}
 	return router.ExtractTables(query)
@@ -1679,7 +1727,8 @@ func (s *Server) emitAuditEvent(clientConn net.Conn, query, target string, elaps
 	durationMS := float64(elapsed.Microseconds()) / 1000.0
 
 	// Record slow query metric
-	if s.metrics != nil && durationMS >= float64(s.cfg.Audit.SlowQueryThreshold.Milliseconds()) {
+	auditCfg := s.getConfig()
+	if s.metrics != nil && durationMS >= float64(auditCfg.Audit.SlowQueryThreshold.Milliseconds()) {
 		s.metrics.SlowQueries.WithLabelValues(target).Inc()
 	}
 
@@ -1690,7 +1739,7 @@ func (s *Server) emitAuditEvent(clientConn net.Conn, query, target string, elaps
 
 	s.auditLogger.Log(audit.Event{
 		Timestamp:  time.Now(),
-		User:       s.cfg.Backend.User,
+		User:       auditCfg.Backend.User,
 		SourceIP:   sourceIP,
 		Query:      query,
 		DurationMS: durationMS,

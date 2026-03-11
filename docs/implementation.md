@@ -8,6 +8,7 @@
 | DB 프로토콜 | PostgreSQL wire protocol | 클라이언트가 일반 PG 드라이버로 접속 가능 |
 | 설정 | YAML (`gopkg.in/yaml.v3`) | 스펙 설정 예시와 일치 |
 | 캐시 | 인메모리 (`sync.Map` + container/list`) | 외부 의존 없이 LRU 구현 |
+| SQL 파서 | `pg_query_go/v5` (cgo) | PostgreSQL 실제 C 파서 바인딩, AST 분류/방화벽/시맨틱 키 |
 | 로깅 | `slog` (표준 라이브러리) | 구조화 로깅, 외부 의존 없음 |
 
 ---
@@ -28,12 +29,17 @@ db-proxy/
 │   │   ├── pool.go              # 커넥션 풀 핵심 로직
 │   │   └── health.go            # 헬스체크 고루틴
 │   ├── router/
-│   │   ├── router.go            # Writer/Reader 라우팅 결정
-│   │   ├── parser.go            # 쿼리 파싱 (SELECT/INSERT 등 분류)
-│   │   └── balancer.go          # Reader 라운드로빈 로드밸런싱
+│   │   ├── router.go            # Writer/Reader 라우팅 결정 (Causal Consistency)
+│   │   ├── parser.go            # 문자열 기반 쿼리 분류
+│   │   ├── parser_ast.go        # AST 기반 쿼리 분류 (pg_query_go)
+│   │   ├── ast.go               # SQL AST 파싱 + 깊이 우선 노드 순회
+│   │   ├── balancer.go          # Reader 라운드로빈 + LSN-aware 라우팅
+│   │   ├── lsn.go               # PostgreSQL LSN 타입 파싱/비교
+│   │   └── firewall.go          # 쿼리 방화벽 (위험 쿼리 차단)
 │   └── cache/
 │       ├── cache.go             # LRU 캐시 구현
-│       └── invalidator.go       # 쓰기 시 테이블별 캐시 무효화
+│       ├── invalidator.go       # 쓰기 시 테이블별 캐시 무효화
+│       └── normalize.go         # 시맨틱 캐시 키 (AST Fingerprint)
 ├── docs/
 │   ├── spec.md
 │   └── implementation.md
@@ -314,6 +320,12 @@ func (inv *Invalidator) OnWrite(query string) {
 | **6단계** | Prometheus 메트릭 | `/metrics` 엔드포인트에서 풀/캐시/라우팅 메트릭 수집 |
 | **7단계** | Prepared Statement 라우팅 | Extended Query의 SELECT도 reader로 라우팅 |
 | **8단계** | Admin API | `/admin/stats`, `/admin/health`, `/admin/cache/flush` 동작 |
+| **9단계** | Transaction Pooling | 트랜잭션 단위 커넥션 다중화, DISCARD ALL |
+| **10단계** | TLS + Front-end Auth | SSLRequest 핸들링, 프록시 자체 MD5 인증 |
+| **11단계** | Circuit Breaker + Rate Limiting | 에러율 기반 자동 트립, Token Bucket |
+| **12단계** | Zero-Downtime Reload | SIGHUP + HTTP API, Reader Pool 핫스왑 |
+| **13단계** | LSN Causal Consistency | WAL LSN 추적, Reader 폴링, Causal Read |
+| **14단계** | AST Parser + Firewall | pg_query_go, AST 분류, 쿼리 방화벽, 시맨틱 캐시 키 |
 
 ---
 
@@ -495,5 +507,95 @@ func (h *Handler) Register(mux *http.ServeMux) {
     "reader_queries": 89230,
     "fallback_count": 3
   }
+}
+```
+
+---
+
+### 7. LSN 기반 Causal Consistency 구현
+
+#### LSN 타입
+
+PostgreSQL LSN(Log Sequence Number) "X/XXXXXXXX" 형식을 uint64로 파싱하여 O(1) 비교를 가능하게 한다.
+
+```go
+type LSN uint64
+
+func ParseLSN(s string) (LSN, error) {
+    parts := strings.SplitN(s, "/", 2)
+    hi, _ := strconv.ParseUint(parts[0], 16, 32)
+    lo, _ := strconv.ParseUint(parts[1], 16, 32)
+    return LSN(hi<<32 | lo), nil
+}
+```
+
+#### Causal Read 흐름
+
+```
+쓰기 쿼리 → Writer 실행 → pg_current_wal_lsn() 조회 → Session에 LSN 저장
+                                                            │
+읽기 쿼리 → Session.lastWriteLSN 확인 ───────────────────────┤
+                                                            │
+Reader 선택: NextWithLSN(minLSN) → replay_lsn >= minLSN인 Reader만 ──→ DB 실행
+                                    │
+                    (적합한 Reader 없으면 Writer fallback)
+```
+
+#### LSN 폴링
+
+`startLSNPolling()` 고루틴이 1초마다 각 Reader에 `SELECT pg_last_wal_replay_lsn()`를 조회하고, Balancer의 `SetReplayLSN()`으로 갱신한다. Prometheus `dbproxy_reader_lsn_lag_bytes` 메트릭도 함께 업데이트한다.
+
+---
+
+### 8. AST 기반 쿼리 파서 구현
+
+#### pg_query_go 통합
+
+`pg_query_go/v5`는 PostgreSQL의 실제 C 파서를 cgo로 바인딩한 라이브러리다. 문자열 파서로 처리 불가능한 복잡한 쿼리를 정확하게 분석한다.
+
+```go
+func ClassifyAST(query string) QueryType {
+    // 1. 힌트 체크
+    // 2. pg_query.Parse() → AST
+    // 3. isWriteNode() — 20+ DDL/DML 노드 타입 검사
+    // 4. CTE 내부 write 감지
+    // 5. 파싱 실패 시 문자열 파서 fallback
+}
+```
+
+#### AST 노드 순회
+
+`WalkNodes()` — 깊이 우선 순회. SelectStmt, InsertStmt, UpdateStmt, DeleteStmt, JoinExpr, SubLink, CommonTableExpr, BoolExpr 등 주요 노드 타입을 재귀적으로 탐색한다.
+
+---
+
+### 9. 쿼리 방화벽 구현
+
+AST 분석으로 위험 쿼리를 프록시 단에서 차단한다. `WhereClause == nil`로 조건 유무를 정확히 판단하며, 파싱 불가 시 fail-open 전략을 따른다.
+
+```go
+func CheckFirewall(query string, cfg FirewallConfig) FirewallResult {
+    // AST 파싱 → 각 statement 검사
+    // DELETE: WhereClause == nil → 차단
+    // UPDATE: WhereClause == nil → 차단
+    // DROP: 무조건 차단
+    // TRUNCATE: 무조건 차단
+}
+```
+
+---
+
+### 10. 시맨틱 캐시 키 구현
+
+pg_query의 Parse+Deparse를 활용하여 구조적으로 동일한 쿼리에 같은 캐시 키를 생성한다.
+Deparse는 공백/대소문자를 정규화하면서 리터럴 값은 보존하므로, 다른 파라미터의 쿼리는 서로 다른 캐시 키를 갖는다.
+
+```go
+func SemanticCacheKey(query string) uint64 {
+    tree, _ := pg_query.Parse(query)
+    deparsed, _ := pg_query.Deparse(tree)
+    h := fnv.New64a()
+    h.Write([]byte(deparsed))
+    return h.Sum64() // 공백, 대소문자 무관 / 리터럴 값 보존
 }
 ```

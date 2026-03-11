@@ -1,194 +1,137 @@
-## 고도화 Task (Phase 8-11)
+## 초고도화 Task (Phase 12-13)
 
 ---
 
-### Phase 8: Transaction Pooling (W16)
+### Phase 12: LSN 기반 Causal Consistency (W20)
 
-**목표**: Writer 커넥션도 풀에서 관리하여, 수천 클라이언트가 수십 개의 백엔드 커넥션을 공유하는 진정한 Connection Multiplexing 구현.
+**목표**: Writer에 쓰기 작업이 일어날 때 LSN(Log Sequence Number)을 트래킹하고, 이후 Read 쿼리 시 해당 LSN까지 복제가 완료된 Reader에게만 쿼리를 보내는 Replication-Lag-Aware 라우팅 구현.
 
-**현재 문제**: `proxy/server.go:200` — 클라이언트 접속마다 `net.Dial`로 Writer에 1:1 전용 커넥션을 맺음. 1000명 접속 = 1000개 백엔드 커넥션.
+**현재 한계**: `read_after_write_delay`는 고정 타이머 기반. 타이머가 짧으면 stale read, 길면 Reader 활용도 저하. Replication lag은 네트워크/부하 상태에 따라 가변적이므로 고정 타이머로는 정확한 제어가 불가능.
 
-| Task | 작업 | 예상 이슈 제목 |
-|------|------|----------------|
-| T8-1 | Writer 커넥션 풀 도입 | `feat(pool): Writer 커넥션 풀링 도입` |
-| T8-2 | 트랜잭션 레벨 커넥션 바인딩 | `feat(proxy): 트랜잭션 레벨 커넥션 바인딩` |
-| T8-3 | 세션 상태 리셋 (DISCARD ALL) | `feat(pool): 커넥션 반환 시 세션 상태 리셋` |
-| T8-4 | Simple Query 트랜잭션 풀링 통합 | `feat(proxy): Simple Query 트랜잭션 풀링` |
-| T8-5 | Extended Query 트랜잭션 풀링 통합 | `feat(proxy): Extended Query 트랜잭션 풀링` |
-| T8-6 | Transaction Pooling E2E 테스트 | `test: Transaction Pooling E2E 테스트` |
-
-#### T8-1: Writer 커넥션 풀 도입
-- **범위**: `NewServer()`에서 Writer도 `pool.Pool`로 생성. `handleConn()`에서 `net.Dial` 대신 풀에서 커넥션 관리
-- **완료 기준**: Writer 커넥션이 풀에서 관리되고, 여러 클라이언트가 백엔드 커넥션을 공유
-- **핵심 변경**: `writerConn net.Conn` → `writerPool *pool.Pool`, 인증 흐름을 풀 기반으로 재설계
-
-#### T8-2: 트랜잭션 레벨 커넥션 바인딩
-- **범위**: BEGIN 시 Writer 풀에서 커넥션 획득 → 트랜잭션 동안 고정 → COMMIT/ROLLBACK 시 풀에 반환
-- **완료 기준**: 트랜잭션 중에는 동일 백엔드 커넥션 사용, 트랜잭션 종료 후 반환 확인
-- **핵심 로직**: `session.writerConn`을 트랜잭션 시작/종료에 맞춰 Acquire/Release
-
-#### T8-3: 세션 상태 리셋
-- **범위**: 커넥션이 풀에 반환될 때 `DISCARD ALL` 또는 `RESET ALL` 전송하여 세션 변수, Prepared Statement 등 초기화
-- **완료 기준**: 클라이언트 A가 `SET timezone='UTC'` 후 반환 → 클라이언트 B가 같은 커넥션 획득 시 기본 timezone
-- **참고**: PgBouncer의 `server_reset_query` 설정과 동일 개념
-
-#### T8-4: Simple Query 트랜잭션 풀링 통합
-- **범위**: `relayQueries()`에서 비트랜잭션 단일 쿼리 시 Writer 풀에서 빌려 사용 후 즉시 반환
-- **완료 기준**: 동시 100개 클라이언트가 INSERT 실행 시 백엔드 커넥션은 `max_connections` 이내
-- **핵심 변경**: `handleWriteQuery()`가 풀에서 커넥션을 획득/반환하도록 수정
-
-#### T8-5: Extended Query 트랜잭션 풀링 통합
-- **범위**: Parse~Sync 배치 단위로 Writer 풀에서 커넥션 획득/반환
-- **완료 기준**: Prepared Statement 기반 쓰기도 풀링 동작 확인
-- **주의**: 트랜잭션 내부 Extended Query는 바인딩된 커넥션 유지
-
-#### T8-6: Transaction Pooling E2E 테스트
-- **범위**: 동시 접속 수 >> max_connections 시나리오, 트랜잭션 격리 검증, 세션 리셋 검증
-- **완료 기준**: 100개 동시 클라이언트 / 10개 백엔드 커넥션으로 전체 시나리오 통과
-- **테스트 시나리오**:
-  - 동시 INSERT 100건 → 백엔드 커넥션 10개 이내
-  - BEGIN → INSERT → SELECT → COMMIT 격리 확인
-  - SET 후 커넥션 반환 → 다음 사용자에게 영향 없음
-
----
-
-### Phase 9: SSL/TLS Termination + Front-end Auth (W17)
-
-**목표**: 프록시에서 TLS를 종단하여 클라이언트-프록시 구간을 암호화하고, 프록시 자체 인증으로 불량 접속을 사전 차단.
-
-**현재 문제**: `proxy/server.go:184` — SSL 요청 시 `'N'` 거부, 평문 통신만 허용. 인증은 백엔드로 패스스루.
+**핵심 아이디어**:
+- Write 후 `pg_current_wal_lsn()` 조회 → 세션에 LSN 저장
+- Read 시 각 Reader의 `pg_last_wal_replay_lsn()` 확인 → 세션 LSN 이상인 Reader만 선택
+- 충분히 따라잡은 Reader가 없으면 Writer로 fallback (기존 동작과 동일)
 
 | Task | 작업 | 예상 이슈 제목 |
 |------|------|----------------|
-| T9-1 | TLS 설정 구조체 추가 | `feat(config): TLS 설정 항목 추가` |
-| T9-2 | TLS Listener 구현 | `feat(proxy): TLS Termination 구현` |
-| T9-3 | Front-end Auth 설정 | `feat(config): 프록시 자체 인증 설정` |
-| T9-4 | Front-end Auth 구현 | `feat(proxy): 프록시 자체 인증 처리` |
-| T9-5 | TLS + Auth E2E 테스트 | `test: TLS 및 자체 인증 E2E 테스트` |
+| T12-1 | LSN 타입 및 비교 유틸리티 | `feat(router): LSN 타입 정의 및 비교 유틸리티` |
+| T12-2 | Writer LSN 트래킹 | `feat(proxy): Write 후 LSN 트래킹` |
+| T12-3 | Reader LSN 폴링 및 LSN-Aware 밸런서 | `feat(router): LSN-Aware Reader 선택` |
+| T12-4 | Causal Consistency E2E 테스트 | `test: LSN 기반 Causal Consistency 테스트` |
 
-#### T9-1: TLS 설정 구조체 추가
-- **범위**: `config.go`에 `TLSConfig` 추가 — `enabled`, `cert_file`, `key_file`, `client_ca_file` (mTLS 옵션)
-- **완료 기준**: TLS 설정이 YAML에서 파싱되고 validation 통과
-- **설정 예시**:
-  ```yaml
-  tls:
-    enabled: true
-    cert_file: "/path/to/server.crt"
-    key_file: "/path/to/server.key"
-  ```
-
-#### T9-2: TLS Listener 구현
-- **범위**: SSL 요청 시 `'S'` 응답 후 `tls.Server()`로 업그레이드. `crypto/tls`로 인증서 로드
-- **완료 기준**: `psql "sslmode=require"` 로 프록시에 TLS 접속 성공
-- **핵심 변경**: `handleConn()`에서 SSL 요청 분기 — TLS 설정 시 `'S'` 응답 + TLS 핸드셰이크
-
-#### T9-3: Front-end Auth 설정
-- **범위**: `config.go`에 `AuthConfig` 추가 — `enabled`, `users` 리스트 (username/password 쌍)
-- **완료 기준**: 인증 설정 파싱 및 validation
-- **설정 예시**:
-  ```yaml
-  auth:
-    enabled: true
-    users:
-      - username: "app_user"
-        password: "secret"
-      - username: "readonly"
-        password: "readonly_pass"
-  ```
-
-#### T9-4: Front-end Auth 구현
-- **범위**: 클라이언트 StartupMessage의 user를 확인 → 설정의 users와 대조 → 실패 시 ErrorResponse 반환 (백엔드 접속 없이 차단)
-- **완료 기준**: 설정에 없는 유저로 접속 시 프록시에서 즉시 거부, 올바른 유저는 백엔드로 연결 진행
-- **인증 방식**: MD5 또는 SCRAM-SHA-256 (기존 `pgconn.go` 로직 재활용)
-
-#### T9-5: TLS + Auth E2E 테스트
-- **범위**: 자체 서명 인증서로 TLS 접속, Front-end Auth 성공/실패 시나리오
-- **완료 기준**:
-  - `sslmode=require`로 TLS 접속 성공
-  - `sslmode=disable`로도 접속 가능 (TLS 선택적)
-  - 잘못된 유저/비밀번호로 접속 시 프록시에서 즉시 거부
-  - 올바른 유저로 접속 시 정상 쿼리 실행
-
----
-
-### Phase 10: Circuit Breaker & Rate Limiting (W18)
-
-**목표**: 백엔드 장애 시 연쇄 장애를 방지하고, 악성 트래픽을 프록시 단에서 차단.
-
-**현재 문제**: Reader 장애 시 Writer로 Fallback하지만, Fallback 트래픽이 Writer를 죽이는 Cascading Failure 방어 수단 없음.
-
-| Task | 작업 | 예상 이슈 제목 |
-|------|------|----------------|
-| T10-1 | Circuit Breaker 상태 머신 구현 | `feat(resilience): Circuit Breaker 구현` |
-| T10-2 | Circuit Breaker 풀 통합 | `feat(proxy): Circuit Breaker 풀 통합` |
-| T10-3 | Token Bucket Rate Limiter 구현 | `feat(resilience): Token Bucket Rate Limiter 구현` |
-| T10-4 | Rate Limiter 프록시 통합 | `feat(proxy): Rate Limiter 프록시 통합` |
-| T10-5 | Circuit Breaker & Rate Limiter 테스트 | `test: Circuit Breaker 및 Rate Limiter 테스트` |
-
-#### T10-1: Circuit Breaker 상태 머신 구현
-- **범위**: `internal/resilience/breaker.go`에 Circuit Breaker 구현
-- **상태 전이**: Closed(정상) → Open(차단, 에러율 초과 시) → Half-Open(시험 요청 허용)
-- **설정**: `error_threshold` (에러율 %), `open_duration` (Open 유지 시간), `half_open_max` (Half-Open 시 허용 요청 수)
-- **완료 기준**: 에러율 50% 초과 → Open → 일정 시간 후 Half-Open → 성공 시 Closed 복귀 단위 테스트
-
-#### T10-2: Circuit Breaker 풀 통합
-- **범위**: Writer/Reader 풀에 Circuit Breaker 적용. 쿼리 실행 실패를 Circuit Breaker에 기록, Open 시 즉시 에러 반환
-- **완료 기준**: 백엔드 장애 시 Circuit Breaker가 Open되어 불필요한 연결 시도 차단
-- **핵심**: Writer Fallback 시에도 Circuit Breaker 체크 — Writer도 Open이면 클라이언트에 에러 반환
-
-#### T10-3: Token Bucket Rate Limiter 구현
-- **범위**: `internal/resilience/ratelimit.go`에 Token Bucket 알고리즘 구현
-- **설정**: `rate` (초당 허용 쿼리 수), `burst` (버스트 허용량), `per` (IP/User 단위)
-- **완료 기준**: 초당 100 제한 설정 시 101번째 요청이 거부되는 단위 테스트
-
-#### T10-4: Rate Limiter 프록시 통합
-- **범위**: `relayQueries()`에서 쿼리 처리 전 Rate Limiter 체크. 초과 시 PG ErrorResponse 반환
-- **완료 기준**: 특정 클라이언트가 과도한 쿼리 시 프록시에서 `too many requests` 에러 반환
-- **메트릭**: `dbproxy_rate_limited_total` 카운터 추가
-
-#### T10-5: Circuit Breaker & Rate Limiter 테스트
-- **범위**: E2E 시나리오 — 백엔드 다운 시 Circuit Breaker 동작, 대량 요청 시 Rate Limiter 동작
-- **완료 기준**:
-  - 백엔드 중단 → Circuit Breaker Open → 빠른 에러 반환 (타임아웃 없이)
-  - Circuit Breaker 복구 → 정상 처리 재개
-  - 초당 제한 초과 요청 → 거부, 제한 이내 → 정상 처리
-
----
-
-### Phase 11: Zero-Downtime Reload (W19)
-
-**목표**: 프록시를 중단하지 않고 설정을 동적으로 변경할 수 있는 Graceful Reload 체계.
-
-**현재 문제**: `config.yaml` 변경 시 프로세스 재시작 필요.
-
-| Task | 작업 | 예상 이슈 제목 |
-|------|------|----------------|
-| T11-1 | SIGHUP 핸들링 + 설정 리로드 | `feat(config): SIGHUP 설정 리로드` |
-| T11-2 | Admin API /admin/reload 엔드포인트 | `feat(admin): /admin/reload 엔드포인트` |
-| T11-3 | Reader Pool Hot Swap | `feat(pool): Reader Pool 무중단 교체` |
-| T11-4 | Graceful Reload E2E 테스트 | `test: 무중단 설정 리로드 E2E 테스트` |
-
-#### T11-1: SIGHUP 핸들링 + 설정 리로드
-- **범위**: `cmd/db-proxy/main.go`에서 SIGHUP 시그널 수신 → `config.Load()` 재호출 → Server에 새 설정 전달
-- **완료 기준**: `kill -HUP <pid>` 전송 시 로그에 "config reloaded" 출력, 새 설정 적용
-- **리로드 가능 항목**: Reader 목록, 풀 크기, 캐시 TTL, Rate Limit 설정
-- **리로드 불가 항목**: `proxy.listen` (리스닝 포트), Writer 주소 (재시작 필요)
-
-#### T11-2: Admin API /admin/reload 엔드포인트
-- **범위**: `POST /admin/reload` — SIGHUP과 동일한 리로드 트리거
-- **완료 기준**: `curl -X POST localhost:9091/admin/reload` → 설정 리로드 성공 JSON 응답
-
-#### T11-3: Reader Pool Hot Swap
-- **범위**: 새 설정의 Reader 목록으로 새 풀 생성 → 기존 풀의 활성 커넥션은 자연 종료 대기 → 새 풀로 교체
-- **완료 기준**: Reader 추가/제거 시 기존 진행 중인 쿼리에 영향 없이 새 Reader로 전환
+#### T12-1: LSN 타입 및 비교 유틸리티
+- **범위**: PostgreSQL LSN 포맷(`X/XXXXXXXX`) 파싱, `uint64` 변환, 비교 함수
+- **완료 기준**: `"0/16B3748"` → uint64 변환 → 크기 비교 단위 테스트 통과
+- **위치**: `internal/router/lsn.go`
 - **핵심 로직**:
-  1. 새 Reader Pool 생성 + 헬스체크 시작
-  2. Balancer에 새 Backend 목록 적용 (atomic swap)
-  3. 기존 풀은 drain 후 Close
+  ```go
+  type LSN uint64
+  func ParseLSN(s string) (LSN, error)  // "0/16B3748" → LSN
+  func (l LSN) String() string           // LSN → "0/16B3748"
+  ```
 
-#### T11-4: Graceful Reload E2E 테스트
-- **범위**: 쿼리 실행 중 SIGHUP → 기존 쿼리 정상 완료 + 새 설정 적용 확인
+#### T12-2: Writer LSN 트래킹
+- **범위**: Write 쿼리 실행 후 같은 백엔드 커넥션에서 `SELECT pg_current_wal_lsn()` 실행 → 세션에 저장
+- **완료 기준**: Write 후 `session.lastWriteLSN`에 유효한 LSN 저장 확인
+- **핵심 변경**:
+  - `Session.lastWriteTime` → `Session.lastWriteLSN` 교체 (기존 타이머 기반 로직 대체)
+  - `handleWriteQuery()` 말미에 LSN 조회 추가
+- **성능 고려**: LSN 조회는 Writer 커넥션에서 추가 라운드트립 1회. Write 빈도가 Read보다 훨씬 낮으므로 오버헤드 수용 가능
+- **설정**: `routing.causal_consistency: true` (기본값 false — 기존 `read_after_write_delay`와 양자택일)
+
+#### T12-3: Reader LSN 폴링 및 LSN-Aware 밸런서
+- **범위**: 각 Reader의 replay LSN을 주기적으로 폴링하고, Read 쿼리 시 세션 LSN 이상인 Reader만 선택
+- **완료 기준**: Writer에 쓴 직후 Read → replay가 완료된 Reader에서만 응답, 미완료 Reader는 스킵
+- **핵심 변경**:
+  - `RoundRobin`에 각 Reader의 `replayLSN` 필드 추가
+  - 헬스체크 고루틴에서 `SELECT pg_last_wal_replay_lsn()` 주기적 조회 (1초 간격)
+  - `Next(minLSN LSN)` — minLSN 이상인 healthy Reader 중 라운드로빈 선택
+  - 적합한 Reader가 없으면 Writer fallback + 메트릭 기록
+- **메트릭**: `dbproxy_reader_lsn_lag_bytes` (Gauge, Reader별 LSN 지연 바이트)
+- **위치**: `internal/router/balancer.go` 수정
+
+#### T12-4: Causal Consistency E2E 테스트
+- **범위**: Docker 환경에서 Write → 즉시 Read 시 최신 데이터 보장 검증
 - **완료 기준**:
-  - 장시간 쿼리 실행 중 리로드 → 쿼리 정상 완료
-  - Reader 추가 후 리로드 → 새 Reader로 트래픽 분산 시작
-  - 풀 크기 변경 후 리로드 → 새 max_connections 적용 확인
+  - INSERT → 즉시 SELECT → 방금 쓴 row 반환 (stale read 없음)
+  - 모든 Reader가 지연 중일 때 Writer fallback 동작
+  - Replica 따라잡은 후에는 Reader로 정상 분산
+- **테스트 방법**: Replica에 인위적 지연 주입 (`pg_sleep` 또는 WAL replay 일시정지)
+
+---
+
+### Phase 13: AST 기반 쿼리 파서 + 쿼리 방화벽 (W21-W22)
+
+**목표**: `pg_query_go`를 도입하여 PostgreSQL 실제 파서(AST)로 쿼리를 분석. 정규식/문자열 기반 파서의 근본적 한계를 해결하고, 위험 쿼리 차단(방화벽) 및 의미적 캐시 키(Semantic Caching) 기능을 추가.
+
+**현재 한계**: 문자열 기반 파서는 Dollar Quoting, Nested Comments, Quoted Identifiers 등 PostgreSQL 고유 문법에서 반복적으로 우회됨. QA 리포트에서 수차례 취약점 발견 — 패치로 덮는 것은 한계가 있음.
+
+**트레이드오프**: `pg_query_go`는 cgo 의존 (libpg_query C 라이브러리). 빌드 시 C 컴파일러 필요. "외부 의존성 최소화" 원칙과 상충하지만, 보안 결함의 근본 원인 제거를 위해 수용.
+
+| Task | 작업 | 예상 이슈 제목 |
+|------|------|----------------|
+| T13-1 | pg_query_go 도입 및 AST 파서 기반 구축 | `feat(router): pg_query_go AST 파서 도입` |
+| T13-2 | Classify/ExtractTables AST 전환 | `refactor(router): Classify/ExtractTables AST 기반 전환` |
+| T13-3 | 쿼리 방화벽 (Query Firewall) | `feat(router): AST 기반 쿼리 방화벽` |
+| T13-4 | Semantic Cache Key (AST 정규화) | `feat(cache): AST 정규화 기반 Semantic Cache Key` |
+| T13-5 | AST 파서 테스트 및 벤치마크 | `test: AST 파서 정확도 및 성능 벤치마크` |
+
+#### T13-1: pg_query_go 도입 및 AST 파서 기반 구축
+- **범위**: `go get github.com/pganalyze/pg_query_go/v5`, AST 파싱 래퍼 함수 작성
+- **완료 기준**: 임의 SQL → AST 트리 변환 성공, 노드 탐색 유틸리티 동작
+- **위치**: `internal/router/ast.go`
+- **핵심 로직**:
+  ```go
+  func ParseSQL(query string) (*pg_query.ParseResult, error)
+  func WalkNodes(tree *pg_query.ParseResult, fn func(node *pg_query.Node) bool)
+  ```
+- **빌드 변경**: `Makefile`, CI에 cgo 빌드 환경 추가, `Dockerfile` 업데이트
+
+#### T13-2: Classify/ExtractTables AST 전환
+- **범위**: 기존 `Classify()`, `ExtractTables()`를 AST 기반으로 교체
+- **완료 기준**: 기존 단위 테스트 전체 통과 + QA 리포트의 모든 우회 케이스 방어
+- **핵심 로직**:
+  - `Classify`: AST 루트 노드 타입으로 판단 (`SelectStmt` → Read, `InsertStmt`/`UpdateStmt`/`DeleteStmt` → Write)
+  - `ExtractTables`: AST에서 `RangeVar` 노드 수집 → 테이블명 추출
+  - 힌트 주석: `pg_query_go`의 comment 추출 기능 활용
+- **하위 호환**: 기존 문자열 파서를 fallback으로 유지 (`ast_parser: true/false` 설정)
+- **위치**: `internal/router/parser.go` 수정, `internal/router/parser_ast.go` 신규
+
+#### T13-3: 쿼리 방화벽 (Query Firewall)
+- **범위**: AST 트리 구조 검사로 위험 쿼리를 프록시 단에서 차단
+- **완료 기준**: `DELETE FROM users;` (WHERE 없음) → ErrorResponse 반환, `DELETE FROM users WHERE id=1` → 통과
+- **차단 규칙** (설정으로 ON/OFF):
+  - `DELETE`/`UPDATE` 문에 `WHERE` 절 누락 → 차단
+  - `DROP TABLE`/`TRUNCATE` → 차단 (옵션)
+  - `SELECT *` 무제한 (LIMIT 없이 대형 테이블) → 경고 로그 (차단은 선택적)
+- **설정 예시**:
+  ```yaml
+  firewall:
+    enabled: true
+    block_delete_without_where: true
+    block_update_without_where: true
+    block_drop_table: false
+    block_truncate: false
+  ```
+- **메트릭**: `dbproxy_firewall_blocked_total{rule="delete_no_where|update_no_where|drop_table"}` 카운터
+- **위치**: `internal/router/firewall.go`
+
+#### T13-4: Semantic Cache Key (AST 정규화)
+- **범위**: AST를 정규화(normalize)하여 의미적으로 동일한 쿼리가 같은 캐시 키를 갖도록 개선
+- **완료 기준**: `WHERE A=1 AND B=2`와 `WHERE B=2 AND A=1`이 같은 캐시 키 → 캐시 히트
+- **정규화 규칙**:
+  - WHERE 조건의 AND/OR 자식 노드를 알파벳 순으로 정렬
+  - 리터럴 값을 플레이스홀더(`$N`)로 치환 (parameterized cache)
+  - 불필요한 공백/대소문자 차이 제거
+- **핵심 함수**: `NormalizeAST(tree) → canonical string → FNV hash`
+- **메트릭**: 캐시 히트율 변화 모니터링 (기존 `dbproxy_cache_hits_total`)
+- **위치**: `internal/cache/normalize.go`
+
+#### T13-5: AST 파서 테스트 및 벤치마크
+- **범위**: 정확도 테스트 (기존 모든 파서 테스트 + QA 우회 케이스) + 성능 벤치마크 (문자열 파서 vs AST 파서)
+- **완료 기준**:
+  - 기존 parser_test.go, parser_edge_test.go, dollar_quote_test.go, nested_comment_test.go, quoted_table_test.go 전체 통과
+  - AST 파싱 레이턴시: 일반 쿼리 기준 < 1ms (벤치마크)
+  - 문자열 파서 대비 오버헤드 측정 및 문서화
+- **성능 고려**: pg_query_go는 내부적으로 PostgreSQL 실제 파서를 호출하므로 문자열 파싱보다 느림. 캐시 적용으로 동일 쿼리 반복 파싱 방지 가능

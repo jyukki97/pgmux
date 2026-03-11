@@ -1,4 +1,4 @@
-## 완료된 Task (Phase 1-7)
+## 완료된 Task (Phase 1-11)
 
 모든 Task 완료됨.
 
@@ -240,5 +240,147 @@
 #### T7-7: 고도화 테스트 및 블로그 포스팅
 - **범위**: Docker 환경 E2E 테스트 보강, 블로그 6편 작성 (고도화 내용)
 - **완료 기준**: 전체 테스트 통과, 블로그 포스트 완성
+
+</details>
+
+### Phase 8: Transaction Pooling (W16)
+
+| Task | 작업 | 이슈 제목 |
+|------|------|-----------|
+| T8-1 | Writer 커넥션 풀 도입 | `feat(proxy): Transaction Pooling - Writer 커넥션 다중화` |
+| T8-2 | 트랜잭션 레벨 커넥션 바인딩 | (동일 이슈) |
+| T8-3 | 세션 상태 리셋 (DISCARD ALL) | (동일 이슈) |
+| T8-4 | Simple Query 트랜잭션 풀링 통합 | (동일 이슈) |
+| T8-5 | Extended Query 트랜잭션 풀링 통합 | (동일 이슈) |
+| T8-6 | Transaction Pooling E2E 테스트 | (동일 이슈) |
+
+<details>
+<summary>Phase 8 상세</summary>
+
+#### T8-1: Writer 커넥션 풀 도입
+- **범위**: `NewServer()`에서 Writer도 `pool.Pool`로 생성. 인증 흐름 분리 — 임시 커넥션으로 클라이언트 인증, 풀 커넥션은 `pgConnect()`로 사전 인증
+- **완료 기준**: Writer 커넥션이 풀에서 관리되고, 여러 클라이언트가 백엔드 커넥션을 공유
+
+#### T8-2: 트랜잭션 레벨 커넥션 바인딩
+- **범위**: BEGIN 시 풀에서 Acquire → 트랜잭션 동안 고정 → COMMIT/ROLLBACK 시 Release
+- **완료 기준**: 트랜잭션 중에는 동일 백엔드 커넥션 사용, 트랜잭션 종료 후 반환 확인
+
+#### T8-3: 세션 상태 리셋
+- **범위**: 커넥션 반환 시 `DISCARD ALL` 전송, `reset_query` 설정 추가
+- **완료 기준**: 클라이언트 A가 SET 후 반환 → 클라이언트 B가 같은 커넥션 획득 시 기본값
+
+#### T8-4: Simple Query 트랜잭션 풀링 통합
+- **범위**: 비트랜잭션 단일 쿼리 시 Writer 풀에서 빌려 사용 후 즉시 반환
+- **완료 기준**: 동시 다수 클라이언트 INSERT 시 백엔드 커넥션이 max_connections 이내
+
+#### T8-5: Extended Query 트랜잭션 풀링 통합
+- **범위**: Parse~Sync 배치 단위로 Writer 풀에서 커넥션 획득/반환
+- **완료 기준**: Prepared Statement 기반 쓰기도 풀링 동작 확인
+
+#### T8-6: Transaction Pooling E2E 테스트
+- **범위**: 동시 20 클라이언트 / 10 커넥션 풀 공유, 트랜잭션 격리, 세션 리셋, 풀 고갈 복구 검증
+- **완료 기준**: 전체 E2E 시나리오 통과
+
+</details>
+
+### Phase 9: SSL/TLS Termination + Front-end Auth (W17)
+
+| Task | 작업 | 이슈 제목 |
+|------|------|-----------|
+| T9-1 | TLS 설정 구조체 추가 | `feat(proxy): TLS Termination 구현` |
+| T9-2 | TLS Listener 구현 | (동일 이슈) |
+| T9-3 | Front-end Auth 설정 | `feat(proxy): 프록시 자체 인증 (Front-end Auth)` |
+| T9-4 | Front-end Auth 구현 | (동일 이슈) |
+| T9-5 | TLS + Auth E2E 테스트 | (동일 이슈) |
+
+<details>
+<summary>Phase 9 상세</summary>
+
+#### T9-1: TLS 설정 구조체 추가
+- **범위**: `config.go`에 `TLSConfig` 추가 — `enabled`, `cert_file`, `key_file`
+- **완료 기준**: TLS 설정이 YAML에서 파싱되고 validation 통과
+
+#### T9-2: TLS Listener 구현
+- **범위**: SSL 요청 시 `'S'` 응답 후 `tls.Server()`로 업그레이드. TLS 미설정 시 기존 `'N'` 응답 유지
+- **완료 기준**: `sslmode=require`로 TLS 접속 성공, `sslmode=disable`도 접속 가능
+
+#### T9-3: Front-end Auth 설정
+- **범위**: `config.go`에 `AuthConfig` 추가 — `enabled`, `users` 리스트 (username/password 쌍)
+- **완료 기준**: 인증 설정 파싱 및 validation
+
+#### T9-4: Front-end Auth 구현
+- **범위**: 클라이언트 StartupMessage의 user 확인 → 설정 users와 대조 → 실패 시 ErrorResponse (백엔드 접속 없이 차단). SCRAM-SHA-256 인증 지원
+- **완료 기준**: 설정에 없는 유저 → 프록시에서 즉시 거부, 올바른 유저 → 정상 쿼리
+
+#### T9-5: TLS + Auth E2E 테스트
+- **범위**: 자체 서명 인증서 TLS 접속, 올바른/잘못된 유저 인증 시나리오
+- **완료 기준**: TLS + Auth 전체 시나리오 통과
+
+</details>
+
+### Phase 10: Circuit Breaker & Rate Limiting (W18)
+
+| Task | 작업 | 이슈 제목 |
+|------|------|-----------|
+| T10-1 | Circuit Breaker 상태 머신 구현 | `feat(resilience): Circuit Breaker 구현` |
+| T10-2 | Circuit Breaker 풀 통합 | (동일 이슈) |
+| T10-3 | Token Bucket Rate Limiter 구현 | `feat(resilience): Token Bucket Rate Limiter 구현` |
+| T10-4 | Rate Limiter 프록시 통합 | (동일 이슈) |
+| T10-5 | Circuit Breaker & Rate Limiter 테스트 | (동일 이슈) |
+
+<details>
+<summary>Phase 10 상세</summary>
+
+#### T10-1: Circuit Breaker 상태 머신
+- **범위**: `internal/resilience/breaker.go`에 구현. 상태: Closed → Open → Half-Open
+- **완료 기준**: 에러율 초과 → Open → 일정 시간 후 Half-Open → 성공 시 Closed 복귀
+
+#### T10-2: Circuit Breaker 풀 통합
+- **범위**: Writer/Reader 풀에 Circuit Breaker 적용. Open 시 즉시 에러 반환
+- **완료 기준**: 백엔드 장애 시 불필요한 연결 시도 차단
+
+#### T10-3: Token Bucket Rate Limiter
+- **범위**: `internal/resilience/ratelimit.go`에 구현. 설정: `rate`, `burst`
+- **완료 기준**: 초당 제한 초과 시 즉시 거부
+
+#### T10-4: Rate Limiter 프록시 통합
+- **범위**: `relayQueries()`에서 쿼리 처리 전 체크. 초과 시 PG ErrorResponse 반환. 메트릭: `dbproxy_rate_limited_total`
+- **완료 기준**: 특정 클라이언트가 과도한 쿼리 시 프록시에서 거부
+
+#### T10-5: Circuit Breaker & Rate Limiter 테스트
+- **범위**: 단위 테스트 + E2E 시나리오
+- **완료 기준**: CB + Rate Limiter 동시 동작 확인
+
+</details>
+
+### Phase 11: Zero-Downtime Reload (W19)
+
+| Task | 작업 | 이슈 제목 |
+|------|------|-----------|
+| T11-1 | SIGHUP 핸들링 + 설정 리로드 | `feat(config): SIGHUP 무중단 설정 리로드 + Admin /reload 엔드포인트` |
+| T11-2 | Admin API /admin/reload 엔드포인트 | (동일 이슈) |
+| T11-3 | Reader Pool Hot Swap | (동일 이슈) |
+| T11-4 | Graceful Reload E2E 테스트 | (동일 이슈) |
+
+<details>
+<summary>Phase 11 상세</summary>
+
+#### T11-1: SIGHUP 핸들링 + 설정 리로드
+- **범위**: SIGHUP 시그널 수신 → `config.Load()` 재호출 → Server에 새 설정 전달
+- **리로드 가능**: Reader 목록, 풀 크기, 캐시 TTL, Rate Limit
+- **리로드 불가**: `proxy.listen`, Writer 주소
+- **완료 기준**: `kill -HUP <pid>` → "config reloaded" 로그, 새 설정 적용
+
+#### T11-2: Admin API /admin/reload 엔드포인트
+- **범위**: `POST /admin/reload` — SIGHUP과 동일한 리로드 트리거
+- **완료 기준**: `curl -X POST localhost:9091/admin/reload` → 성공 JSON 응답
+
+#### T11-3: Reader Pool Hot Swap
+- **범위**: 새 Reader 목록으로 새 풀 생성 → Balancer atomic swap → 기존 풀 drain
+- **완료 기준**: Reader 추가/제거 시 기존 진행 중인 쿼리에 영향 없이 새 Reader로 전환
+
+#### T11-4: Graceful Reload E2E 테스트
+- **범위**: 쿼리 실행 중 SIGHUP → 기존 쿼리 정상 완료 + 새 설정 적용 확인
+- **완료 기준**: 장시간 쿼리 실행 중 리로드 → 쿼리 정상 완료
 
 </details>

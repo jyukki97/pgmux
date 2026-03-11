@@ -25,6 +25,8 @@
 | W17 | SSL/TLS + Front-end Auth | TLS Termination, 프록시 자체 인증 | 완료 |
 | W18 | Circuit Breaker & Rate Limiting | 연쇄 장애 방어, 트래픽 제한 | 완료 |
 | W19 | Zero-Downtime Reload | SIGHUP 무중단 설정 리로드 | 완료 |
+| W20 | LSN 기반 Causal Consistency | Replication Lag 인지형 라우팅, Writer LSN 트래킹 | 미착수 |
+| W21-22 | AST 파서 + 쿼리 방화벽 | pg_query_go AST 파서 도입, 쿼리 방화벽, Semantic Caching | 미착수 |
 
 ---
 
@@ -32,8 +34,8 @@
 
 | 문서 | 경로 | 내용 |
 |------|------|------|
-| 완료된 Task | `docs/tasks-completed.md` | Phase 1-7 Task 목록 및 상세 정의 |
-| 고도화 Task | `docs/tasks-enhancement.md` | Phase 8-11 Task 목록 및 상세 정의 |
+| 완료된 Task | `docs/tasks-completed.md` | Phase 1-11 Task 목록 및 상세 정의 |
+| 초고도화 Task | `docs/tasks-enhancement.md` | Phase 12-13 Task 목록 및 상세 정의 |
 | Agent Teams | `docs/agent-teams.md` | Claude Code Agent Teams 활용 가이드 |
 | Git 워크플로우 | `docs/git-workflow.md` | 브랜치 전략, 커밋, PR 규칙 |
 | 블로그 계획 | `docs/blog-plan.md` | 포스팅 시점, 주제, 템플릿 |

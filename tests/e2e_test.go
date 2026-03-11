@@ -453,6 +453,57 @@ func TestE2E_TransactionPooling(t *testing.T) {
 	})
 }
 
+// TestE2E_CausalConsistency tests that write-then-read sees fresh data.
+// Requires: docker-compose up && go run ./cmd/db-proxy config.test.yaml (with causal_consistency: true)
+func TestE2E_CausalConsistency(t *testing.T) {
+	proxyDSN := "postgres://postgres:postgres@127.0.0.1:15440/testdb?sslmode=disable"
+
+	db, err := sql.Open("postgres", proxyDSN)
+	if err != nil {
+		t.Skipf("cannot open proxy connection: %v", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := db.PingContext(ctx); err != nil {
+		t.Skipf("proxy not reachable: %v", err)
+	}
+
+	t.Run("WriteReadConsistency", func(t *testing.T) {
+		// Create temp table
+		_, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS causal_test (
+			id SERIAL PRIMARY KEY,
+			value TEXT NOT NULL
+		)`)
+		if err != nil {
+			t.Fatalf("create causal_test table: %v", err)
+		}
+		defer db.ExecContext(ctx, "DROP TABLE IF EXISTS causal_test")
+
+		// Write and immediately read — should see the inserted data
+		for i := 0; i < 10; i++ {
+			val := fmt.Sprintf("causal-%d", i)
+			_, err := db.ExecContext(ctx, "INSERT INTO causal_test (value) VALUES ($1)", val)
+			if err != nil {
+				t.Fatalf("INSERT %d: %v", i, err)
+			}
+
+			// Immediately read — must see the just-written row
+			var count int
+			err = db.QueryRowContext(ctx, "SELECT count(*) FROM causal_test WHERE value = $1", val).Scan(&count)
+			if err != nil {
+				t.Fatalf("SELECT %d: %v", i, err)
+			}
+			if count != 1 {
+				t.Errorf("iteration %d: expected count=1 for value=%q, got %d (stale read!)", i, val, count)
+			}
+		}
+		t.Log("Write-read consistency OK: all 10 iterations saw fresh data")
+	})
+}
+
 // TestE2E_ProxyStartStop tests that the proxy binary starts and stops cleanly.
 func TestE2E_ProxyStartStop(t *testing.T) {
 	if os.Getenv("E2E") == "" {

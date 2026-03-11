@@ -133,7 +133,11 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create a safe copy with masked password
+	// Create a safe copy with masked passwords
+	type safeAuthUser struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
 	safe := struct {
 		Proxy   config.ProxyConfig   `json:"proxy"`
 		Writer  config.DBConfig      `json:"writer"`
@@ -142,6 +146,10 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		Routing config.RoutingConfig `json:"routing"`
 		Cache   config.CacheConfig   `json:"cache"`
 		TLS     config.TLSConfig     `json:"tls"`
+		Auth    struct {
+			Enabled bool           `json:"enabled"`
+			Users   []safeAuthUser `json:"users,omitempty"`
+		} `json:"auth"`
 		Backend struct {
 			User     string `json:"user"`
 			Password string `json:"password"`
@@ -155,6 +163,13 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		Routing: s.cfg.Routing,
 		Cache:   s.cfg.Cache,
 		TLS:     s.cfg.TLS,
+	}
+	safe.Auth.Enabled = s.cfg.Auth.Enabled
+	for _, u := range s.cfg.Auth.Users {
+		safe.Auth.Users = append(safe.Auth.Users, safeAuthUser{
+			Username: u.Username,
+			Password: "********",
+		})
 	}
 	safe.Backend.User = s.cfg.Backend.User
 	safe.Backend.Password = "********"

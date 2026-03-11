@@ -1334,7 +1334,7 @@ func (s *Server) cacheKey(query string) uint64 {
 	if s.cfg.Routing.ASTParser {
 		return cache.SemanticCacheKey(query)
 	}
-	return s.cacheKey(query)
+	return cache.CacheKey(query)
 }
 
 // classifyQuery uses AST or string parser based on config.

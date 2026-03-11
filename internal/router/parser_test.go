@@ -40,6 +40,79 @@ func TestClassify(t *testing.T) {
 	}
 }
 
+func TestClassify_MultiStatement(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  QueryType
+	}{
+		{"select then commit", "SELECT 1; COMMIT;", QueryRead},
+		{"insert in multi", "SELECT 1; INSERT INTO users VALUES(1);", QueryWrite},
+		{"CTE with update", "WITH x AS (UPDATE users SET score=0 RETURNING id) SELECT * FROM x", QueryWrite},
+		{"CTE with delete", "WITH d AS (DELETE FROM old_logs RETURNING id) INSERT INTO archive SELECT * FROM d", QueryWrite},
+		{"pure CTE read", "WITH x AS (SELECT * FROM users) SELECT * FROM x", QueryRead},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Classify(tt.query)
+			if got != tt.want {
+				t.Errorf("Classify(%q) = %d, want %d", tt.query, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractTables_MultiTable(t *testing.T) {
+	tests := []struct {
+		name      string
+		query     string
+		wantCount int
+		wantAll   []string
+	}{
+		{
+			"CTE with two writes",
+			"WITH x AS (UPDATE users SET score=0) UPDATE ranking SET total=0",
+			2,
+			[]string{"users", "ranking"},
+		},
+		{
+			"multi-statement insert+delete",
+			"INSERT INTO users VALUES(1); DELETE FROM logs WHERE id=1;",
+			2,
+			[]string{"users", "logs"},
+		},
+		{
+			"CTE delete into insert",
+			"WITH d AS (DELETE FROM old_logs RETURNING id) INSERT INTO archive SELECT * FROM d",
+			2,
+			[]string{"archive", "old_logs"}, // INSERT INTO found before DELETE FROM in keyword scan
+		},
+		{
+			"single table",
+			"UPDATE orders SET status='done'",
+			1,
+			[]string{"orders"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tables := ExtractTables(tt.query)
+			if len(tables) != tt.wantCount {
+				t.Errorf("ExtractTables(%q) got %d tables %v, want %d", tt.query, len(tables), tables, tt.wantCount)
+				return
+			}
+			for i, want := range tt.wantAll {
+				if i >= len(tables) {
+					break
+				}
+				if tables[i] != want {
+					t.Errorf("tables[%d] = %q, want %q", i, tables[i], want)
+				}
+			}
+		})
+	}
+}
+
 func TestExtractTables(t *testing.T) {
 	tests := []struct {
 		query string

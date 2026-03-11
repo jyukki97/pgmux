@@ -66,6 +66,6 @@ tests/
 
 - 블로그 경로: `/Users/nhn/Library/Mobile Documents/com~apple~CloudDocs/project/study-blog/`
 - 프로젝트 페이지: `content/projects/db-proxy.md`
-- 시리즈 포스트: `content/posts/YYYY-MM-DD-db-proxy-N-제목.md` (현재 P1~P5, P6 예정)
+- 시리즈 포스트: `content/posts/YYYY-MM-DD-db-proxy-N-제목.md` (P1~P6 완료)
 - Hugo frontmatter 형식, 기존 포스트 참고 (`content/projects/simple-queue-service.md`)
 - 포스팅 시점과 주제는 `docs/workflow.md` 섹션 6 참고

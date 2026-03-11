@@ -26,3 +26,8 @@ cache:
   cache_ttl: 5s
   max_cache_entries: 1000
   max_result_size: "512KB"
+
+backend:
+  user: "postgres"
+  password: "postgres"
+  database: "testdb"

@@ -15,6 +15,13 @@ type Config struct {
 	Pool    PoolConfig    `yaml:"pool"`
 	Routing RoutingConfig `yaml:"routing"`
 	Cache   CacheConfig   `yaml:"cache"`
+	Backend BackendConfig `yaml:"backend"`
+}
+
+type BackendConfig struct {
+	User     string `yaml:"user"`
+	Password string `yaml:"password"`
+	Database string `yaml:"database"`
 }
 
 type ProxyConfig struct {
@@ -95,6 +102,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Cache.MaxResultSize == "" {
 		c.Cache.MaxResultSize = "1MB"
+	}
+	if c.Backend.User == "" {
+		c.Backend.User = "postgres"
+	}
+	if c.Backend.Database == "" {
+		c.Backend.Database = "postgres"
 	}
 }
 

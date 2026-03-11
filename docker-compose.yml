@@ -10,12 +10,14 @@ services:
       - "15432:5432"
     volumes:
       - ./docker/primary/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./docker/primary/pg_hba.conf:/var/lib/postgresql/pg_hba.conf
     command: >
       postgres
       -c wal_level=replica
-      -c max_wal_senders=3
-      -c max_replication_slots=3
+      -c max_wal_senders=10
+      -c max_replication_slots=10
       -c hot_standby=on
+      -c hba_file=/var/lib/postgresql/pg_hba.conf
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 2s

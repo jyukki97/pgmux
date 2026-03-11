@@ -29,7 +29,11 @@ func (c *Conn) idle(idleTimeout time.Duration) bool {
 	return time.Since(c.LastUsedAt) > idleTimeout
 }
 
+// DialFunc creates a new connection. If nil, raw TCP dial is used.
+type DialFunc func() (net.Conn, error)
+
 type Config struct {
+	DialFunc          DialFunc
 	Addr              string
 	MinConnections    int
 	MaxConnections    int
@@ -162,8 +166,28 @@ func (p *Pool) Stats() (numOpen, numIdle int) {
 	return p.numOpen, len(p.idle)
 }
 
+// Discard closes a broken connection and decrements the open count.
+// Use this instead of Release when the connection is no longer usable.
+func (p *Pool) Discard(conn *Conn) {
+	conn.Close()
+	p.mu.Lock()
+	p.numOpen--
+	p.mu.Unlock()
+
+	select {
+	case p.waitCh <- struct{}{}:
+	default:
+	}
+}
+
 func (p *Pool) newConn() (*Conn, error) {
-	netConn, err := net.DialTimeout("tcp", p.cfg.Addr, 5*time.Second)
+	var netConn net.Conn
+	var err error
+	if p.cfg.DialFunc != nil {
+		netConn, err = p.cfg.DialFunc()
+	} else {
+		netConn, err = net.DialTimeout("tcp", p.cfg.Addr, 5*time.Second)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", p.cfg.Addr, err)
 	}

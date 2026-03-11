@@ -21,8 +21,17 @@ func main() {
 
 func run() error {
 	cfgPath := "config.yaml"
-	if len(os.Args) > 1 {
-		cfgPath = os.Args[1]
+	debug := false
+	for _, arg := range os.Args[1:] {
+		if arg == "-debug" {
+			debug = true
+		} else {
+			cfgPath = arg
+		}
+	}
+
+	if debug {
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	}
 
 	cfg, err := config.Load(cfgPath)

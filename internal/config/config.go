@@ -27,6 +27,7 @@ type Config struct {
 	DataAPI        DataAPIConfig        `yaml:"data_api"`
 	ConfigOptions  ConfigOptionsConfig  `yaml:"config"`
 	Telemetry      TelemetryConfig      `yaml:"telemetry"`
+	Mirror         MirrorConfig         `yaml:"mirror"`
 }
 
 type ConfigOptionsConfig struct {
@@ -154,6 +155,20 @@ type CacheInvalidationConfig struct {
 	Channel   string `yaml:"channel"`    // Redis channel name
 }
 
+type MirrorConfig struct {
+	Enabled    bool     `yaml:"enabled"`
+	Host       string   `yaml:"host"`
+	Port       int      `yaml:"port"`
+	User       string   `yaml:"user"`
+	Password   string   `yaml:"password"`
+	Database   string   `yaml:"database"`
+	Mode       string   `yaml:"mode"`        // "read_only" (default) | "all"
+	Tables     []string `yaml:"tables"`
+	Compare    bool     `yaml:"compare"`
+	Workers    int      `yaml:"workers"`      // default 4
+	BufferSize int      `yaml:"buffer_size"`  // default 10000
+}
+
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -270,6 +285,18 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Telemetry.SampleRatio == 0 {
 		c.Telemetry.SampleRatio = 1.0
+	}
+	if c.Mirror.Mode == "" {
+		c.Mirror.Mode = "read_only"
+	}
+	if c.Mirror.Port == 0 {
+		c.Mirror.Port = 5432
+	}
+	if c.Mirror.Workers <= 0 {
+		c.Mirror.Workers = 4
+	}
+	if c.Mirror.BufferSize <= 0 {
+		c.Mirror.BufferSize = 10000
 	}
 }
 

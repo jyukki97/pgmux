@@ -18,14 +18,14 @@ import (
 
 // Server is the Admin API HTTP server.
 type Server struct {
-	cfg         *config.Config
-	cache       *cache.Cache
-	invalidator *cache.Invalidator
-	writerPool  *pool.Pool
-	readerPools map[string]*pool.Pool
-	auditLogger *audit.Logger
-	reloadFunc  func() error
-	mu          sync.RWMutex
+	cfgFn         func() *config.Config
+	cacheFn       func() *cache.Cache
+	invalidatorFn func() *cache.Invalidator
+	writerPoolFn  func() *pool.Pool
+	readerPoolsFn func() map[string]*pool.Pool
+	auditLoggerFn func() *audit.Logger
+	reloadFunc    func() error
+	mu            sync.RWMutex
 }
 
 // SetReloadFunc sets the function to call when reload is requested.
@@ -34,14 +34,16 @@ func (s *Server) SetReloadFunc(fn func() error) {
 }
 
 // New creates a new Admin server.
-func New(cfg *config.Config, c *cache.Cache, inv *cache.Invalidator, writerPool *pool.Pool, readerPools map[string]*pool.Pool, auditLogger *audit.Logger) *Server {
+// All parameters except reloadFunc are getter functions so that Admin always
+// accesses the latest objects even after a hot-reload.
+func New(cfgFn func() *config.Config, cacheFn func() *cache.Cache, invalidatorFn func() *cache.Invalidator, writerPoolFn func() *pool.Pool, readerPoolsFn func() map[string]*pool.Pool, auditLoggerFn func() *audit.Logger) *Server {
 	return &Server{
-		cfg:         cfg,
-		cache:       c,
-		invalidator: inv,
-		writerPool:  writerPool,
-		readerPools: readerPools,
-		auditLogger: auditLogger,
+		cfgFn:         cfgFn,
+		cacheFn:       cacheFn,
+		invalidatorFn: invalidatorFn,
+		writerPoolFn:  writerPoolFn,
+		readerPoolsFn: readerPoolsFn,
+		auditLoggerFn: auditLoggerFn,
 	}
 }
 
@@ -65,16 +67,18 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	cfg := s.cfgFn()
+
 	type backendHealth struct {
 		Addr    string `json:"addr"`
 		Healthy bool   `json:"healthy"`
 	}
 
-	writerAddr := fmt.Sprintf("%s:%d", s.cfg.Writer.Host, s.cfg.Writer.Port)
+	writerAddr := fmt.Sprintf("%s:%d", cfg.Writer.Host, cfg.Writer.Port)
 	writerHealthy := checkTCP(writerAddr)
 
-	readers := make([]backendHealth, 0, len(s.cfg.Readers))
-	for _, r := range s.cfg.Readers {
+	readers := make([]backendHealth, 0, len(cfg.Readers))
+	for _, r := range cfg.Readers {
 		addr := fmt.Sprintf("%s:%d", r.Host, r.Port)
 		readers = append(readers, backendHealth{
 			Addr:    addr,
@@ -97,12 +101,18 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	cfg := s.cfgFn()
+	writerPool := s.writerPoolFn()
+	readerPools := s.readerPoolsFn()
+	c := s.cacheFn()
+	auditLogger := s.auditLoggerFn()
+
 	poolStats := make(map[string]any)
 
 	// Writer pool stats
-	if s.writerPool != nil {
-		wOpen, wIdle := s.writerPool.Stats()
-		writerAddr := fmt.Sprintf("%s:%d", s.cfg.Writer.Host, s.cfg.Writer.Port)
+	if writerPool != nil {
+		wOpen, wIdle := writerPool.Stats()
+		writerAddr := fmt.Sprintf("%s:%d", cfg.Writer.Host, cfg.Writer.Port)
 		poolStats["writer"] = map[string]any{
 			"addr": writerAddr,
 			"open": wOpen,
@@ -112,7 +122,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 	// Reader pool stats
 	readerStats := make(map[string]any)
-	for addr, p := range s.readerPools {
+	for addr, p := range readerPools {
 		open, idle := p.Stats()
 		readerStats[addr] = map[string]any{
 			"open": open,
@@ -122,10 +132,10 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	poolStats["readers"] = readerStats
 
 	cacheStats := map[string]any{
-		"enabled": s.cache != nil,
+		"enabled": c != nil,
 	}
-	if s.cache != nil {
-		cacheStats["entries"] = s.cache.Len()
+	if c != nil {
+		cacheStats["entries"] = c.Len()
 	}
 
 	resp := map[string]any{
@@ -133,8 +143,8 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		"cache": cacheStats,
 	}
 
-	if s.auditLogger != nil {
-		slow, sent, errors := s.auditLogger.Stats()
+	if auditLogger != nil {
+		slow, sent, errors := auditLogger.Stats()
 		resp["audit"] = map[string]any{
 			"slow_queries":   slow,
 			"webhook_sent":   sent,
@@ -151,6 +161,8 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	cfg := s.cfgFn()
 
 	// Create a safe copy with masked passwords
 	type safeAuthUser struct {
@@ -175,24 +187,24 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			Database string `json:"database"`
 		} `json:"backend"`
 	}{
-		Proxy:   s.cfg.Proxy,
-		Writer:  s.cfg.Writer,
-		Readers: s.cfg.Readers,
-		Pool:    s.cfg.Pool,
-		Routing: s.cfg.Routing,
-		Cache:   s.cfg.Cache,
-		TLS:     s.cfg.TLS,
+		Proxy:   cfg.Proxy,
+		Writer:  cfg.Writer,
+		Readers: cfg.Readers,
+		Pool:    cfg.Pool,
+		Routing: cfg.Routing,
+		Cache:   cfg.Cache,
+		TLS:     cfg.TLS,
 	}
-	safe.Auth.Enabled = s.cfg.Auth.Enabled
-	for _, u := range s.cfg.Auth.Users {
+	safe.Auth.Enabled = cfg.Auth.Enabled
+	for _, u := range cfg.Auth.Users {
 		safe.Auth.Users = append(safe.Auth.Users, safeAuthUser{
 			Username: u.Username,
 			Password: "********",
 		})
 	}
-	safe.Backend.User = s.cfg.Backend.User
+	safe.Backend.User = cfg.Backend.User
 	safe.Backend.Password = "********"
-	safe.Backend.Database = s.cfg.Backend.Database
+	safe.Backend.Database = cfg.Backend.Database
 
 	writeJSON(w, safe)
 }
@@ -204,7 +216,10 @@ func (s *Server) handleCacheFlush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.cache == nil {
+	c := s.cacheFn()
+	inv := s.invalidatorFn()
+
+	if c == nil {
 		writeJSON(w, map[string]string{"status": "cache disabled"})
 		return
 	}
@@ -215,9 +230,9 @@ func (s *Server) handleCacheFlush(w http.ResponseWriter, r *http.Request) {
 
 	if path != "" {
 		// Flush specific table
-		s.cache.InvalidateTable(path)
-		if s.invalidator != nil {
-			s.invalidator.Publish(context.Background(), []string{path})
+		c.InvalidateTable(path)
+		if inv != nil {
+			inv.Publish(context.Background(), []string{path})
 		}
 		slog.Info("admin: cache flushed for table", "table", path)
 		writeJSON(w, map[string]string{"status": "flushed", "table": path})
@@ -225,9 +240,9 @@ func (s *Server) handleCacheFlush(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Flush all
-	s.cache.FlushAll()
-	if s.invalidator != nil {
-		s.invalidator.PublishFlushAll(context.Background())
+	c.FlushAll()
+	if inv != nil {
+		inv.PublishFlushAll(context.Background())
 	}
 	slog.Info("admin: full cache flush")
 	writeJSON(w, map[string]string{"status": "flushed"})

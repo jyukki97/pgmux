@@ -8,12 +8,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jyukki97/pgmux/internal/audit"
 	"github.com/jyukki97/pgmux/internal/cache"
 	"github.com/jyukki97/pgmux/internal/config"
 	"github.com/jyukki97/pgmux/internal/pool"
 )
 
-func testServer() *Server {
+func testServer() (*Server, *cache.Cache) {
 	cfg := &config.Config{
 		Proxy:  config.ProxyConfig{Listen: "0.0.0.0:5432"},
 		Writer: config.DBConfig{Host: "127.0.0.1", Port: 5432},
@@ -43,12 +44,21 @@ func testServer() *Server {
 		MaxEntries: 1000,
 		TTL:        10 * time.Second,
 	})
+	readerPools := map[string]*pool.Pool{}
 
-	return New(cfg, c, nil, nil, map[string]*pool.Pool{}, nil)
+	srv := New(
+		func() *config.Config { return cfg },
+		func() *cache.Cache { return c },
+		func() *cache.Invalidator { return nil },
+		func() *pool.Pool { return nil },
+		func() map[string]*pool.Pool { return readerPools },
+		func() *audit.Logger { return nil },
+	)
+	return srv, c
 }
 
 func TestHandleHealth(t *testing.T) {
-	srv := testServer()
+	srv, _ := testServer()
 	req := httptest.NewRequest(http.MethodGet, "/admin/health", nil)
 	w := httptest.NewRecorder()
 
@@ -70,7 +80,7 @@ func TestHandleHealth(t *testing.T) {
 }
 
 func TestHandleStats(t *testing.T) {
-	srv := testServer()
+	srv, _ := testServer()
 	req := httptest.NewRequest(http.MethodGet, "/admin/stats", nil)
 	w := httptest.NewRecorder()
 
@@ -90,7 +100,7 @@ func TestHandleStats(t *testing.T) {
 }
 
 func TestHandleConfig_MasksPassword(t *testing.T) {
-	srv := testServer()
+	srv, _ := testServer()
 	req := httptest.NewRequest(http.MethodGet, "/admin/config", nil)
 	w := httptest.NewRecorder()
 
@@ -113,14 +123,14 @@ func TestHandleConfig_MasksPassword(t *testing.T) {
 }
 
 func TestHandleCacheFlush(t *testing.T) {
-	srv := testServer()
+	srv, c := testServer()
 
 	// Add some cache entries
-	srv.cache.Set(cache.CacheKey("SELECT 1"), []byte("result1"), []string{"users"})
-	srv.cache.Set(cache.CacheKey("SELECT 2"), []byte("result2"), []string{"orders"})
+	c.Set(cache.CacheKey("SELECT 1"), []byte("result1"), []string{"users"})
+	c.Set(cache.CacheKey("SELECT 2"), []byte("result2"), []string{"orders"})
 
-	if srv.cache.Len() != 2 {
-		t.Fatalf("cache len = %d, want 2", srv.cache.Len())
+	if c.Len() != 2 {
+		t.Fatalf("cache len = %d, want 2", c.Len())
 	}
 
 	// Flush all
@@ -131,16 +141,16 @@ func TestHandleCacheFlush(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", w.Code)
 	}
-	if srv.cache.Len() != 0 {
-		t.Errorf("cache len after flush = %d, want 0", srv.cache.Len())
+	if c.Len() != 0 {
+		t.Errorf("cache len after flush = %d, want 0", c.Len())
 	}
 }
 
 func TestHandleCacheFlush_ByTable(t *testing.T) {
-	srv := testServer()
+	srv, c := testServer()
 
-	srv.cache.Set(cache.CacheKey("SELECT * FROM users"), []byte("r1"), []string{"users"})
-	srv.cache.Set(cache.CacheKey("SELECT * FROM orders"), []byte("r2"), []string{"orders"})
+	c.Set(cache.CacheKey("SELECT * FROM users"), []byte("r1"), []string{"users"})
+	c.Set(cache.CacheKey("SELECT * FROM orders"), []byte("r2"), []string{"orders"})
 
 	// Flush only users table
 	req := httptest.NewRequest(http.MethodPost, "/admin/cache/flush/users", nil)
@@ -151,13 +161,13 @@ func TestHandleCacheFlush_ByTable(t *testing.T) {
 		t.Errorf("status = %d, want 200", w.Code)
 	}
 	// users entry should be gone, orders should remain
-	if srv.cache.Len() != 1 {
-		t.Errorf("cache len after table flush = %d, want 1", srv.cache.Len())
+	if c.Len() != 1 {
+		t.Errorf("cache len after table flush = %d, want 1", c.Len())
 	}
 }
 
 func TestHandleHealth_MethodNotAllowed(t *testing.T) {
-	srv := testServer()
+	srv, _ := testServer()
 	req := httptest.NewRequest(http.MethodPost, "/admin/health", nil)
 	w := httptest.NewRecorder()
 	srv.handleHealth(w, req)
@@ -168,7 +178,7 @@ func TestHandleHealth_MethodNotAllowed(t *testing.T) {
 }
 
 func TestHandleReload_Success(t *testing.T) {
-	srv := testServer()
+	srv, _ := testServer()
 	srv.SetReloadFunc(func() error {
 		return nil
 	})
@@ -189,7 +199,7 @@ func TestHandleReload_Success(t *testing.T) {
 }
 
 func TestHandleReload_Error(t *testing.T) {
-	srv := testServer()
+	srv, _ := testServer()
 	srv.SetReloadFunc(func() error {
 		return fmt.Errorf("config parse error")
 	})
@@ -213,7 +223,7 @@ func TestHandleReload_Error(t *testing.T) {
 }
 
 func TestHandleReload_NotConfigured(t *testing.T) {
-	srv := testServer()
+	srv, _ := testServer()
 	// No reload func set
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/reload", nil)
@@ -226,7 +236,7 @@ func TestHandleReload_NotConfigured(t *testing.T) {
 }
 
 func TestHandleReload_MethodNotAllowed(t *testing.T) {
-	srv := testServer()
+	srv, _ := testServer()
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/reload", nil)
 	w := httptest.NewRecorder()

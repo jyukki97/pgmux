@@ -8,7 +8,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/jyukki97/pgmux/internal/cache"
 	"github.com/jyukki97/pgmux/internal/config"
+	"github.com/jyukki97/pgmux/internal/pool"
+	"github.com/jyukki97/pgmux/internal/resilience"
+	"github.com/jyukki97/pgmux/internal/router"
 )
 
 func testServer() *Server {
@@ -20,8 +24,20 @@ func testServer() *Server {
 			APIKeys: []string{"test-key-1", "test-key-2"},
 		},
 	}
-	return New(cfg, nil, nil, nil, nil, nil, nil)
+	return New(
+		func() *config.Config { return cfg },
+		nilPool, nilPools, nilBalancer, nilCache, nil, nilRateLimiter,
+	)
 }
+
+// Helper nil-returning getter functions for tests.
+var (
+	nilPool        = func() *pool.Pool { return nil }
+	nilPools       = func() map[string]*pool.Pool { return nil }
+	nilBalancer    = func() *router.RoundRobin { return nil }
+	nilCache       = func() *cache.Cache { return nil }
+	nilRateLimiter = func() *resilience.RateLimiter { return nil }
+)
 
 func TestAuthRequired(t *testing.T) {
 	srv := testServer()
@@ -89,7 +105,7 @@ func TestEmptySQL(t *testing.T) {
 			Enabled: true,
 		},
 	}
-	srv := New(cfg, nil, nil, nil, nil, nil, nil)
+	srv := New(func() *config.Config { return cfg }, nilPool, nilPools, nilBalancer, nilCache, nil, nilRateLimiter)
 
 	body := `{"sql": ""}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/query", bytes.NewBufferString(body))
@@ -106,7 +122,7 @@ func TestInvalidBody(t *testing.T) {
 		Pool:    config.PoolConfig{ResetQuery: "DISCARD ALL"},
 		DataAPI: config.DataAPIConfig{Enabled: true},
 	}
-	srv := New(cfg, nil, nil, nil, nil, nil, nil)
+	srv := New(func() *config.Config { return cfg }, nilPool, nilPools, nilBalancer, nilCache, nil, nilRateLimiter)
 
 	body := `not json`
 	req := httptest.NewRequest(http.MethodPost, "/v1/query", bytes.NewBufferString(body))
@@ -128,7 +144,7 @@ func TestFirewallBlock(t *testing.T) {
 		Routing: config.RoutingConfig{ASTParser: true},
 		DataAPI: config.DataAPIConfig{Enabled: true},
 	}
-	srv := New(cfg, nil, nil, nil, nil, nil, nil)
+	srv := New(func() *config.Config { return cfg }, nilPool, nilPools, nilBalancer, nilCache, nil, nilRateLimiter)
 
 	body := `{"sql": "DELETE FROM users"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/query", bytes.NewBufferString(body))

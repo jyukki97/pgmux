@@ -48,31 +48,34 @@ type ErrorResponse struct {
 
 // Server is the Data API HTTP server.
 type Server struct {
-	cfg         *config.Config
-	writerPool  *pool.Pool
-	readerPools map[string]*pool.Pool
-	balancer    *router.RoundRobin
-	queryCache  *cache.Cache
-	met         *metrics.Metrics
-	rateLimiter *resilience.RateLimiter
-	apiKeys     map[string]bool
+	cfgFn         func() *config.Config
+	writerPoolFn  func() *pool.Pool
+	readerPoolsFn func() map[string]*pool.Pool
+	balancerFn    func() *router.RoundRobin
+	queryCacheFn  func() *cache.Cache
+	met           *metrics.Metrics
+	rateLimiterFn func() *resilience.RateLimiter
+	apiKeys       map[string]bool
 }
 
 // New creates a new Data API server.
-func New(cfg *config.Config, writerPool *pool.Pool, readerPools map[string]*pool.Pool, balancer *router.RoundRobin, queryCache *cache.Cache, met *metrics.Metrics, rateLimiter *resilience.RateLimiter) *Server {
+// Pool, balancer, cache, and rate limiter parameters are getter functions so
+// that Data API always accesses the latest objects even after a hot-reload.
+func New(cfgFn func() *config.Config, writerPoolFn func() *pool.Pool, readerPoolsFn func() map[string]*pool.Pool, balancerFn func() *router.RoundRobin, queryCacheFn func() *cache.Cache, met *metrics.Metrics, rateLimiterFn func() *resilience.RateLimiter) *Server {
+	cfg := cfgFn()
 	keys := make(map[string]bool, len(cfg.DataAPI.APIKeys))
 	for _, k := range cfg.DataAPI.APIKeys {
 		keys[k] = true
 	}
 	return &Server{
-		cfg:         cfg,
-		writerPool:  writerPool,
-		readerPools: readerPools,
-		balancer:    balancer,
-		queryCache:  queryCache,
-		met:         met,
-		rateLimiter: rateLimiter,
-		apiKeys:     keys,
+		cfgFn:         cfgFn,
+		writerPoolFn:  writerPoolFn,
+		readerPoolsFn: readerPoolsFn,
+		balancerFn:    balancerFn,
+		queryCacheFn:  queryCacheFn,
+		met:           met,
+		rateLimiterFn: rateLimiterFn,
+		apiKeys:       keys,
 	}
 }
 
@@ -105,7 +108,8 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Rate limit
-	if s.rateLimiter != nil && !s.rateLimiter.Allow() {
+	rateLimiter := s.rateLimiterFn()
+	if rateLimiter != nil && !rateLimiter.Allow() {
 		if s.met != nil {
 			s.met.RateLimited.Inc()
 		}
@@ -133,14 +137,16 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	)
 	defer querySpan.End()
 
+	cfg := s.cfgFn()
+
 	// Firewall check
-	if s.cfg.Firewall.Enabled {
+	if cfg.Firewall.Enabled {
 		fwResult := router.CheckFirewall(req.SQL, router.FirewallConfig{
-			Enabled:                s.cfg.Firewall.Enabled,
-			BlockDeleteWithoutWhere: s.cfg.Firewall.BlockDeleteWithoutWhere,
-			BlockUpdateWithoutWhere: s.cfg.Firewall.BlockUpdateWithoutWhere,
-			BlockDropTable:          s.cfg.Firewall.BlockDropTable,
-			BlockTruncate:           s.cfg.Firewall.BlockTruncate,
+			Enabled:                cfg.Firewall.Enabled,
+			BlockDeleteWithoutWhere: cfg.Firewall.BlockDeleteWithoutWhere,
+			BlockUpdateWithoutWhere: cfg.Firewall.BlockUpdateWithoutWhere,
+			BlockDropTable:          cfg.Firewall.BlockDropTable,
+			BlockTruncate:           cfg.Firewall.BlockTruncate,
 		})
 		if fwResult.Blocked {
 			if s.met != nil {
@@ -200,11 +206,14 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) executeRead(ctx context.Context, sql string) (*QueryResponse, error) {
+	queryCache := s.queryCacheFn()
+	writerPool := s.writerPoolFn()
+
 	// Cache lookup span
 	_, cacheLookupSpan := telemetry.Tracer().Start(ctx, "pgmux.cache.lookup")
-	if s.queryCache != nil {
+	if queryCache != nil {
 		key := s.cacheKey(sql)
-		if cached := s.queryCache.Get(key); cached != nil {
+		if cached := queryCache.Get(key); cached != nil {
 			if s.met != nil {
 				s.met.CacheHits.Inc()
 			}
@@ -223,17 +232,20 @@ func (s *Server) executeRead(ctx context.Context, sql string) (*QueryResponse, e
 	cacheLookupSpan.SetAttributes(attribute.Bool("pgmux.cached", false))
 	cacheLookupSpan.End()
 
+	balancer := s.balancerFn()
+	readerPools := s.readerPoolsFn()
+
 	var readerAddr string
-	if s.balancer != nil {
-		readerAddr = s.balancer.Next()
+	if balancer != nil {
+		readerAddr = balancer.Next()
 	}
 	if readerAddr == "" {
-		return s.executeOnPool(ctx, sql, s.writerPool)
+		return s.executeOnPool(ctx, sql, writerPool)
 	}
 
-	rPool, ok := s.readerPools[readerAddr]
+	rPool, ok := readerPools[readerAddr]
 	if !ok {
-		return s.executeOnPool(ctx, sql, s.writerPool)
+		return s.executeOnPool(ctx, sql, writerPool)
 	}
 
 	resp, err := s.executeOnPool(ctx, sql, rPool)
@@ -242,18 +254,18 @@ func (s *Server) executeRead(ctx context.Context, sql string) (*QueryResponse, e
 		if s.met != nil {
 			s.met.ReaderFallback.Inc()
 		}
-		return s.executeOnPool(ctx, sql, s.writerPool)
+		return s.executeOnPool(ctx, sql, writerPool)
 	}
 
 	// Cache store span
-	if s.queryCache != nil && resp != nil {
+	if queryCache != nil && resp != nil {
 		_, storeSpan := telemetry.Tracer().Start(ctx, "pgmux.cache.store")
 		key := s.cacheKey(sql)
 		if data, err := json.Marshal(resp); err == nil {
 			tables := s.extractTables(sql)
-			s.queryCache.Set(key, data, tables)
+			queryCache.Set(key, data, tables)
 			if s.met != nil {
-				s.met.CacheEntries.Set(float64(s.queryCache.Len()))
+				s.met.CacheEntries.Set(float64(queryCache.Len()))
 			}
 		}
 		storeSpan.End()
@@ -263,19 +275,21 @@ func (s *Server) executeRead(ctx context.Context, sql string) (*QueryResponse, e
 }
 
 func (s *Server) executeWrite(ctx context.Context, sql string) (*QueryResponse, error) {
-	resp, err := s.executeOnPool(ctx, sql, s.writerPool)
+	writerPool := s.writerPoolFn()
+	resp, err := s.executeOnPool(ctx, sql, writerPool)
 	if err != nil {
 		return nil, err
 	}
 
 	// Invalidate cache
-	if s.queryCache != nil {
+	queryCache := s.queryCacheFn()
+	if queryCache != nil {
 		tables := s.extractTables(sql)
 		for _, table := range tables {
-			s.queryCache.InvalidateTable(table)
+			queryCache.InvalidateTable(table)
 			if s.met != nil {
 				s.met.CacheInvalidations.Inc()
-				s.met.CacheEntries.Set(float64(s.queryCache.Len()))
+				s.met.CacheEntries.Set(float64(queryCache.Len()))
 			}
 		}
 	}
@@ -310,7 +324,7 @@ func (s *Server) executeOnPool(ctx context.Context, sql string, p *pool.Pool) (*
 	execSpan.End()
 
 	// Reset session state before returning to pool
-	resetPayload := append([]byte(s.cfg.Pool.ResetQuery), 0)
+	resetPayload := append([]byte(s.cfgFn().Pool.ResetQuery), 0)
 	if err := protocol.WriteMessage(conn, protocol.MsgQuery, resetPayload); err != nil {
 		p.Discard(conn)
 		return resp, nil // return result even if reset fails
@@ -566,21 +580,21 @@ func oidToTypeName(oid uint32) string {
 }
 
 func (s *Server) classifyQuery(sql string) router.QueryType {
-	if s.cfg.Routing.ASTParser {
+	if s.cfgFn().Routing.ASTParser {
 		return router.ClassifyAST(sql)
 	}
 	return router.Classify(sql)
 }
 
 func (s *Server) cacheKey(sql string) uint64 {
-	if s.cfg.Routing.ASTParser {
+	if s.cfgFn().Routing.ASTParser {
 		return cache.SemanticCacheKey(sql)
 	}
 	return cache.CacheKey(sql)
 }
 
 func (s *Server) extractTables(sql string) []string {
-	if s.cfg.Routing.ASTParser {
+	if s.cfgFn().Routing.ASTParser {
 		return router.ExtractTablesAST(sql)
 	}
 	return router.ExtractTables(sql)

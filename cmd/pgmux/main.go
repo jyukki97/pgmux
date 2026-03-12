@@ -77,7 +77,7 @@ func run() error {
 
 	// Start Admin API server
 	if cfg.Admin.Enabled {
-		adminSrv := admin.New(cfg, srv.Cache(), srv.Invalidator(), srv.WriterPool(), srv.ReaderPools(), srv.AuditLogger())
+		adminSrv := admin.New(srv.Cfg, srv.Cache, srv.Invalidator, srv.WriterPool, srv.ReaderPools, srv.AuditLogger)
 		adminSrv.SetReloadFunc(func() error {
 			return reloadConfig(cfgPath, srv)
 		})
@@ -90,7 +90,7 @@ func run() error {
 
 	// Start Data API server
 	if cfg.DataAPI.Enabled {
-		apiSrv := dataapi.New(cfg, srv.WriterPool(), srv.ReaderPools(), srv.Balancer(), srv.Cache(), srv.ProxyMetrics(), srv.RateLimiter())
+		apiSrv := dataapi.New(srv.Cfg, srv.WriterPool, srv.ReaderPools, srv.Balancer, srv.Cache, srv.ProxyMetrics(), srv.RateLimiter)
 		go func() {
 			if err := apiSrv.ListenAndServe(cfg.DataAPI.Listen); err != nil && err != http.ErrServerClosed {
 				slog.Error("data api server error", "error", err)

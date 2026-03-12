@@ -18,8 +18,13 @@ const (
 	MsgSync        byte = 'S'
 	MsgClose       byte = 'C'
 
+	// Frontend — COPY protocol
+	MsgCopyData byte = 'd'
+	MsgCopyDone byte = 'c'
+	MsgCopyFail byte = 'f'
+
 	// Backend (server → client)
-	MsgAuthentication byte = 'R'
+	MsgAuthentication  byte = 'R'
 	MsgParameterStatus byte = 'S'
 	MsgBackendKeyData  byte = 'K'
 	MsgReadyForQuery   byte = 'Z'
@@ -28,6 +33,9 @@ const (
 	MsgCommandComplete byte = 'C'
 	MsgErrorResponse   byte = 'E'
 	MsgNoticeResponse  byte = 'N'
+	MsgCopyInResponse  byte = 'G'
+	MsgCopyOutResponse byte = 'H'
+	MsgCopyBothResponse byte = 'W'
 )
 
 // SSLRequestCode is the magic number for SSL negotiation

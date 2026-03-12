@@ -54,7 +54,11 @@ func (r *RoundRobin) Next() string {
 
 // MarkUnhealthy marks a backend as unhealthy.
 func (r *RoundRobin) MarkUnhealthy(addr string) {
-	for _, b := range r.backends {
+	r.mu.RLock()
+	backends := r.backends
+	r.mu.RUnlock()
+
+	for _, b := range backends {
 		if b.Addr == addr {
 			b.healthy.Store(false)
 			slog.Warn("backend marked unhealthy", "addr", addr)
@@ -81,7 +85,11 @@ func (r *RoundRobin) StartHealthCheck(ctx context.Context, interval time.Duratio
 }
 
 func (r *RoundRobin) checkBackends() {
-	for _, b := range r.backends {
+	r.mu.RLock()
+	backends := r.backends
+	r.mu.RUnlock()
+
+	for _, b := range backends {
 		if !b.healthy.Load() {
 			conn, err := net.DialTimeout("tcp", b.Addr, 2*time.Second)
 			if err == nil {
@@ -170,8 +178,12 @@ func (r *RoundRobin) Backends() []string {
 
 // HealthyCount returns the number of healthy backends.
 func (r *RoundRobin) HealthyCount() int {
+	r.mu.RLock()
+	backends := r.backends
+	r.mu.RUnlock()
+
 	count := 0
-	for _, b := range r.backends {
+	for _, b := range backends {
 		if b.healthy.Load() {
 			count++
 		}

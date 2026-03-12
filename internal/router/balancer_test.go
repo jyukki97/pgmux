@@ -162,6 +162,45 @@ func TestRoundRobin_Backends(t *testing.T) {
 	}
 }
 
+func TestRoundRobin_ConcurrentUpdateAndRead(t *testing.T) {
+	rb := NewRoundRobin([]string{"a:1", "b:2", "c:3"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	// Concurrent UpdateBackends
+	go func() {
+		for i := 0; ctx.Err() == nil; i++ {
+			rb.UpdateBackends([]string{"x:1", "y:2"})
+			rb.UpdateBackends([]string{"a:1", "b:2", "c:3"})
+		}
+	}()
+
+	// Concurrent reads: Next, MarkUnhealthy, HealthyCount, checkBackends
+	go func() {
+		for ctx.Err() == nil {
+			rb.Next()
+		}
+	}()
+	go func() {
+		for ctx.Err() == nil {
+			rb.MarkUnhealthy("a:1")
+		}
+	}()
+	go func() {
+		for ctx.Err() == nil {
+			rb.HealthyCount()
+		}
+	}()
+	go func() {
+		for ctx.Err() == nil {
+			rb.checkBackends()
+		}
+	}()
+
+	<-ctx.Done()
+}
+
 func TestRoundRobin_Recovery(t *testing.T) {
 	// Start a real TCP server to simulate recovery
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

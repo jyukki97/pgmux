@@ -15,6 +15,7 @@ import (
 	"github.com/jyukki97/pgmux/internal/cache"
 	"github.com/jyukki97/pgmux/internal/config"
 	"github.com/jyukki97/pgmux/internal/metrics"
+	"github.com/jyukki97/pgmux/internal/mirror"
 	"github.com/jyukki97/pgmux/internal/pool"
 	"github.com/jyukki97/pgmux/internal/protocol"
 	"github.com/jyukki97/pgmux/internal/resilience"
@@ -38,6 +39,7 @@ type Server struct {
 	readerCBs    map[string]*resilience.CircuitBreaker
 	rateLimiter  *resilience.RateLimiter
 	auditLogger  *audit.Logger
+	mirror       *mirror.Mirror
 	wg           sync.WaitGroup
 	cancelMap    sync.Map         // cancelKeyPair → *cancelTarget
 	nextProxyPID atomic.Uint32
@@ -189,6 +191,43 @@ func NewServer(cfg *config.Config) *Server {
 			"webhook", cfg.Audit.Webhook.Enabled)
 	}
 
+	// Initialize Query Mirror
+	if cfg.Mirror.Enabled {
+		mirrorAddr := fmt.Sprintf("%s:%d", cfg.Mirror.Host, cfg.Mirror.Port)
+		mirrorUser := cfg.Mirror.User
+		if mirrorUser == "" {
+			mirrorUser = cfg.Backend.User
+		}
+		mirrorPass := cfg.Mirror.Password
+		if mirrorPass == "" {
+			mirrorPass = cfg.Backend.Password
+		}
+		mirrorDB := cfg.Mirror.Database
+		if mirrorDB == "" {
+			mirrorDB = cfg.Backend.Database
+		}
+
+		m, err := mirror.New(mirror.Config{
+			Addr:       mirrorAddr,
+			Mode:       cfg.Mirror.Mode,
+			Tables:     cfg.Mirror.Tables,
+			Compare:    cfg.Mirror.Compare,
+			Workers:    cfg.Mirror.Workers,
+			BufferSize: cfg.Mirror.BufferSize,
+			DialFunc: func() (net.Conn, error) {
+				return pgConnect(mirrorAddr, mirrorUser, mirrorPass, mirrorDB)
+			},
+		})
+		if err != nil {
+			slog.Error("create mirror", "addr", mirrorAddr, "error", err)
+		} else {
+			s.mirror = m
+			slog.Info("query mirror enabled",
+				"addr", mirrorAddr, "mode", cfg.Mirror.Mode,
+				"compare", cfg.Mirror.Compare, "workers", cfg.Mirror.Workers)
+		}
+	}
+
 	if len(readerAddrs) == 0 {
 		slog.Info("no readers configured, all queries routed to writer")
 	}
@@ -266,6 +305,9 @@ func (s *Server) Start(ctx context.Context) error {
 				}
 				if s.auditLogger != nil {
 					s.auditLogger.Close()
+				}
+				if s.mirror != nil {
+					s.mirror.Close()
 				}
 				slog.Info("proxy shut down")
 				return nil

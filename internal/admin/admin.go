@@ -24,6 +24,7 @@ type Server struct {
 	writerPoolFn  func() *pool.Pool
 	readerPoolsFn func() map[string]*pool.Pool
 	auditLoggerFn func() *audit.Logger
+	mirrorStatsFn func() any
 	reloadFunc    func() error
 	mu            sync.RWMutex
 }
@@ -38,7 +39,7 @@ func (s *Server) SetReloadFunc(fn func() error) {
 // New creates a new Admin server.
 // All parameters except reloadFunc are getter functions so that Admin always
 // accesses the latest objects even after a hot-reload.
-func New(cfgFn func() *config.Config, cacheFn func() *cache.Cache, invalidatorFn func() *cache.Invalidator, writerPoolFn func() *pool.Pool, readerPoolsFn func() map[string]*pool.Pool, auditLoggerFn func() *audit.Logger) *Server {
+func New(cfgFn func() *config.Config, cacheFn func() *cache.Cache, invalidatorFn func() *cache.Invalidator, writerPoolFn func() *pool.Pool, readerPoolsFn func() map[string]*pool.Pool, auditLoggerFn func() *audit.Logger, mirrorStatsFn func() any) *Server {
 	return &Server{
 		cfgFn:         cfgFn,
 		cacheFn:       cacheFn,
@@ -46,6 +47,7 @@ func New(cfgFn func() *config.Config, cacheFn func() *cache.Cache, invalidatorFn
 		writerPoolFn:  writerPoolFn,
 		readerPoolsFn: readerPoolsFn,
 		auditLoggerFn: auditLoggerFn,
+		mirrorStatsFn: mirrorStatsFn,
 	}
 }
 
@@ -58,6 +60,7 @@ func (s *Server) HTTPServer() *http.Server {
 	mux.HandleFunc("/admin/config", s.handleConfig)
 	mux.HandleFunc("/admin/cache/flush", s.handleCacheFlush)
 	mux.HandleFunc("/admin/reload", s.handleReload)
+	mux.HandleFunc("/admin/mirror/stats", s.handleMirrorStats)
 	return &http.Server{Handler: mux}
 }
 
@@ -302,6 +305,25 @@ func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("admin: config reloaded")
 	writeJSON(w, map[string]string{"status": "reloaded"})
+}
+
+// handleMirrorStats returns query mirror latency comparison statistics.
+func (s *Server) handleMirrorStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.mirrorStatsFn == nil {
+		writeJSON(w, map[string]string{"status": "mirror disabled"})
+		return
+	}
+	stats := s.mirrorStatsFn()
+	if stats == nil {
+		writeJSON(w, map[string]string{"status": "mirror disabled"})
+		return
+	}
+	writeJSON(w, stats)
 }
 
 func checkTCP(addr string) bool {

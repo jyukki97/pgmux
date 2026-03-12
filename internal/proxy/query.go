@@ -207,6 +207,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				s.metrics.QueryDuration.WithLabelValues(target).Observe(elapsed.Seconds())
 			}
 			s.emitAuditEvent(clientConn, query, target, elapsed, false)
+			s.mirrorQuery(msg, query, qtype, elapsed, parsedQuery)
 			querySpan.End()
 			continue
 		}

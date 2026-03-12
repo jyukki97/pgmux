@@ -92,7 +92,18 @@ func run() error {
 
 	// Start Admin API server
 	if cfg.Admin.Enabled {
-		adminSrv := admin.New(srv.Cfg, srv.Cache, srv.Invalidator, srv.WriterPool, srv.ReaderPools, srv.AuditLogger)
+		adminSrv := admin.New(srv.Cfg, srv.Cache, srv.Invalidator, srv.WriterPool, srv.ReaderPools, srv.AuditLogger, func() any {
+			m := srv.QueryMirror()
+			if m == nil {
+				return nil
+			}
+			return map[string]any{
+				"queries": m.Stats(),
+				"sent":    m.Sent(),
+				"dropped": m.Dropped(),
+				"errors":  m.Errors(),
+			}
+		})
 		adminSrv.SetReloadFunc(func() error {
 			return reloadConfig(cfgPath, srv)
 		})

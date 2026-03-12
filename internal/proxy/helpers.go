@@ -8,6 +8,7 @@ import (
 
 	"github.com/jyukki97/pgmux/internal/audit"
 	"github.com/jyukki97/pgmux/internal/cache"
+	"github.com/jyukki97/pgmux/internal/mirror"
 	"github.com/jyukki97/pgmux/internal/protocol"
 	"github.com/jyukki97/pgmux/internal/router"
 )
@@ -168,5 +169,23 @@ func (s *Server) emitAuditEvent(clientConn net.Conn, query, target string, elaps
 // AuditLogger returns the audit logger for external access (e.g., admin API).
 func (s *Server) AuditLogger() *audit.Logger {
 	return s.auditLogger
+}
+
+// QueryMirror returns the server's query mirror (may be nil if disabled).
+func (s *Server) QueryMirror() *mirror.Mirror {
+	return s.mirror
+}
+
+// mirrorQuery sends a query to the mirror target if configured and matching filters.
+func (s *Server) mirrorQuery(msg *protocol.Message, query string, qtype router.QueryType, elapsed time.Duration, pq *router.ParsedQuery) {
+	if s.mirror == nil {
+		return
+	}
+	if s.mirror.IsReadOnly() && qtype == router.QueryWrite {
+		return
+	}
+	if s.mirror.MatchesTables(s.extractQueryTablesParsed(query, pq)) {
+		s.mirror.Send(msg.Type, msg.Payload, query, elapsed)
+	}
 }
 

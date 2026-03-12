@@ -16,13 +16,14 @@
 | Query Firewall | X | X | X | **O** (차별점) |
 | AST Parser | X | X | X | **O** (차별점) |
 | Prepared Stmt Mux | X | X | X | **O** (차별점) |
+| Query Mirroring | X | X | X | **O** (차별점) |
 | Multi-DB | O | O | O | **미지원** (갭) |
 | Auto Failover | X | O | X | **미지원** (갭) |
 | Sharding | X | O | X | 미지원 |
 | Audit Log | X | X | X | **O** (차별점) |
 | Data API (HTTP) | X | X | X | **O** (차별점) |
 
-pgmux는 **캐싱, 방화벽, AST 파서, Audit, Data API** 등 경쟁 제품에 없는 고유 기능이 다수.
+pgmux는 **캐싱, 방화벽, AST 파서, Audit, Data API, Query Mirroring** 등 경쟁 제품에 없는 고유 기능이 다수.
 반면 **Multi-Database**와 **Auto Failover**가 가장 큰 갭 — 오픈소스 채택률의 핵심.
 
 ---
@@ -53,7 +54,6 @@ pgmux는 **캐싱, 방화벽, AST 파서, Audit, Data API** 등 경쟁 제품에
 
 | 기능 | 설명 | 우선순위 |
 |------|------|----------|
-| **Query Mirroring (Shadow Traffic)** | 프로덕션 쿼리를 복제하여 테스트 DB에도 전송. 결과 비교 없이 fire-and-forget. DB 마이그레이션/인덱스 변경 전 영향 분석에 필수적 | **높음** |
 | **Query Rewriting Rules** | 정규식 또는 AST 기반 쿼리 변환 규칙. 예: `SELECT *` → 특정 컬럼으로 치환, deprecated 테이블명 자동 변환. 무중단 스키마 마이그레이션 지원 | 중간 |
 | **Read-Only Mode** | `POST /admin/readonly` — 모든 쓰기 쿼리를 프록시 단에서 즉시 거부. Writer 장애 또는 긴급 유지보수 시 서비스 가용성 유지 | 중간 |
 | **Query Tagging & Routing Rules** | `/* app:payment, priority:high */` 같은 태그로 라우팅 규칙 정의. 특정 앱/마이크로서비스의 쿼리를 전용 Reader로 고정 | 중간 |
@@ -109,9 +109,8 @@ pgmux는 **캐싱, 방화벽, AST 파서, Audit, Data API** 등 경쟁 제품에
 
 ```
 Phase 20: OSS Release Ready          ← GitHub Actions CI + Docker Image + 벤치마크
-Phase 21: Multi-Database Routing     ← 단일 인스턴스 다중 DB (가장 요청 많을 기능)
-Phase 22: Grafana + Query Digest     ← 관측성 강화
-Phase 23: Query Mirroring            ← 차별화 킬러 피처
+Phase 22: Multi-Database Routing     ← 단일 인스턴스 다중 DB (가장 요청 많을 기능)
+Phase 23: Grafana + Query Digest     ← 관측성 강화
 Phase 24: Auto Failover + DNS SD     ← 고가용성
 Phase 25: pgmuxctl CLI               ← 운영자 UX
 Phase 26: Query Rewriting Rules      ← 무중단 마이그레이션 지원

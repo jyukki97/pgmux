@@ -39,6 +39,8 @@
 | W33 | Zombie/Dangling 핫픽스 | Data API 좀비 고루틴 방지, Admin/DataAPI Dangling Pointer 수정 | 완료 |
 | W34 | server.go 리팩토링 | 2,259줄 → 9개 역할별 파일 분리 | 완료 |
 | W35 | 운영 안정성 핫픽스 | Balancer RLock, Graceful Shutdown, CancelRequest, DataAPI 핫픽스 | 완료 |
+| W36 | Dead Code 정리 | 미사용 함수 5건 제거 (handleReadQuery, Ping 등) | 완료 |
+| W37 | Query Mirroring | Shadow DB 비동기 미러링, P50/P99 레이턴시 비교, 회귀 감지 | 완료 |
 
 ---
 

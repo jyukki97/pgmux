@@ -554,3 +554,25 @@
 |------|------|---------|
 | - | ConfigMap symlink swap 감지를 모든 OS 이벤트 타입에서 처리 | #129 / #134 |
 | - | Reload() 주석 수정 + audit 테스트 race condition 수정 | #130, #131 / #135 |
+
+### QA Round 3-4 & Bugfix
+
+| Task | 작업 | 이슈/PR |
+|------|------|---------|
+| - | AST 라우팅 사각지대, 캐시 무효화 실종, 중복 파싱, 헬스체크 병렬화, splitStatements 보강 | #143~#147 |
+| - | 캐시 키 namespace, Data API read table extractor, balancer 상태 보존, HTTP lifecycle, AST 재파싱 | #153~#157 / #158~#162 |
+
+### Cleanup: Dead Code Removal
+
+| Task | 작업 | 이슈/PR |
+|------|------|---------|
+| - | 미사용 함수 5건 제거 (handleReadQuery, Ping, ReplayLSN, NormalizeQuery, SemanticCacheKeyWithParams) | #163 / #164 |
+
+### Phase 21: Query Mirroring
+
+| Task | 작업 | 이슈/PR |
+|------|------|---------|
+| - | Shadow DB 비동기 미러링 (fire-and-forget 워커 풀) | #165 / #166 |
+| - | 패턴별 P50/P99 레이턴시 비교, 순환 버퍼 통계, 자동 회귀 감지 | #165 / #166 |
+| - | MirrorConfig 설정, 테이블 필터, read_only/all 모드 | #165 / #166 |
+| - | Admin API: GET /admin/mirror/stats 엔드포인트 | #165 / #166 |

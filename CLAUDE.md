@@ -45,7 +45,7 @@ internal/
     server.go                  # Server 구조체, NewServer, Start, handleConn, Reload, getters
     auth.go                    # 인증 핸드셰이크 (relayAuth, frontendAuth)
     query.go                   # 메인 쿼리 루프 (relayQueries)
-    query_read.go              # 읽기 쿼리 처리 (handleReadQuery, handleReadQueryTraced)
+    query_read.go              # 읽기 쿼리 처리 (handleReadQueryTraced)
     query_extended.go          # 확장 쿼리 프로토콜 (Prepared Statement 라우팅)
     copy.go                    # COPY IN/OUT/BOTH 릴레이
     backend.go                 # 백엔드 커넥션 관리 (acquire, reset, fallback)
@@ -76,6 +76,9 @@ internal/
   metrics/metrics.go           # Prometheus 메트릭
   telemetry/telemetry.go       # OpenTelemetry 분산 추적
   audit/audit.go               # Audit Logging + Slow Query Tracker
+  mirror/
+    mirror.go                  # Query Mirroring (Shadow DB 비동기 전송, 워커 풀)
+    stats.go                   # 패턴별 P50/P99 레이턴시 비교, 순환 버퍼, 회귀 감지
   dataapi/handler.go           # Serverless Data API (HTTP → PG)
   admin/admin.go               # Admin HTTP API
 tests/
@@ -115,6 +118,6 @@ tests/
 
 - 블로그 경로: `/Users/nhn/Library/Mobile Documents/com~apple~CloudDocs/project/study-blog/`
 - 프로젝트 페이지: `content/projects/pgmux.md`
-- 시리즈 포스트: `content/posts/YYYY-MM-DD-pgmux-N-제목.md` (P1~P16 완료)
+- 시리즈 포스트: `content/posts/YYYY-MM-DD-pgmux-N-제목.md` (P1~P32 완료)
 - Hugo frontmatter 형식, 기존 포스트 참고 (`content/projects/simple-queue-service.md`)
 - 포스팅 시점과 주제는 `docs/workflow.md` 섹션 6 참고

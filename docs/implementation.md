@@ -67,6 +67,9 @@ pgmux/
 │   │   └── telemetry.go         # OpenTelemetry 분산 추적
 │   ├── audit/
 │   │   └── audit.go             # 비동기 감사 로그 + Slow Query + Webhook
+│   ├── mirror/
+│   │   ├── mirror.go            # Query Mirroring (Shadow DB 비동기 전송, 워커 풀)
+│   │   └── stats.go             # 패턴별 P50/P99 레이턴시 비교, 순환 버퍼, 회귀 감지
 │   ├── dataapi/
 │   │   └── handler.go           # Serverless Data API HTTP 서버
 │   └── admin/
@@ -341,6 +344,15 @@ func (inv *Invalidator) OnWrite(query string) {
        결과 캐싱 (크기 제한 이내일 때)
             │
        커넥션 반환
+
+  * 쿼리 실행 완료 후 (쓰기/읽기 모두):
+       │
+       └─ mirror.enabled → mirrorQuery()
+            │
+            ├─ mode=read_only && 쓰기 쿼리 → 스킵
+            ├─ 테이블 필터 미통과 → 스킵
+            └─ workCh에 job 전송 (fire-and-forget, 논블로킹)
+                 └─ 워커 → Shadow DB 실행 → 레이턴시 비교 (compare 활성 시)
 ```
 
 ---
@@ -371,6 +383,7 @@ func (inv *Invalidator) OnWrite(query string) {
 | **18단계** | OpenTelemetry 분산 추적 | TracerProvider, Span 계측, Data API traceparent 전파 |
 | **19단계** | Config File Watch | fsnotify 파일 변경 감지, 자동 리로드 |
 | **20단계** | Prepared Statement Multiplexing | Parse/Bind 인터셉트 → Simple Query 합성, SQL Injection 방어 |
+| **21단계** | Query Mirroring | Shadow DB 비동기 미러링, 패턴별 P50/P99 레이턴시 비교, 회귀 감지 |
 
 > 모든 단계 완료. 상세 Task 목록은 `docs/tasks-completed.md`, 향후 로드맵은 `docs/tasks-next.md` 참고.
 
@@ -778,3 +791,58 @@ func (fw *FileWatcher) Start(ctx context.Context) error {
 ```
 
 `cmd/pgmux/main.go`에서 `config.watch: true`일 때 FileWatcher를 시작하며, 콜백은 기존 `reloadConfig()` 함수를 재사용한다.
+
+---
+
+### 15. Query Mirroring 구현
+
+#### 비동기 워커 풀
+
+`internal/mirror/mirror.go`에서 워커 고루틴 풀이 채널에서 job을 소비한다. 프로덕션 쿼리 경로에 영향을 주지 않기 위해 `select-default` 패턴으로 버퍼가 가득 차면 드롭한다.
+
+```go
+type Mirror struct {
+    cfg     Config
+    pool    *pool.Pool       // Shadow DB 전용 커넥션 풀
+    workCh  chan *job         // 버퍼 채널 (기본 10,000)
+    stats   *statsCollector   // 패턴별 레이턴시 통계
+    dropped atomic.Int64
+    sent    atomic.Int64
+    errors  atomic.Int64
+    tables  map[string]bool   // nil = 모든 테이블
+}
+
+func (m *Mirror) Send(msgType byte, payload []byte, query string, primaryDur time.Duration) {
+    payloadCopy := make([]byte, len(payload))
+    copy(payloadCopy, payload)
+    select {
+    case m.workCh <- &job{...}:
+    default:
+        m.dropped.Add(1)  // 프로덕션 블로킹 방지
+    }
+}
+```
+
+워커는 Shadow DB 커넥션을 획득 → PG wire 메시지 전송 → ReadyForQuery까지 응답 읽기 → 커넥션 반환 순서로 동작한다. 기존 `pool.Pool`과 `pgConnect()` DialFunc을 재사용한다.
+
+#### 패턴별 레이턴시 비교
+
+`internal/mirror/stats.go`에서 `pg_query.Normalize()`로 쿼리를 정규화하고 패턴별 통계를 수집한다.
+
+```go
+type patternStats struct {
+    count       int64
+    primaryDurs []time.Duration   // 순환 버퍼 (maxSamples=1000)
+    mirrorDurs  []time.Duration
+    idx         int               // 원형 버퍼 쓰기 위치
+}
+```
+
+스냅샷 시점에 복사 → 정렬 → 백분위수 계산. 회귀 판단: `mirrorP50 > primaryP50 * 2`.
+
+#### 프록시 통합
+
+- `proxy/query.go`: Simple Query 경로에서 `s.mirrorQuery()` 호출 (emitAuditEvent 직후)
+- `proxy/helpers.go`: `mirrorQuery()` 훅 — nil 체크 → 모드 필터 → 테이블 필터 → Send
+- `proxy/server.go`: `NewServer()`에서 Mirror 초기화, `Close()`에서 `mirror.Close()` 호출
+- `admin/admin.go`: `GET /admin/mirror/stats` 핸들러, `mirrorStatsFn` 콜백 주입

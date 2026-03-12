@@ -208,8 +208,8 @@ func TestHandleReload_Error(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.handleReload(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200", w.Code)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
 	}
 
 	var resp map[string]any

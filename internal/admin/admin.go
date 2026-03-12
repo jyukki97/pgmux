@@ -266,6 +266,7 @@ func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
 
 	if err := fn(); err != nil {
 		slog.Error("admin: reload failed", "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
 		writeJSON(w, map[string]any{"status": "error", "error": err.Error()})
 		return
 	}

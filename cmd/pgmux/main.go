@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -62,14 +63,27 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// Collect HTTP servers for graceful shutdown
+	var httpServers []*http.Server
+
+	// Channel to propagate HTTP bind errors to main goroutine
+	httpErrCh := make(chan error, 3)
+
 	// Start Prometheus metrics HTTP server
 	if cfg.Metrics.Enabled {
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", promhttp.Handler())
+		metricsSrv := &http.Server{Handler: mux}
+		httpServers = append(httpServers, metricsSrv)
+
+		ln, err := net.Listen("tcp", cfg.Metrics.Listen)
+		if err != nil {
+			return fmt.Errorf("metrics server bind %s: %w", cfg.Metrics.Listen, err)
+		}
+		slog.Info("metrics server starting", "listen", cfg.Metrics.Listen)
 		go func() {
-			slog.Info("metrics server starting", "listen", cfg.Metrics.Listen)
-			if err := http.ListenAndServe(cfg.Metrics.Listen, mux); err != nil && err != http.ErrServerClosed {
-				slog.Error("metrics server error", "error", err)
+			if err := metricsSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
+				httpErrCh <- fmt.Errorf("metrics server: %w", err)
 			}
 		}()
 	}
@@ -82,9 +96,17 @@ func run() error {
 		adminSrv.SetReloadFunc(func() error {
 			return reloadConfig(cfgPath, srv)
 		})
+		adminHTTP := adminSrv.HTTPServer()
+
+		ln, err := net.Listen("tcp", cfg.Admin.Listen)
+		if err != nil {
+			return fmt.Errorf("admin server bind %s: %w", cfg.Admin.Listen, err)
+		}
+		httpServers = append(httpServers, adminHTTP)
+		slog.Info("admin server starting", "listen", cfg.Admin.Listen)
 		go func() {
-			if err := adminSrv.ListenAndServe(cfg.Admin.Listen); err != nil && err != http.ErrServerClosed {
-				slog.Error("admin server error", "error", err)
+			if err := adminHTTP.Serve(ln); err != nil && err != http.ErrServerClosed {
+				httpErrCh <- fmt.Errorf("admin server: %w", err)
 			}
 		}()
 	}
@@ -92,12 +114,28 @@ func run() error {
 	// Start Data API server
 	if cfg.DataAPI.Enabled {
 		apiSrv := dataapi.New(srv.Cfg, srv.WriterPool, srv.ReaderPools, srv.Balancer, srv.Cache, srv.ProxyMetrics(), srv.RateLimiter, func() *cache.Invalidator { return srv.Invalidator() })
+		apiHTTP := apiSrv.HTTPServer()
+
+		ln, err := net.Listen("tcp", cfg.DataAPI.Listen)
+		if err != nil {
+			return fmt.Errorf("data api server bind %s: %w", cfg.DataAPI.Listen, err)
+		}
+		httpServers = append(httpServers, apiHTTP)
+		slog.Info("data api server starting", "listen", cfg.DataAPI.Listen)
 		go func() {
-			if err := apiSrv.ListenAndServe(cfg.DataAPI.Listen); err != nil && err != http.ErrServerClosed {
-				slog.Error("data api server error", "error", err)
+			if err := apiHTTP.Serve(ln); err != nil && err != http.ErrServerClosed {
+				httpErrCh <- fmt.Errorf("data api server: %w", err)
 			}
 		}()
 	}
+
+	// Watch for HTTP server runtime errors
+	go func() {
+		if err := <-httpErrCh; err != nil {
+			slog.Error("http server runtime error", "error", err)
+			cancel()
+		}
+	}()
 
 	// Handle SIGHUP for config reload
 	sighupCh := make(chan os.Signal, 1)
@@ -129,6 +167,18 @@ func run() error {
 			}
 		}()
 	}
+
+	// Graceful shutdown of HTTP servers when context is cancelled
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		for _, s := range httpServers {
+			if err := s.Shutdown(shutdownCtx); err != nil {
+				slog.Error("http server shutdown", "error", err)
+			}
+		}
+	}()
 
 	slog.Info("pgmux starting", "listen", cfg.Proxy.Listen)
 

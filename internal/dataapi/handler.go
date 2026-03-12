@@ -75,13 +75,20 @@ func New(cfgFn func() *config.Config, writerPoolFn func() *pool.Pool, readerPool
 	}
 }
 
-// ListenAndServe starts the Data API HTTP server.
-func (s *Server) ListenAndServe(addr string) error {
+// HTTPServer returns an *http.Server with the Data API routes registered.
+// The caller is responsible for calling Serve/Shutdown.
+func (s *Server) HTTPServer() *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/query", s.handleQuery)
+	return &http.Server{Handler: mux}
+}
 
+// ListenAndServe starts the Data API HTTP server.
+func (s *Server) ListenAndServe(addr string) error {
+	srv := s.HTTPServer()
+	srv.Addr = addr
 	slog.Info("data api server starting", "listen", addr)
-	return http.ListenAndServe(addr, mux)
+	return srv.ListenAndServe()
 }
 
 func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {

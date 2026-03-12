@@ -49,17 +49,24 @@ func New(cfgFn func() *config.Config, cacheFn func() *cache.Cache, invalidatorFn
 	}
 }
 
-// ListenAndServe starts the admin HTTP server.
-func (s *Server) ListenAndServe(addr string) error {
+// HTTPServer returns an *http.Server with the admin routes registered.
+// The caller is responsible for calling Serve/Shutdown.
+func (s *Server) HTTPServer() *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/admin/health", s.handleHealth)
 	mux.HandleFunc("/admin/stats", s.handleStats)
 	mux.HandleFunc("/admin/config", s.handleConfig)
 	mux.HandleFunc("/admin/cache/flush", s.handleCacheFlush)
 	mux.HandleFunc("/admin/reload", s.handleReload)
+	return &http.Server{Handler: mux}
+}
 
+// ListenAndServe starts the admin HTTP server.
+func (s *Server) ListenAndServe(addr string) error {
+	srv := s.HTTPServer()
+	srv.Addr = addr
 	slog.Info("admin server starting", "listen", addr)
-	return http.ListenAndServe(addr, mux)
+	return srv.ListenAndServe()
 }
 
 // handleHealth returns the health status of all backends.

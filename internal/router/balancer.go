@@ -101,14 +101,32 @@ func (r *RoundRobin) checkBackends() {
 	}
 }
 
-// UpdateBackends replaces the backend list atomically.
+// UpdateBackends replaces the backend list atomically, preserving
+// healthy and replayLSN state for backends that already exist.
 func (r *RoundRobin) UpdateBackends(addrs []string) {
+	// Snapshot existing backends under read lock.
+	r.mu.RLock()
+	old := r.backends
+	r.mu.RUnlock()
+
+	// Build addr → *Backend map from the current list.
+	existing := make(map[string]*Backend, len(old))
+	for _, b := range old {
+		existing[b.Addr] = b
+	}
+
+	// Build new slice, reusing existing backends to preserve runtime state.
 	backends := make([]*Backend, len(addrs))
 	for i, addr := range addrs {
-		b := &Backend{Addr: addr}
-		b.healthy.Store(true)
-		backends[i] = b
+		if b, ok := existing[addr]; ok {
+			backends[i] = b
+		} else {
+			b := &Backend{Addr: addr}
+			b.healthy.Store(true)
+			backends[i] = b
+		}
 	}
+
 	r.mu.Lock()
 	r.backends = backends
 	r.mu.Unlock()

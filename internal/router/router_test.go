@@ -6,7 +6,7 @@ import (
 )
 
 func TestSession_BasicRouting(t *testing.T) {
-	s := NewSession(0, false)
+	s := NewSession(0, false, false)
 
 	if got := s.Route("SELECT * FROM users"); got != RouteReader {
 		t.Errorf("SELECT → %d, want RouteReader", got)
@@ -17,7 +17,7 @@ func TestSession_BasicRouting(t *testing.T) {
 }
 
 func TestSession_Transaction(t *testing.T) {
-	s := NewSession(0, false)
+	s := NewSession(0, false, false)
 
 	// BEGIN → all queries go to writer
 	if got := s.Route("BEGIN"); got != RouteWriter {
@@ -40,7 +40,7 @@ func TestSession_Transaction(t *testing.T) {
 }
 
 func TestSession_ReadAfterWriteDelay(t *testing.T) {
-	s := NewSession(100 * time.Millisecond, false)
+	s := NewSession(100*time.Millisecond, false, false)
 
 	// Write
 	s.Route("INSERT INTO users VALUES (1)")
@@ -60,7 +60,7 @@ func TestSession_ReadAfterWriteDelay(t *testing.T) {
 }
 
 func TestSession_Rollback(t *testing.T) {
-	s := NewSession(0, false)
+	s := NewSession(0, false, false)
 
 	s.Route("BEGIN")
 	if !s.InTransaction() {
@@ -78,7 +78,7 @@ func TestSession_Rollback(t *testing.T) {
 }
 
 func TestSession_PreparedStatements(t *testing.T) {
-	s := NewSession(0, false)
+	s := NewSession(0, false, false)
 
 	// Register a SELECT prepared statement → reader
 	route := s.RegisterStatement("stmt_read", "SELECT * FROM users WHERE id = $1")
@@ -113,7 +113,7 @@ func TestSession_PreparedStatements(t *testing.T) {
 }
 
 func TestSession_PreparedStatement_InTransaction(t *testing.T) {
-	s := NewSession(0, false)
+	s := NewSession(0, false, false)
 
 	// Start transaction
 	s.Route("BEGIN")
@@ -134,7 +134,7 @@ func TestSession_PreparedStatement_InTransaction(t *testing.T) {
 }
 
 func TestSession_UnnamedStatement(t *testing.T) {
-	s := NewSession(0, false)
+	s := NewSession(0, false, false)
 
 	// Unnamed statement (empty string) — overwritten on each Parse
 	s.RegisterStatement("", "SELECT 1")
@@ -150,7 +150,7 @@ func TestSession_UnnamedStatement(t *testing.T) {
 }
 
 func TestSession_MultiStatementCommit(t *testing.T) {
-	s := NewSession(0, false)
+	s := NewSession(0, false, false)
 
 	// Start transaction
 	s.Route("BEGIN")
@@ -171,7 +171,7 @@ func TestSession_MultiStatementCommit(t *testing.T) {
 }
 
 func TestSession_MultiStatementBegin(t *testing.T) {
-	s := NewSession(0, false)
+	s := NewSession(0, false, false)
 
 	// Multi-statement with BEGIN embedded
 	s.Route("SELECT 1; BEGIN;")
@@ -186,7 +186,7 @@ func TestSession_MultiStatementBegin(t *testing.T) {
 }
 
 func TestSession_CausalConsistency_LSNTracking(t *testing.T) {
-	s := NewSession(0, true)
+	s := NewSession(0, true, false)
 
 	// Initially no LSN
 	if lsn := s.LastWriteLSN(); !lsn.IsZero() {
@@ -217,13 +217,73 @@ func TestSession_CausalConsistency_LSNTracking(t *testing.T) {
 
 func TestSession_CausalConsistency_SkipsTimerDelay(t *testing.T) {
 	// With causal consistency ON, read_after_write_delay should be ignored
-	s := NewSession(100*time.Millisecond, true)
+	s := NewSession(100*time.Millisecond, true, false)
 
 	s.Route("INSERT INTO users VALUES (1)")
 
 	// In causal mode, reads should NOT be routed to writer by timer
 	if got := s.Route("SELECT * FROM users"); got != RouteReader {
 		t.Errorf("SELECT in causal mode → %d, want RouteReader (timer should be skipped)", got)
+	}
+}
+
+func TestSession_ASTParser_CTEWithInsert(t *testing.T) {
+	// With AST mode on, CTE containing INSERT routes to writer
+	s := NewSession(0, false, true)
+
+	query := "WITH ins AS (INSERT INTO users (name) VALUES ('alice') RETURNING id) SELECT * FROM ins"
+	if got := s.Route(query); got != RouteWriter {
+		t.Errorf("AST mode: CTE with INSERT → %d, want RouteWriter", got)
+	}
+}
+
+func TestSession_ASTParser_CTEWithUpdate(t *testing.T) {
+	// With AST mode on, CTE containing UPDATE routes to writer
+	s := NewSession(0, false, true)
+
+	query := "WITH upd AS (UPDATE users SET name = 'bob' WHERE id = 1 RETURNING id) SELECT * FROM upd"
+	if got := s.Route(query); got != RouteWriter {
+		t.Errorf("AST mode: CTE with UPDATE → %d, want RouteWriter", got)
+	}
+}
+
+func TestSession_StringParser_CTEWithInsert(t *testing.T) {
+	// With AST mode off, same CTE query still uses string-based classification
+	s := NewSession(0, false, false)
+
+	query := "WITH ins AS (INSERT INTO users (name) VALUES ('alice') RETURNING id) SELECT * FROM ins"
+	if got := s.Route(query); got != RouteWriter {
+		t.Errorf("String mode: CTE with INSERT → %d, want RouteWriter", got)
+	}
+}
+
+func TestSession_ASTParser_SelectRouteReader(t *testing.T) {
+	// Standard SELECT routes to reader in both modes
+	queryAST := NewSession(0, false, true)
+	queryString := NewSession(0, false, false)
+
+	query := "SELECT * FROM users WHERE id = 1"
+	if got := queryAST.Route(query); got != RouteReader {
+		t.Errorf("AST mode: SELECT → %d, want RouteReader", got)
+	}
+	if got := queryString.Route(query); got != RouteReader {
+		t.Errorf("String mode: SELECT → %d, want RouteReader", got)
+	}
+}
+
+func TestSession_ASTParser_PreparedStatement(t *testing.T) {
+	// Prepared statement routing also respects AST parser setting
+	s := NewSession(0, false, true)
+
+	route := s.RegisterStatement("stmt_cte",
+		"WITH ins AS (INSERT INTO users (name) VALUES ($1) RETURNING id) SELECT * FROM ins")
+	if route != RouteWriter {
+		t.Errorf("AST mode: RegisterStatement CTE with INSERT → %d, want RouteWriter", route)
+	}
+
+	route = s.RegisterStatement("stmt_select", "SELECT * FROM users WHERE id = $1")
+	if route != RouteReader {
+		t.Errorf("AST mode: RegisterStatement SELECT → %d, want RouteReader", route)
 	}
 }
 

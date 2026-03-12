@@ -20,15 +20,17 @@ type Session struct {
 	readAfterWriteDelay time.Duration
 	causalConsistency   bool
 	lastWriteLSN        LSN
+	astParser           bool
 
 	// Prepared statement routing: statement name → route
 	stmtRoutes map[string]Route
 }
 
-func NewSession(readAfterWriteDelay time.Duration, causalConsistency bool) *Session {
+func NewSession(readAfterWriteDelay time.Duration, causalConsistency bool, astParser bool) *Session {
 	return &Session{
 		readAfterWriteDelay: readAfterWriteDelay,
 		causalConsistency:   causalConsistency,
+		astParser:           astParser,
 		stmtRoutes:          make(map[string]Route),
 	}
 }
@@ -53,7 +55,12 @@ func (s *Session) Route(query string) Route {
 		return RouteWriter
 	}
 
-	qtype := Classify(query)
+	var qtype QueryType
+	if s.astParser {
+		qtype = ClassifyAST(query)
+	} else {
+		qtype = Classify(query)
+	}
 
 	// Write query
 	if qtype == QueryWrite {
@@ -215,7 +222,13 @@ func (s *Session) routeLocked(query string) Route {
 		return RouteWriter
 	}
 
-	if Classify(query) == QueryWrite {
+	var qtype QueryType
+	if s.astParser {
+		qtype = ClassifyAST(query)
+	} else {
+		qtype = Classify(query)
+	}
+	if qtype == QueryWrite {
 		return RouteWriter
 	}
 

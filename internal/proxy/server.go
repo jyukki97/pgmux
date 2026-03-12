@@ -389,7 +389,7 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 	slog.Info("handshake complete", "remote", rawConn.RemoteAddr())
 
 	// 5. Create per-client session router
-	session := router.NewSession(cfg.Routing.ReadAfterWriteDelay, cfg.Routing.CausalConsistency)
+	session := router.NewSession(cfg.Routing.ReadAfterWriteDelay, cfg.Routing.CausalConsistency, cfg.Routing.ASTParser)
 
 	// 6. Relay queries with transaction-level pooling
 	s.relayQueries(ctx, clientConn, session, ct)

@@ -33,7 +33,7 @@ func BenchmarkExtractTables(b *testing.B) {
 }
 
 func BenchmarkSessionRoute(b *testing.B) {
-	s := router.NewSession(500 * time.Millisecond, false)
+	s := router.NewSession(500*time.Millisecond, false, false)
 	for i := 0; i < b.N; i++ {
 		s.Route("SELECT * FROM users WHERE id = 1")
 	}

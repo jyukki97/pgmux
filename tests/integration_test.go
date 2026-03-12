@@ -18,7 +18,7 @@ func TestIntegration_RouterWithCache(t *testing.T) {
 		TTL:        time.Second,
 		MaxSize:    4096,
 	})
-	session := router.NewSession(200 * time.Millisecond, false)
+	session := router.NewSession(200*time.Millisecond, false, false)
 
 	// 1. SELECT → Reader route + cache miss
 	query := "SELECT * FROM users WHERE id = 1"
@@ -74,7 +74,7 @@ func TestIntegration_RouterWithCache(t *testing.T) {
 
 // TestIntegration_TransactionRouting tests full transaction flow.
 func TestIntegration_TransactionRouting(t *testing.T) {
-	session := router.NewSession(0, false)
+	session := router.NewSession(0, false, false)
 
 	steps := []struct {
 		query string
@@ -171,7 +171,7 @@ func TestIntegration_CacheTTLAndEviction(t *testing.T) {
 // TestIntegration_CausalConsistency tests LSN-based causal consistency routing.
 func TestIntegration_CausalConsistency(t *testing.T) {
 	rb := router.NewRoundRobin([]string{"reader1:5432", "reader2:5432"})
-	session := router.NewSession(0, true)
+	session := router.NewSession(0, true, false)
 
 	// 1. Before any write, reads go to reader (no LSN constraint)
 	route := session.Route("SELECT * FROM users")
@@ -237,7 +237,7 @@ func TestIntegration_CausalConsistency(t *testing.T) {
 // TestIntegration_CausalConsistency_NoTimerFallback verifies that causal mode
 // doesn't use the timer-based read-after-write delay.
 func TestIntegration_CausalConsistency_NoTimerFallback(t *testing.T) {
-	session := router.NewSession(500*time.Millisecond, true)
+	session := router.NewSession(500*time.Millisecond, true, false)
 
 	// Write
 	session.Route("INSERT INTO users (name) VALUES ('test')")

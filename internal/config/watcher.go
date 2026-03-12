@@ -108,22 +108,18 @@ func (fw *FileWatcher) Stop() {
 
 // isTargetEvent returns true if the event is relevant to the watched file.
 func (fw *FileWatcher) isTargetEvent(event fsnotify.Event) bool {
-	// Only respond to write, create, and rename events.
-	if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) == 0 {
-		return false
-	}
-
 	eventBase := filepath.Base(event.Name)
 
 	// Direct match: the config file itself was modified.
-	if eventBase == fw.fileName {
+	if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) != 0 && eventBase == fw.fileName {
 		return true
 	}
 
 	// K8s ConfigMap symlink swap: when K8s updates a mounted ConfigMap,
-	// it atomically swaps a "..data" symlink. Detect CREATE events on
-	// symlink-like entries (prefixed with "..") in the watched directory.
-	if event.Op&fsnotify.Create != 0 && strings.HasPrefix(eventBase, "..") {
+	// it atomically swaps a "..data" symlink via os.Rename. Depending on
+	// the OS/filesystem, this produces CREATE, RENAME, or REMOVE events.
+	// Accept any mutation event on ".." prefixed entries.
+	if event.Op != 0 && strings.HasPrefix(eventBase, "..") {
 		return true
 	}
 

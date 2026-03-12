@@ -480,3 +480,15 @@
 | Task | 작업 | 이슈/PR |
 |------|------|---------|
 | HF-2 | lastWebhook map 주기적 정리 goroutine 추가, DedupInterval 설정 노출 | #108 / #110 |
+
+### Hotfix: Connection Pool Poisoning (Protocol Desync)
+
+| Task | 작업 | 이슈/PR |
+|------|------|---------|
+| HF-3 | relayAndCollect/queryReplayLSN 에러 시 Release → Discard로 오염 커넥션 즉시 폐기 | #111 / #113 |
+
+### Hotfix: Global Panic Vulnerability
+
+| Task | 작업 | 이슈/PR |
+|------|------|---------|
+| HF-4 | 클라이언트 핸들링 고루틴에 defer recover() 격리형 복구 도입 | #112 / #114 |

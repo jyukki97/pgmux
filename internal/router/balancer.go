@@ -171,18 +171,6 @@ func (r *RoundRobin) SetReplayLSN(addr string, lsn LSN) {
 	}
 }
 
-// ReplayLSN returns the replay LSN for a backend.
-func (r *RoundRobin) ReplayLSN(addr string) LSN {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	for _, b := range r.backends {
-		if b.Addr == addr {
-			return LSN(b.replayLSN.Load())
-		}
-	}
-	return InvalidLSN
-}
-
 // Backends returns the list of backend addresses.
 func (r *RoundRobin) Backends() []string {
 	r.mu.RLock()

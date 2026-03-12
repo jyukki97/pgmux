@@ -40,31 +40,3 @@ func semanticCacheKeyFromTree(tree *pg_query.ParseResult, query string) uint64 {
 	return h.Sum64()
 }
 
-// NormalizeQuery returns a canonical string representation of the query
-// with constants replaced by $N placeholders. Useful for logging and debugging.
-func NormalizeQuery(query string) string {
-	normalized, err := pg_query.Normalize(query)
-	if err != nil {
-		return query
-	}
-	return normalized
-}
-
-// SemanticCacheKeyWithParams generates a semantic cache key that also considers
-// the actual parameter values. This allows caching different results for
-// the same query structure with different parameters.
-func SemanticCacheKeyWithParams(query string, params ...any) uint64 {
-	normalized, err := pg_query.Normalize(query)
-	if err != nil {
-		return CacheKey(query, params...)
-	}
-
-	h := fnv.New64a()
-	h.Write([]byte(normalized))
-	for _, p := range params {
-		if s, ok := p.(string); ok {
-			h.Write([]byte(s))
-		}
-	}
-	return h.Sum64()
-}

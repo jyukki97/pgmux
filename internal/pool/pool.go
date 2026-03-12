@@ -216,20 +216,6 @@ func (p *Pool) newConn() (*Conn, error) {
 	return c, nil
 }
 
-// Ping checks if a connection is still alive.
-func Ping(conn *Conn) error {
-	conn.Conn.SetDeadline(time.Now().Add(time.Second))
-	defer conn.Conn.SetDeadline(time.Time{})
-
-	// Write a single null byte and see if connection errors
-	one := make([]byte, 0)
-	_, err := conn.Conn.Read(one)
-	if nErr, ok := err.(net.Error); ok && nErr.Timeout() {
-		return nil // timeout is expected — connection is alive
-	}
-	return err
-}
-
 // StartHealthCheck runs a periodic health check goroutine.
 func (p *Pool) StartHealthCheck(ctx context.Context, interval time.Duration) {
 	go func() {

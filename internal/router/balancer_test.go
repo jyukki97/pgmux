@@ -140,20 +140,6 @@ func TestRoundRobin_NextWithLSN_SkipsUnhealthy(t *testing.T) {
 	}
 }
 
-func TestRoundRobin_SetReplayLSN(t *testing.T) {
-	rb := NewRoundRobin([]string{"a:1", "b:2"})
-
-	rb.SetReplayLSN("a:1", LSN(12345))
-	if got := rb.ReplayLSN("a:1"); got != LSN(12345) {
-		t.Errorf("ReplayLSN(a:1) = %d, want 12345", got)
-	}
-
-	// Unknown addr returns InvalidLSN
-	if got := rb.ReplayLSN("unknown:1"); got != InvalidLSN {
-		t.Errorf("ReplayLSN(unknown) = %d, want 0", got)
-	}
-}
-
 func TestRoundRobin_Backends(t *testing.T) {
 	rb := NewRoundRobin([]string{"a:1", "b:2", "c:3"})
 	addrs := rb.Backends()

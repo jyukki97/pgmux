@@ -396,8 +396,8 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 }
 
 // Reload applies a new configuration without restarting the proxy.
-// Reloadable: readers, pool sizes, cache TTL, rate limit settings.
-// NOT reloadable: proxy.listen, writer address.
+// Reloadable: reader list (add/remove), rate limit settings.
+// NOT reloadable: proxy.listen, writer address, pool sizes (existing pools), cache TTL.
 func (s *Server) Reload(newCfg *config.Config) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

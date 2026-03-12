@@ -138,12 +138,12 @@ func TestWebhookRateLimiting(t *testing.T) {
 		Enabled:            true,
 		SlowQueryThreshold: 100 * time.Millisecond,
 		Webhook: WebhookConfig{
-			Enabled: true,
-			URL:     ts.URL,
-			Timeout: 5 * time.Second,
+			Enabled:       true,
+			URL:           ts.URL,
+			Timeout:       5 * time.Second,
+			DedupInterval: 10 * time.Second, // Long interval for testing
 		},
 	})
-	l.webhookInterval = 10 * time.Second // Long interval for testing
 	defer l.Close()
 
 	// Same query twice — second should be deduplicated
@@ -176,12 +176,12 @@ func TestWebhookDifferentQueries(t *testing.T) {
 		Enabled:            true,
 		SlowQueryThreshold: 100 * time.Millisecond,
 		Webhook: WebhookConfig{
-			Enabled: true,
-			URL:     ts.URL,
-			Timeout: 5 * time.Second,
+			Enabled:       true,
+			URL:           ts.URL,
+			Timeout:       5 * time.Second,
+			DedupInterval: 10 * time.Second,
 		},
 	})
-	l.webhookInterval = 10 * time.Second
 	defer l.Close()
 
 	// Different queries should both trigger webhooks

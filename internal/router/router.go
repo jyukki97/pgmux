@@ -117,7 +117,9 @@ func containsTransactionKeyword(query string) bool {
 	return false
 }
 
-// splitStatements splits a query string by semicolons, respecting quoted strings.
+// splitStatements splits a query string by semicolons, respecting quoted strings,
+// dollar quoting ($$...$$, $tag$...$tag$), line comments (-- ...), and
+// block comments (/* ... */ including nested).
 func splitStatements(query string) []string {
 	var stmts []string
 	var current strings.Builder
@@ -126,10 +128,84 @@ func splitStatements(query string) []string {
 
 	for i := 0; i < len(query); i++ {
 		ch := query[i]
+
+		// --- Dollar quoting (only outside regular quotes) ---
+		if ch == '$' && !inSingleQuote && !inDoubleQuote {
+			tag, ok := parseDollarTag(query, i)
+			if ok {
+				// Write opening tag
+				current.WriteString(tag)
+				// Find closing tag
+				end := strings.Index(query[i+len(tag):], tag)
+				if end >= 0 {
+					// Write body + closing tag
+					current.WriteString(query[i+len(tag) : i+len(tag)+end])
+					current.WriteString(tag)
+					i += len(tag) + end + len(tag) - 1
+				} else {
+					// No closing tag — rest of query is dollar-quoted
+					current.WriteString(query[i+len(tag):])
+					i = len(query) - 1
+				}
+				continue
+			}
+		}
+
+		// --- Line comment: -- (only outside quotes) ---
+		if ch == '-' && !inSingleQuote && !inDoubleQuote &&
+			i+1 < len(query) && query[i+1] == '-' {
+			// Consume until end of line (or end of query)
+			for i < len(query) && query[i] != '\n' {
+				current.WriteByte(query[i])
+				i++
+			}
+			if i < len(query) {
+				current.WriteByte(query[i]) // write the '\n'
+			}
+			continue
+		}
+
+		// --- Block comment: /* ... */ with nesting (only outside quotes) ---
+		if ch == '/' && !inSingleQuote && !inDoubleQuote &&
+			i+1 < len(query) && query[i+1] == '*' {
+			depth := 1
+			current.WriteByte('/')
+			current.WriteByte('*')
+			i += 2
+			for i < len(query) && depth > 0 {
+				if i+1 < len(query) && query[i] == '/' && query[i+1] == '*' {
+					depth++
+					current.WriteByte('/')
+					current.WriteByte('*')
+					i += 2
+				} else if i+1 < len(query) && query[i] == '*' && query[i+1] == '/' {
+					depth--
+					current.WriteByte('*')
+					current.WriteByte('/')
+					i += 2
+				} else {
+					current.WriteByte(query[i])
+					i++
+				}
+			}
+			i-- // outer loop will i++
+			continue
+		}
+
 		switch {
 		case ch == '\'' && !inDoubleQuote:
-			inSingleQuote = !inSingleQuote
 			current.WriteByte(ch)
+			if inSingleQuote {
+				// Check for escaped quote ('')
+				if i+1 < len(query) && query[i+1] == '\'' {
+					current.WriteByte('\'')
+					i++
+				} else {
+					inSingleQuote = false
+				}
+			} else {
+				inSingleQuote = true
+			}
 		case ch == '"' && !inSingleQuote:
 			inDoubleQuote = !inDoubleQuote
 			current.WriteByte(ch)

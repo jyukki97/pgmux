@@ -289,18 +289,71 @@ func TestSession_ASTParser_PreparedStatement(t *testing.T) {
 
 func TestSplitStatements(t *testing.T) {
 	tests := []struct {
+		name  string
 		query string
 		want  int
 	}{
-		{"SELECT 1", 1},
-		{"SELECT 1; SELECT 2;", 2},
-		{"INSERT INTO t VALUES ('a;b'); SELECT 1;", 2}, // semicolon inside quotes
-		{"", 0},
+		{"simple single", "SELECT 1", 1},
+		{"simple multi", "SELECT 1; SELECT 2;", 2},
+		{"single-quoted semicolon", "INSERT INTO t VALUES ('a;b'); SELECT 1;", 2},
+		{"empty", "", 0},
+		{"escaped single quotes", "SELECT 'it''s;fine'; SELECT 2", 2},
+		{"double-quoted semicolon", `SELECT "col;name" FROM t; SELECT 2`, 2},
+
+		// Dollar quoting
+		{
+			"dollar-quoted function body",
+			"CREATE FUNCTION f() AS $$ BEGIN SELECT 1; END; $$ LANGUAGE plpgsql",
+			1,
+		},
+		{
+			"tagged dollar quote",
+			"SELECT $tag$hello;world$tag$",
+			1,
+		},
+		{
+			"dollar quote then another statement",
+			"CREATE FUNCTION f() AS $$ BEGIN SELECT 1; END; $$ LANGUAGE plpgsql; SELECT 1",
+			2,
+		},
+
+		// Line comments
+		{
+			"line comment with semicolon",
+			"SELECT 1; -- comment; here\nSELECT 2",
+			2,
+		},
+		{
+			"line comment at end",
+			"SELECT 1 -- trailing; comment",
+			1,
+		},
+
+		// Block comments
+		{
+			"block comment with semicolon",
+			"SELECT 1; /* comment; here */ SELECT 2",
+			2,
+		},
+		{
+			"nested block comment with semicolon",
+			"SELECT 1; /* outer /* inner; */ still comment; */ SELECT 2",
+			2,
+		},
+
+		// Mixed
+		{
+			"function with comments",
+			"CREATE FUNCTION f() AS $$ BEGIN\n-- a; comment\nSELECT 1; /* block; */ END; $$ LANGUAGE plpgsql; SELECT 2",
+			2,
+		},
 	}
 	for _, tt := range tests {
-		got := splitStatements(tt.query)
-		if len(got) != tt.want {
-			t.Errorf("splitStatements(%q) = %d stmts %v, want %d", tt.query, len(got), got, tt.want)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			got := splitStatements(tt.query)
+			if len(got) != tt.want {
+				t.Errorf("splitStatements(%q) = %d stmts %v, want %d", tt.query, len(got), got, tt.want)
+			}
+		})
 	}
 }

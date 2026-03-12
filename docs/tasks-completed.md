@@ -468,3 +468,15 @@
 | T19-4 | Describe 메시지 프록시 처리 (임시 Parse→Describe→Close 릴레이) | #105 / #106 |
 | T19-5 | Multiplexing 모드 설정 및 server.go 통합 (prepared_statement_mode: multiplex) | #105 / #106 |
 | T19-6 | SQL Injection 방어 테스트 매트릭스 (DROP TABLE, 플레이스홀더, NULL byte, 중첩 이스케이핑 등) | #105 / #106 |
+
+### Hotfix: COPY Protocol Deadlock
+
+| Task | 작업 | 이슈/PR |
+|------|------|---------|
+| HF-1 | relayUntilReady/relayAndCollect COPY 프로토콜 처리 추가 (CopyIn/CopyOut/CopyBoth) | #107 / #109 |
+
+### Hotfix: Audit Logger Memory Leak
+
+| Task | 작업 | 이슈/PR |
+|------|------|---------|
+| HF-2 | lastWebhook map 주기적 정리 goroutine 추가, DedupInterval 설정 노출 | #108 / #110 |

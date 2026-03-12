@@ -134,7 +134,8 @@ func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, client
 			// Cache store span
 			_, storeSpan := telemetry.Tracer().Start(traceCtx, "pgmux.cache.store")
 			key := s.cacheKey(query)
-			s.queryCache.Set(key, collected, nil)
+			tables := s.extractReadQueryTables(query)
+			s.queryCache.Set(key, collected, tables)
 			if s.metrics != nil {
 				s.metrics.CacheEntries.Set(float64(s.queryCache.Len()))
 			}
@@ -255,7 +256,8 @@ func (s *Server) handleReadQuery(ctx context.Context, clientConn net.Conn, msg *
 		}
 		if collected != nil { // nil means oversize, skip cache
 			key := s.cacheKey(query)
-			s.queryCache.Set(key, collected, nil)
+			tables := s.extractReadQueryTables(query)
+			s.queryCache.Set(key, collected, tables)
 			if s.metrics != nil {
 				s.metrics.CacheEntries.Set(float64(s.queryCache.Len()))
 			}

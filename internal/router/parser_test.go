@@ -139,6 +139,70 @@ func TestExtractTables(t *testing.T) {
 	}
 }
 
+func TestExtractReadTables(t *testing.T) {
+	tests := []struct {
+		name string
+		query string
+		want []string
+	}{
+		{
+			"simple select",
+			"SELECT * FROM users",
+			[]string{"users"},
+		},
+		{
+			"lowercase select",
+			"select * from orders",
+			[]string{"orders"},
+		},
+		{
+			"select with schema",
+			"SELECT * FROM public.users",
+			[]string{"users"},
+		},
+		{
+			"select with join",
+			"SELECT * FROM users JOIN orders ON users.id = orders.user_id",
+			[]string{"users", "orders"},
+		},
+		{
+			"select with left join",
+			"SELECT * FROM users LEFT JOIN orders ON users.id = orders.user_id",
+			[]string{"users", "orders"},
+		},
+		{
+			"select with multiple joins",
+			"SELECT * FROM users JOIN orders ON users.id = orders.user_id JOIN products ON orders.product_id = products.id",
+			[]string{"users", "orders", "products"},
+		},
+		{
+			"write query returns empty",
+			"INSERT INTO users VALUES (1)",
+			nil,
+		},
+		{
+			"update query returns empty",
+			"UPDATE users SET name = 'a'",
+			nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tables := ExtractReadTables(tt.query)
+			if len(tables) != len(tt.want) {
+				t.Errorf("ExtractReadTables(%q) got %d tables %v, want %d %v", tt.query, len(tables), tables, len(tt.want), tt.want)
+				return
+			}
+			for i, w := range tt.want {
+				if tables[i] != w {
+					t.Errorf("tables[%d] = %q, want %q", i, tables[i], w)
+				}
+			}
+		})
+	}
+}
+
 // === QA Report Regression Tests (extended cases) ===
 
 // #4: Dollar Quoting — additional cases beyond dollar_quote_test.go

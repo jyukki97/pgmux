@@ -65,6 +65,14 @@ func (s *Server) extractQueryTables(query string) []string {
 	return router.ExtractTables(query)
 }
 
+// extractReadQueryTables uses AST or string parser based on config to extract tables from read queries.
+func (s *Server) extractReadQueryTables(query string) []string {
+	if s.getConfig().Routing.ASTParser {
+		return router.ExtractReadTablesAST(query)
+	}
+	return router.ExtractReadTables(query)
+}
+
 // truncateSQL returns the first 100 characters of a SQL statement for span attributes.
 func truncateSQL(sql string) string {
 	if len(sql) > 100 {

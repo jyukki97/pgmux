@@ -106,7 +106,8 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, bu
 		if collected != nil && len(buf) > 0 && buf[0].Type == protocol.MsgParse {
 			_, query := protocol.ParseParseMessage(buf[0].Payload)
 			key := s.cacheKey(query)
-			s.queryCache.Set(key, collected, nil)
+			tables := s.extractReadQueryTables(query)
+			s.queryCache.Set(key, collected, tables)
 			if s.metrics != nil {
 				s.metrics.CacheEntries.Set(float64(s.queryCache.Len()))
 			}

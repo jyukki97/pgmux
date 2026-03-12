@@ -237,6 +237,65 @@ func TestClassifyAST_DollarQuotingHintInjection(t *testing.T) {
 	}
 }
 
+func TestExtractReadTablesAST(t *testing.T) {
+	tests := []struct {
+		name string
+		query string
+		want []string
+	}{
+		{
+			"simple select",
+			"SELECT * FROM users",
+			[]string{"users"},
+		},
+		{
+			"select with join",
+			"SELECT * FROM users JOIN orders ON users.id = orders.user_id",
+			[]string{"users", "orders"},
+		},
+		{
+			"select with schema",
+			"SELECT * FROM public.users",
+			[]string{"users"},
+		},
+		{
+			"select with left join",
+			"SELECT u.name, o.total FROM users u LEFT JOIN orders o ON u.id = o.user_id",
+			[]string{"users", "orders"},
+		},
+		{
+			"select with subquery",
+			"SELECT * FROM users WHERE id IN (SELECT user_id FROM orders)",
+			[]string{"users", "orders"},
+		},
+		{
+			"CTE read",
+			"WITH active AS (SELECT * FROM users WHERE active = true) SELECT * FROM active JOIN orders ON active.id = orders.user_id",
+			[]string{"active", "orders", "users"}, // CTE alias included as RangeVar; harmless for invalidation
+		},
+		{
+			"write query returns empty or write tables only",
+			"INSERT INTO users VALUES (1)",
+			[]string{"users"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tables := ExtractReadTablesAST(tt.query)
+			if len(tables) != len(tt.want) {
+				t.Errorf("ExtractReadTablesAST(%q) got %d tables %v, want %d %v", tt.query, len(tables), tables, len(tt.want), tt.want)
+				return
+			}
+			for i, w := range tt.want {
+				if tables[i] != w {
+					t.Errorf("tables[%d] = %q, want %q", i, tables[i], w)
+				}
+			}
+		})
+	}
+}
+
 func TestExtractTablesAST_QuotedNames(t *testing.T) {
 	tests := []struct {
 		name  string

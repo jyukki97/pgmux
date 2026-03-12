@@ -150,6 +150,33 @@ func ExtractTablesAST(query string) []string {
 	return tables
 }
 
+// ExtractReadTablesAST extracts table names from read queries using AST parsing.
+// Collects all RangeVar references from SELECT statements (FROM, JOIN clauses).
+// Falls back to string-based ExtractReadTables on parse errors.
+func ExtractReadTablesAST(query string) []string {
+	tree, err := ParseSQL(query)
+	if err != nil {
+		slog.Debug("AST parse failed for read table extraction, fallback", "error", err)
+		return ExtractReadTables(query)
+	}
+
+	seen := make(map[string]bool)
+	var tables []string
+
+	WalkNodes(tree, func(node *pg_query.Node) bool {
+		if rv := node.GetRangeVar(); rv != nil {
+			t := strings.ToLower(rv.GetRelname())
+			if t != "" && !seen[t] {
+				seen[t] = true
+				tables = append(tables, t)
+			}
+		}
+		return true
+	})
+
+	return tables
+}
+
 // extractWriteTables collects table names from write operations.
 func extractWriteTables(node *pg_query.Node, add func(string)) {
 	switch n := node.GetNode().(type) {

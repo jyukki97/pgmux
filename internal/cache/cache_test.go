@@ -130,6 +130,59 @@ func TestCache_InvalidateTable(t *testing.T) {
 	}
 }
 
+func TestCache_InvalidateTable_ReadCacheWithTables(t *testing.T) {
+	c := New(Config{MaxEntries: 100, TTL: time.Minute, MaxSize: 1024})
+
+	// Simulate caching read queries with proper table metadata
+	kUsers := CacheKey("SELECT * FROM users")
+	kOrders := CacheKey("SELECT * FROM orders")
+	kJoin := CacheKey("SELECT * FROM users JOIN orders ON users.id = orders.user_id")
+
+	c.Set(kUsers, []byte("users-result"), []string{"users"})
+	c.Set(kOrders, []byte("orders-result"), []string{"orders"})
+	c.Set(kJoin, []byte("join-result"), []string{"users", "orders"})
+
+	// All entries should be present
+	if c.Len() != 3 {
+		t.Errorf("Len() = %d, want 3", c.Len())
+	}
+
+	// Simulate a write to "users" table — should invalidate kUsers and kJoin
+	c.InvalidateTable("users")
+
+	if got := c.Get(kUsers); got != nil {
+		t.Error("kUsers should be invalidated after write to users table")
+	}
+	if got := c.Get(kJoin); got != nil {
+		t.Error("kJoin should be invalidated after write to users table (multi-table)")
+	}
+
+	// kOrders should still be cached — unrelated table
+	if got := c.Get(kOrders); got == nil {
+		t.Error("kOrders should still exist after write to users table")
+	}
+
+	if c.Len() != 1 {
+		t.Errorf("Len() = %d, want 1", c.Len())
+	}
+}
+
+func TestCache_NilTables_NoInvalidation(t *testing.T) {
+	c := New(Config{MaxEntries: 100, TTL: time.Minute, MaxSize: 1024})
+
+	// Simulate old bug: cache entry with nil tables
+	key := CacheKey("SELECT * FROM users")
+	c.Set(key, []byte("result"), nil)
+
+	// InvalidateTable should NOT remove entries with nil tables (no table index)
+	c.InvalidateTable("users")
+
+	// Entry survives because it has no table metadata — this is the bug scenario
+	if got := c.Get(key); got == nil {
+		t.Error("entry with nil tables should NOT be invalidated (demonstrates the bug)")
+	}
+}
+
 func TestCacheKey_SameQuerySameKey(t *testing.T) {
 	k1 := CacheKey("SELECT * FROM users")
 	k2 := CacheKey("SELECT * FROM users")

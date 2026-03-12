@@ -158,6 +158,117 @@ func stripComments(query string) string {
 	return result.String()
 }
 
+// ExtractReadTables extracts table names from read queries (SELECT ... FROM).
+// Handles multi-statement queries, subqueries in FROM clause, and JOINs.
+func ExtractReadTables(query string) []string {
+	seen := make(map[string]bool)
+	var tables []string
+
+	stmts := splitStatements(query)
+	for _, stmt := range stmts {
+		for _, t := range extractReadTablesFromStmt(stmt) {
+			if t != "" && !seen[t] {
+				seen[t] = true
+				tables = append(tables, t)
+			}
+		}
+	}
+
+	return tables
+}
+
+func extractReadTablesFromStmt(stmt string) []string {
+	q := strings.TrimSpace(stmt)
+	upper := strings.ToUpper(q)
+
+	// Only process SELECT or WITH ... SELECT (pure read CTE)
+	if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "WITH") {
+		return nil
+	}
+
+	sanitized := stripStringLiterals(q)
+	upperSanitized := strings.ToUpper(sanitized)
+	var tables []string
+
+	// Find all FROM and JOIN table references
+	for _, kw := range []string{"FROM", "JOIN"} {
+		idx := strings.Index(upperSanitized, kw)
+		for idx >= 0 {
+			// Check word boundary before keyword
+			if idx > 0 {
+				prev := upperSanitized[idx-1]
+				if prev != ' ' && prev != '\n' && prev != '\t' && prev != '(' && prev != ',' {
+					next := strings.Index(upperSanitized[idx+len(kw):], kw)
+					if next < 0 {
+						break
+					}
+					idx = idx + len(kw) + next
+					continue
+				}
+			}
+
+			// Check word boundary after keyword
+			end := idx + len(kw)
+			if end < len(upperSanitized) {
+				next := upperSanitized[end]
+				if next != ' ' && next != '\n' && next != '\t' && next != '(' {
+					nextIdx := strings.Index(upperSanitized[end:], kw)
+					if nextIdx < 0 {
+						break
+					}
+					idx = end + nextIdx
+					continue
+				}
+			}
+
+			rest := strings.TrimSpace(sanitized[end:])
+			if len(rest) == 0 {
+				break
+			}
+
+			// Skip subqueries: FROM (SELECT ...)
+			if rest[0] == '(' {
+				next := strings.Index(upperSanitized[end:], kw)
+				if next < 0 {
+					break
+				}
+				idx = end + next
+				continue
+			}
+
+			name := extractIdentifier(rest)
+			if name == "" {
+				next := strings.Index(upperSanitized[end:], kw)
+				if next < 0 {
+					break
+				}
+				idx = end + next
+				continue
+			}
+
+			// Remove schema prefix
+			parts := strings.Split(name, ".")
+			final := parts[len(parts)-1]
+			final = stripQuotes(final)
+			t := strings.ToLower(final)
+
+			// Skip SQL keywords that may follow FROM (e.g., FROM (SELECT ...))
+			upperT := strings.ToUpper(t)
+			if upperT != "SELECT" && upperT != "LATERAL" && upperT != "UNNEST" && upperT != "GENERATE_SERIES" {
+				tables = append(tables, t)
+			}
+
+			next := strings.Index(upperSanitized[end:], kw)
+			if next < 0 {
+				break
+			}
+			idx = end + next
+		}
+	}
+
+	return tables
+}
+
 // ExtractTables extracts table names from write queries.
 // Handles multi-statement queries, CTE (WITH ... AS (UPDATE ...)), and subqueries.
 func ExtractTables(query string) []string {

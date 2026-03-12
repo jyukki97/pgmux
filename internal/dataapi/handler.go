@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -298,12 +299,47 @@ func (s *Server) executeOnPool(ctx context.Context, sql string, p *pool.Pool) (*
 	}
 	acquireSpan.End()
 
+	// Context cancellation watchdog: when ctx is cancelled, set a past deadline
+	// on the connection to unblock any blocking protocol.ReadMessage calls.
+	var cancelled atomic.Bool
+	stopCh := make(chan struct{})
+	watchdogDone := make(chan struct{})
+	go func() {
+		defer close(watchdogDone)
+		select {
+		case <-ctx.Done():
+			cancelled.Store(true)
+			conn.SetDeadline(time.Now()) // unblock blocking reads
+			slog.Debug("dataapi: context cancelled, forced connection deadline",
+				"sql", truncateSQL(sql))
+		case <-stopCh:
+			// Normal completion — caller signalled us to exit.
+		}
+	}()
+
+	// stopWatchdog signals the watchdog goroutine to exit and waits for it
+	// to finish. Must be called on every non-cancelled path.
+	stopWatchdog := func() {
+		close(stopCh)
+		<-watchdogDone
+	}
+
 	// Backend exec span
 	_, execSpan := telemetry.Tracer().Start(ctx, "pgmux.backend.exec")
 	resp, execErr := executeQuery(conn, sql)
+
+	if cancelled.Load() {
+		<-watchdogDone // ensure watchdog goroutine has exited
+		execSpan.SetStatus(codes.Error, "context cancelled")
+		execSpan.End()
+		p.Discard(conn)
+		return nil, fmt.Errorf("execute query: %w", ctx.Err())
+	}
+
 	if execErr != nil {
 		execSpan.SetStatus(codes.Error, execErr.Error())
 		execSpan.End()
+		stopWatchdog()
 		p.Discard(conn)
 		return nil, execErr
 	}
@@ -312,11 +348,22 @@ func (s *Server) executeOnPool(ctx context.Context, sql string, p *pool.Pool) (*
 	// Reset session state before returning to pool
 	resetPayload := append([]byte(s.cfg.Pool.ResetQuery), 0)
 	if err := protocol.WriteMessage(conn, protocol.MsgQuery, resetPayload); err != nil {
+		stopWatchdog()
 		p.Discard(conn)
 		return resp, nil // return result even if reset fails
 	}
 	// Drain reset response
-	if err := drainUntilReady(conn); err != nil {
+	drainErr := drainUntilReady(conn)
+
+	if cancelled.Load() {
+		<-watchdogDone // ensure watchdog goroutine has exited
+		p.Discard(conn)
+		return nil, fmt.Errorf("drain reset: %w", ctx.Err())
+	}
+
+	stopWatchdog()
+
+	if drainErr != nil {
 		p.Discard(conn)
 		return resp, nil
 	}

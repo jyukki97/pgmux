@@ -56,18 +56,12 @@ type Server struct {
 	queryCacheFn  func() *cache.Cache
 	met           *metrics.Metrics
 	rateLimiterFn func() *resilience.RateLimiter
-	apiKeys       map[string]bool
 }
 
 // New creates a new Data API server.
 // Pool, balancer, cache, and rate limiter parameters are getter functions so
 // that Data API always accesses the latest objects even after a hot-reload.
 func New(cfgFn func() *config.Config, writerPoolFn func() *pool.Pool, readerPoolsFn func() map[string]*pool.Pool, balancerFn func() *router.RoundRobin, queryCacheFn func() *cache.Cache, met *metrics.Metrics, rateLimiterFn func() *resilience.RateLimiter) *Server {
-	cfg := cfgFn()
-	keys := make(map[string]bool, len(cfg.DataAPI.APIKeys))
-	for _, k := range cfg.DataAPI.APIKeys {
-		keys[k] = true
-	}
 	return &Server{
 		cfgFn:         cfgFn,
 		writerPoolFn:  writerPoolFn,
@@ -76,7 +70,6 @@ func New(cfgFn func() *config.Config, writerPoolFn func() *pool.Pool, readerPool
 		queryCacheFn:  queryCacheFn,
 		met:           met,
 		rateLimiterFn: rateLimiterFn,
-		apiKeys:       keys,
 	}
 }
 
@@ -99,10 +92,18 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	propagator := otel.GetTextMapPropagator()
 	ctx := propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
 
-	// Auth check
-	if len(s.apiKeys) > 0 {
+	// Auth check — read API keys from live config so hot-reload takes effect
+	apiKeys := s.cfgFn().DataAPI.APIKeys
+	if len(apiKeys) > 0 {
 		token := extractBearerToken(r)
-		if token == "" || !s.apiKeys[token] {
+		allowed := false
+		for _, k := range apiKeys {
+			if k == token {
+				allowed = true
+				break
+			}
+		}
+		if token == "" || !allowed {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}

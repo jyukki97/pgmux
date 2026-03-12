@@ -24,7 +24,15 @@ pgmux/
 │   ├── config/
 │   │   └── config.go            # YAML 파싱, 설정 구조체 정의
 │   ├── proxy/
-│   │   └── server.go            # TCP 리스너, 클라이언트 접속 수락
+│   │   ├── server.go            # Server 구조체, NewServer, Start, handleConn, Reload
+│   │   ├── auth.go              # 인증 핸드셰이크 (relayAuth, frontendAuth)
+│   │   ├── query.go             # 메인 쿼리 루프 (relayQueries)
+│   │   ├── query_read.go        # 읽기 쿼리 처리 (handleReadQuery, handleReadQueryTraced)
+│   │   ├── query_extended.go    # 확장 쿼리 프로토콜 (Prepared Statement 라우팅)
+│   │   ├── copy.go              # COPY IN/OUT/BOTH 릴레이
+│   │   ├── backend.go           # 백엔드 커넥션 관리 (acquire, reset, fallback)
+│   │   ├── lsn.go               # LSN 폴링 (Causal Consistency)
+│   │   ├── helpers.go           # 유틸리티 (sendError, parseSize, emitAuditEvent)
 │   ├── pool/
 │   │   ├── pool.go              # 커넥션 풀 핵심 로직
 │   │   └── health.go            # 헬스체크 고루틴

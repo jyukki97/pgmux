@@ -180,7 +180,15 @@ telemetry:
 cmd/pgmux/main.go              # 진입점
 internal/
   config/config.go                # YAML 설정 파싱
-  proxy/server.go                 # TCP 리스너, PG 프로토콜 처리, LSN 폴링
+  proxy/server.go                 # Server 구조체, NewServer, Start, handleConn, Reload
+  proxy/auth.go                   # 인증 핸드셰이크 (relayAuth, frontendAuth)
+  proxy/query.go                  # 메인 쿼리 루프 (relayQueries)
+  proxy/query_read.go             # 읽기 쿼리 처리 (캐시 + fallback)
+  proxy/query_extended.go         # 확장 쿼리 프로토콜 (Prepared Statement 라우팅)
+  proxy/copy.go                   # COPY IN/OUT/BOTH 릴레이
+  proxy/backend.go                # 백엔드 커넥션 관리 (acquire, reset, fallback)
+  proxy/lsn.go                    # LSN 폴링 (Causal Consistency)
+  proxy/helpers.go                # 유틸리티 (sendError, parseSize, emitAuditEvent)
   proxy/pgconn.go                 # PG 인증 (MD5, SCRAM-SHA-256)
   proxy/synthesizer.go            # Prepared Statement → Simple Query 합성 (Multiplexing)
   pool/pool.go                    # 커넥션 풀 + 헬스체크

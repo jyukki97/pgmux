@@ -229,7 +229,7 @@ func parseServerFirst(msg string) (nonce string, salt []byte, iterations int, er
 				return "", nil, 0, fmt.Errorf("decode salt: %w", err)
 			}
 		} else if strings.HasPrefix(p, "i=") {
-			fmt.Sscanf(p[2:], "%d", &iterations)
+			_, _ = fmt.Sscanf(p[2:], "%d", &iterations)
 		}
 	}
 	if nonce == "" || salt == nil || iterations == 0 {
@@ -240,7 +240,7 @@ func parseServerFirst(msg string) (nonce string, salt []byte, iterations int, er
 
 func generateNonce() string {
 	buf := make([]byte, 18)
-	rand.Read(buf)
+	_, _ = rand.Read(buf)
 	return base64.StdEncoding.EncodeToString(buf)
 }
 

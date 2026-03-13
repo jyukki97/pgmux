@@ -299,7 +299,7 @@ func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
 		slog.Error("admin: reload failed", "error", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]any{"status": "error", "error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "error", "error": err.Error()})
 		return
 	}
 
@@ -337,5 +337,5 @@ func checkTCP(addr string) bool {
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }

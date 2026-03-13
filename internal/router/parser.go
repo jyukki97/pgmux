@@ -3,6 +3,7 @@ package router
 import (
 	"regexp"
 	"strings"
+	"time"
 )
 
 type QueryType int
@@ -25,6 +26,7 @@ var writeKeywords = map[string]bool{
 }
 
 var hintRegex = regexp.MustCompile(`/\*\s*route:(writer|reader)\s*\*/`)
+var timeoutHintRegex = regexp.MustCompile(`/\*\s*timeout:(\d+(?:\.\d+)?(?:s|ms|m))\s*\*/`)
 
 // Classify determines whether a query is a read or write operation.
 // For multi-statement queries (semicolon-separated), returns QueryWrite if any statement is a write.
@@ -494,6 +496,21 @@ func isTagStart(ch byte) bool {
 
 func isTagChar(ch byte) bool {
 	return isTagStart(ch) || (ch >= '0' && ch <= '9')
+}
+
+// ExtractTimeoutHint extracts a per-query timeout override from a SQL hint comment.
+// Example: /* timeout:5s */ SELECT ... → 5s
+// Returns 0 if no hint is found.
+func ExtractTimeoutHint(query string) time.Duration {
+	sanitized := stripStringLiterals(query)
+	matches := timeoutHintRegex.FindStringSubmatch(sanitized)
+	if len(matches) >= 2 {
+		d, err := time.ParseDuration(matches[1])
+		if err == nil && d > 0 {
+			return d
+		}
+	}
+	return 0
 }
 
 func extractAfter(query, upper, keyword string) string {

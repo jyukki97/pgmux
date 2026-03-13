@@ -142,6 +142,7 @@ type PoolConfig struct {
 	IdleTimeout            time.Duration `yaml:"idle_timeout"`
 	MaxLifetime            time.Duration `yaml:"max_lifetime"`
 	ConnectionTimeout      time.Duration `yaml:"connection_timeout"`
+	QueryTimeout           time.Duration `yaml:"query_timeout"`            // 0 = disabled (no timeout)
 	ResetQuery             string        `yaml:"reset_query"`
 	PreparedStatementMode  string        `yaml:"prepared_statement_mode"` // "proxy" (default) or "multiplex"
 }
@@ -393,6 +394,9 @@ func (c *Config) applyDefaults() {
 		}
 		if db.Pool.ConnectionTimeout == 0 {
 			db.Pool.ConnectionTimeout = c.Pool.ConnectionTimeout
+		}
+		if db.Pool.QueryTimeout == 0 {
+			db.Pool.QueryTimeout = c.Pool.QueryTimeout
 		}
 		if db.Pool.ResetQuery == "" {
 			db.Pool.ResetQuery = c.Pool.ResetQuery

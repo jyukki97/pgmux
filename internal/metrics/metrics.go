@@ -40,6 +40,9 @@ type Metrics struct {
 	// Query Digest
 	DigestPatterns prometheus.Gauge
 
+	// Query timeout
+	QueryTimeouts *prometheus.CounterVec
+
 	// Connection limits
 	ConnLimitRejected *prometheus.CounterVec
 	ActiveConnsByUser *prometheus.GaugeVec
@@ -176,6 +179,14 @@ func New() *Metrics {
 			},
 		),
 
+		QueryTimeouts: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "pgmux_query_timeout_total",
+				Help: "Total number of queries canceled due to query timeout.",
+			},
+			[]string{"target"},
+		),
+
 		ConnLimitRejected: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "pgmux_connection_limit_rejected_total",
@@ -218,6 +229,7 @@ func New() *Metrics {
 		m.WebhookSent,
 		m.WebhookErrors,
 		m.DigestPatterns,
+		m.QueryTimeouts,
 		m.ConnLimitRejected,
 		m.ActiveConnsByUser,
 		m.ActiveConnsByDB,

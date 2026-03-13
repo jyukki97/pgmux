@@ -21,7 +21,11 @@ import (
 )
 
 // handleExtendedRead sends buffered Extended Query messages to a reader, falling back to writer.
-func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, buf []*protocol.Message, syncMsg *protocol.Message, readerAddr string, ct *cancelTarget, dbg *DatabaseGroup) error {
+func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, buf []*protocol.Message, syncMsg *protocol.Message, readerAddr string, ct *cancelTarget, dbg *DatabaseGroup, queryTimeout ...time.Duration) error {
+	var extTimeout time.Duration
+	if len(queryTimeout) > 0 {
+		extTimeout = queryTimeout[0]
+	}
 	// Fallback helper: send entire batch to writer via pool
 	fallbackToWriter := func() error {
 		if s.metrics != nil {
@@ -83,9 +87,13 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, bu
 	)
 
 	ct.setFromConn(readerAddr, rConn)
+	stopTimer := s.startQueryTimer(extTimeout, ct, "reader")
 
 	// Forward all buffered messages + Sync to reader
 	if err := s.forwardExtBatch(rConn, buf, syncMsg); err != nil {
+		if stopTimer != nil {
+			stopTimer()
+		}
 		ct.clear()
 		execSpan.SetStatus(codes.Error, err.Error())
 		execSpan.End()
@@ -97,6 +105,9 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, bu
 	// Relay response from reader (with optional caching)
 	if s.queryCache != nil {
 		collected, err := s.relayAndCollect(clientConn, rConn)
+		if stopTimer != nil {
+			stopTimer()
+		}
 		ct.clear()
 		rPool.Release(rConn)
 		execSpan.End()
@@ -115,11 +126,17 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, bu
 		}
 	} else {
 		if err := s.relayUntilReady(clientConn, rConn); err != nil {
+			if stopTimer != nil {
+				stopTimer()
+			}
 			ct.clear()
 			execSpan.SetStatus(codes.Error, err.Error())
 			execSpan.End()
 			rPool.Discard(rConn)
 			return fmt.Errorf("relay reader extended response: %w", err)
+		}
+		if stopTimer != nil {
+			stopTimer()
 		}
 		ct.clear()
 		rPool.Release(rConn)

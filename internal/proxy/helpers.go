@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"hash/fnv"
+	"log/slog"
 	"net"
 	"strconv"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/jyukki97/pgmux/internal/audit"
 	"github.com/jyukki97/pgmux/internal/cache"
+	"github.com/jyukki97/pgmux/internal/config"
 	"github.com/jyukki97/pgmux/internal/digest"
 	"github.com/jyukki97/pgmux/internal/mirror"
 	"github.com/jyukki97/pgmux/internal/protocol"
@@ -59,6 +61,56 @@ func (s *Server) sendFatalWithCode(conn net.Conn, code, msg string) {
 	payload = append(payload, 0)
 	payload = append(payload, 0) // terminator
 	_ = protocol.WriteMessage(conn, protocol.MsgErrorResponse, payload)
+}
+
+// sendErrorWithCode sends an ErrorResponse with a SQLSTATE code.
+func (s *Server) sendErrorWithCode(conn net.Conn, code, msg string) {
+	var payload []byte
+	payload = append(payload, 'S')
+	payload = append(payload, []byte("ERROR")...)
+	payload = append(payload, 0)
+	payload = append(payload, 'C')
+	payload = append(payload, []byte(code)...)
+	payload = append(payload, 0)
+	payload = append(payload, 'M')
+	payload = append(payload, []byte(msg)...)
+	payload = append(payload, 0)
+	payload = append(payload, 0) // terminator
+	_ = protocol.WriteMessage(conn, protocol.MsgErrorResponse, payload)
+}
+
+// resolveQueryTimeout returns the effective query timeout for a query.
+// Per-query hint overrides the global config. Returns 0 if no timeout applies.
+func (s *Server) resolveQueryTimeout(query string, cfg *config.Config) time.Duration {
+	if hint := router.ExtractTimeoutHint(query); hint > 0 {
+		return hint
+	}
+	return cfg.Pool.QueryTimeout
+}
+
+// startQueryTimer starts a timer that sends a CancelRequest to the backend
+// when the timeout expires. Returns a stop function that must be called to
+// prevent the timer from firing (e.g., when the query completes normally).
+// Returns nil if timeout is 0 (disabled).
+func (s *Server) startQueryTimer(timeout time.Duration, ct *cancelTarget, target string) func() {
+	if timeout <= 0 {
+		return nil
+	}
+	timer := time.AfterFunc(timeout, func() {
+		addr, pid, secret := ct.get()
+		if addr == "" || pid == 0 {
+			return
+		}
+		slog.Warn("query timeout exceeded, sending cancel request",
+			"timeout", timeout, "backend_pid", pid, "backend_addr", addr)
+		if s.metrics != nil {
+			s.metrics.QueryTimeouts.WithLabelValues(target).Inc()
+		}
+		if err := forwardCancel(addr, pid, secret); err != nil {
+			slog.Warn("query timeout cancel failed", "error", err)
+		}
+	})
+	return func() { timer.Stop() }
 }
 
 // cacheKey uses semantic or plain cache key based on config, mixed with dbName for multi-DB isolation.

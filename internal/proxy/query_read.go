@@ -20,7 +20,7 @@ import (
 // handleReadQueryTraced handles read queries with optional OpenTelemetry child spans for
 // cache lookup, pool acquire, backend exec, and cache store.
 // cfg is the pre-fetched config to avoid repeated RLock calls.
-func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, clientConn net.Conn, msg *protocol.Message, query string, session *router.Session, ct *cancelTarget, pq *router.ParsedQuery, cfg *config.Config, dbg *DatabaseGroup) error {
+func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, clientConn net.Conn, msg *protocol.Message, query string, session *router.Session, ct *cancelTarget, pq *router.ParsedQuery, cfg *config.Config, dbg *DatabaseGroup, queryTimeout time.Duration) error {
 	tracingEnabled := cfg.Telemetry.Enabled
 
 	// Cache lookup
@@ -102,9 +102,13 @@ func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, client
 	}
 
 	ct.setFromConn(readerAddr, rConn)
+	stopTimer := s.startQueryTimer(queryTimeout, ct, "reader")
 
 	// Forward query to reader (zero-copy: use original wire bytes)
 	if err := protocol.ForwardRaw(rConn, msg); err != nil {
+		if stopTimer != nil {
+			stopTimer()
+		}
 		ct.clear()
 		if tracingEnabled {
 			execSpan.SetStatus(codes.Error, err.Error())
@@ -118,6 +122,9 @@ func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, client
 	// Relay response and collect bytes for caching
 	if s.queryCache != nil {
 		collected, err := s.relayAndCollect(clientConn, rConn)
+		if stopTimer != nil {
+			stopTimer()
+		}
 		ct.clear()
 		if tracingEnabled {
 			execSpan.End()
@@ -141,6 +148,9 @@ func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, client
 		}
 	} else {
 		if err := s.relayUntilReady(clientConn, rConn); err != nil {
+			if stopTimer != nil {
+				stopTimer()
+			}
 			ct.clear()
 			if tracingEnabled {
 				execSpan.SetStatus(codes.Error, err.Error())
@@ -151,6 +161,9 @@ func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, client
 				cb.RecordFailure()
 			}
 			return fmt.Errorf("relay reader response: %w", err)
+		}
+		if stopTimer != nil {
+			stopTimer()
 		}
 		ct.clear()
 		rPool.Release(rConn)

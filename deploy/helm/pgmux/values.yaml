@@ -25,6 +25,7 @@ config:
     idle_timeout: "10m"
     max_lifetime: "1h"
     connection_timeout: "5s"
+    query_timeout: "0s"          # 0 = unlimited. Per-query hint: /* timeout:5s */
     reset_query: "DISCARD ALL"
   routing:
     read_after_write_delay: "500ms"

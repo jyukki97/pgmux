@@ -25,6 +25,7 @@ A lightweight PostgreSQL proxy written in Go. Sitting between your application a
 - **Audit Logging & Slow Query Tracker** -- Records structured audit logs for all queries or only slow queries. Sends alerts via Webhook (e.g., Slack) when thresholds are exceeded, with automatic deduplication of alerts for the same query.
 - **Query Mirroring** -- Asynchronously mirrors production queries to a Shadow DB for latency comparison. Supports per-pattern P50/P99 latency comparison, automatic performance regression detection, table filtering, and read_only/all modes. Validate the performance impact of DB migrations and index changes without affecting production traffic.
 - **Query Digest / Top-N Queries** -- Normalizes queries (replacing literals with `$N`) and aggregates per-pattern execution counts, average/P50/P99 latency. View the most frequently executed query patterns via `GET /admin/queries/top`, and reset statistics with `POST /admin/queries/reset`. A proxy-level equivalent of `pg_stat_statements`.
+- **Query Timeout** -- Proxy-level query timeout. Sends a `CancelRequest` to the backend when the configured timeout is exceeded. Set globally via `pool.query_timeout: 30s` or per-query via `/* timeout:5s */ SELECT ...` hint.
 - **Per-User / Per-Database Connection Limits** -- Limit the maximum number of connections per user and per database. Prevents a single user from monopolizing the pool in multi-tenant environments. Rejects with PostgreSQL standard error code (53300, `too_many_connections`). Limits can be hot-reloaded and monitored via `GET /admin/connections`.
 - **Multi-Database Routing** -- Proxy multiple PostgreSQL databases from a single proxy instance. Automatically routes to the correct DB group based on the client's `StartupMessage.database` field, maintaining independent Writer/Reader pools, balancers, and Circuit Breakers per database. Existing single-DB configurations remain backward compatible without changes.
 - **OpenTelemetry Distributed Tracing** -- Traces each stage as spans: query parsing, cache lookup, connection pool acquisition, and backend execution. Supports OTLP gRPC or stdout exporters. End-to-end tracing from application to DB is possible through context propagation via the Data API's `traceparent` header.
@@ -141,6 +142,7 @@ pool:
   idle_timeout: 10m
   max_lifetime: 1h
   connection_timeout: 5s
+  query_timeout: 0              # Query timeout (0 = unlimited). Per-query hint: /* timeout:5s */
   reset_query: "DISCARD ALL"    # Session reset query on connection release
   prepared_statement_mode: "proxy" # "proxy" (default, passthrough) | "multiplex" (synthesize Simple Query)
 
@@ -345,6 +347,7 @@ When `metrics.enabled` is `true`, Prometheus metrics are available at the config
 - `pgmux_audit_webhook_sent_total` -- Audit Webhook send count
 - `pgmux_audit_webhook_errors_total` -- Audit Webhook failure count
 - `pgmux_digest_patterns` -- Current number of unique Query Digest patterns
+- `pgmux_query_timeout_total` -- Queries canceled due to query timeout (per target)
 - `pgmux_connection_limit_rejected_total` -- Connections rejected due to per-user/per-database limits
 - `pgmux_active_connections_by_user` -- Current active connections per user
 - `pgmux_active_connections_by_database` -- Current active connections per database

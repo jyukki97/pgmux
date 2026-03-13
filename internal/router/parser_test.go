@@ -1,6 +1,9 @@
 package router
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestClassify(t *testing.T) {
 	tests := []struct {
@@ -312,6 +315,41 @@ func TestExtractTables_QuotedNames_Extended(t *testing.T) {
 			}
 			if tables[0] != tt.want {
 				t.Errorf("ExtractTables(%q) = %q, want %q", tt.query, tables[0], tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractTimeoutHint(t *testing.T) {
+	tests := []struct {
+		query string
+		want  time.Duration
+	}{
+		// Basic hints
+		{"/* timeout:5s */ SELECT * FROM users", 5 * time.Second},
+		{"/* timeout:500ms */ SELECT 1", 500 * time.Millisecond},
+		{"/* timeout:1m */ SELECT 1", time.Minute},
+		{"/*timeout:10s*/ SELECT 1", 10 * time.Second},
+		{"/* timeout:2s */ SELECT 1", 2 * time.Second},
+		// No hint
+		{"SELECT * FROM users", 0},
+		{"/* route:writer */ SELECT 1", 0},
+		{"-- timeout:5s\nSELECT 1", 0},
+		// Combined with route hint
+		{"/* timeout:3s */ /* route:writer */ SELECT 1", 3 * time.Second},
+		// Inside string literal — should be ignored
+		{"SELECT '/* timeout:5s */' FROM users", 0},
+		// Invalid duration
+		{"/* timeout:abc */ SELECT 1", 0},
+		// Zero is not useful
+		{"/* timeout:0s */ SELECT 1", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			got := ExtractTimeoutHint(tt.query)
+			if got != tt.want {
+				t.Errorf("ExtractTimeoutHint(%q) = %v, want %v", tt.query, got, tt.want)
 			}
 		})
 	}

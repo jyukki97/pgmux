@@ -916,6 +916,7 @@ pool:
   idle_timeout: "10m"
   max_lifetime: "1h"
   connection_timeout: "5s"
+  query_timeout: "0s"                 # 0 = 무제한. 쿼리별 힌트: /* timeout:5s */
   reset_query: "DISCARD ALL"
   prepared_statement_mode: "proxy"    # "proxy" | "multiplex"
 

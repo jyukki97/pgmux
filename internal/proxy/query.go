@@ -179,6 +179,9 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 
 			start := time.Now()
 
+			// Resolve query timeout (per-query hint overrides global config)
+			queryTimeout := s.resolveQueryTimeout(query, queryCfg)
+
 			if route == router.RouteWriter {
 				wConn, acquired, err := s.acquireWriterConn(ctx, boundWriter, dbg)
 				if err != nil {
@@ -192,7 +195,11 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				}
 
 				ct.setFromConn(dbg.writerAddr, wConn)
+				stopTimer := s.startQueryTimer(queryTimeout, ct, target)
 				s.handleWriteQuery(clientConn, wConn, msg, query, session, parsedQuery, qtype, queryCfg, dbg)
+				if stopTimer != nil {
+					stopTimer()
+				}
 				ct.clear()
 
 				// Track session-modifying queries for dirty flag
@@ -226,7 +233,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				}
 				// If !acquired && still in transaction → keep using boundWriter
 			} else {
-				if err := s.handleReadQueryTraced(queryCtx, ctx, clientConn, msg, query, session, ct, parsedQuery, queryCfg, dbg); err != nil {
+				if err := s.handleReadQueryTraced(queryCtx, ctx, clientConn, msg, query, session, ct, parsedQuery, queryCfg, dbg, queryTimeout); err != nil {
 					if tracingEnabled {
 						querySpan.SetStatus(codes.Error, err.Error())
 						querySpan.End()
@@ -370,6 +377,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 		case protocol.MsgSync:
 			start := time.Now()
 			target := routeName(extRoute)
+			extQueryTimeout := s.getConfig().Pool.QueryTimeout
 
 			// Start root span for extended query batch
 			extCtx, extSpan := telemetry.Tracer().Start(ctx, "pgmux.extended_query",
@@ -416,7 +424,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 			} else if extRoute == router.RouteReader && !session.InTransaction() && boundWriter == nil {
 				// Reader path (proxy mode)
 				readerAddr := dbg.balancer.Next()
-				if err := s.handleExtendedRead(extCtx, clientConn, extBuf, msg, readerAddr, ct, dbg); err != nil {
+				if err := s.handleExtendedRead(extCtx, clientConn, extBuf, msg, readerAddr, ct, dbg, extQueryTimeout); err != nil {
 					extSpan.SetStatus(codes.Error, err.Error())
 					extSpan.End()
 					slog.Error("extended read query", "error", err)
@@ -446,8 +454,12 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 
 				// Forward all buffered messages + Sync to writer
 				ct.setFromConn(dbg.writerAddr, wConn)
+				stopTimer := s.startQueryTimer(extQueryTimeout, ct, "writer")
 				writeErr := s.forwardExtBatch(wConn, extBuf, msg)
 				if writeErr != nil {
+					if stopTimer != nil {
+						stopTimer()
+					}
 					ct.clear()
 					execSpan.SetStatus(codes.Error, writeErr.Error())
 					execSpan.End()
@@ -464,6 +476,9 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				}
 
 				if err := s.relayUntilReady(clientConn, wConn); err != nil {
+					if stopTimer != nil {
+						stopTimer()
+					}
 					ct.clear()
 					execSpan.SetStatus(codes.Error, err.Error())
 					execSpan.End()
@@ -477,6 +492,9 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 						boundWriter = nil
 					}
 					return
+				}
+				if stopTimer != nil {
+					stopTimer()
 				}
 				ct.clear()
 				execSpan.End()

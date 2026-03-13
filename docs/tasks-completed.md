@@ -628,3 +628,19 @@
 | - | Makefile: bench-compare 타겟 추가 | #179 |
 | - | bench-results/results.md (Direct/pgmux/PgBouncer 3자 비교) | #179 |
 | - | README: 성능 벤치마크 섹션 추가 | #179 |
+
+### Phase 27: Query Path Optimization
+
+| Task | 작업 | 이슈/PR |
+|------|------|---------|
+| - | Reader pool 추가 (writer fallback DISCARD ALL 제거) | #182 / #183 |
+| - | DISCARD ALL 스킵 (read-only fallback: releaseWriterFast) | #182 / #183 |
+| - | Query classification 중복 제거 (classify 2→1회) | #182 / #183 |
+| - | Classify() fast path (단순 쿼리 파싱 비용 제거) | #182 / #183 |
+| - | session.Route() fast path (splitStatements 스킵) | #182 / #183 |
+| - | Telemetry span 조건부 생성 | #182 / #183 |
+| - | relayUntilReady 최적화 (단일 buffer 직접 전달) | #182 / #183 |
+| - | ReadMessage 최적화 (binary.Read → direct Uint32) | #182 / #183 |
+| - | bytes.IndexByte (SIMD) 활용 | #182 / #183 |
+| - | getConfig() 호출 캐싱 (RLock 횟수 감소) | #182 / #183 |
+| - | **결과: SELECT-only 46%→83% of direct (+80% 개선)** | #182 / #183 |

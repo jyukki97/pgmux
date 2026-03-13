@@ -59,23 +59,23 @@ graph LR
 
 Measured with pgbench (PostgreSQL standard benchmark tool): Direct DB vs pgmux vs PgBouncer.
 
-**TPC-B (mixed read/write workload)**
-
-| Target | Clients | TPS | Avg Latency | vs Direct |
-|--------|---------|-----|-------------|-----------|
-| Direct | 50 | 3,227 | 15.5ms | - |
-| **pgmux** | 50 | **2,345** | **21.3ms** | **73%** |
-| PgBouncer | 50 | 2,707 | 18.5ms | 84% |
-
 **SELECT-only (read-only workload)**
 
 | Target | Clients | TPS | Avg Latency | vs Direct |
 |--------|---------|-----|-------------|-----------|
-| Direct | 50 | 25,806 | 1.94ms | - |
-| **pgmux** | 50 | **11,879** | **4.21ms** | **46%** |
-| PgBouncer | 50 | 25,354 | 1.97ms | 98% |
+| Direct | 50 | 25,533 | 1.96ms | - |
+| **pgmux** | 50 | **21,131** | **2.37ms** | **83%** |
+| PgBouncer | 50 | 24,827 | 2.01ms | 97% |
 
-> For I/O-bound workloads (TPC-B), pgmux achieves 87% of PgBouncer's throughput. For CPU-bound workloads (SELECT-only), PgBouncer (written in C) has lower proxy overhead, but pgmux offers caching, firewall, mirroring, and other features PgBouncer lacks. With caching enabled, repeated queries can be faster than direct connections.
+**TPC-B (mixed read/write workload)**
+
+| Target | Clients | TPS | Avg Latency | vs Direct |
+|--------|---------|-----|-------------|-----------|
+| Direct | 50 | 3,275 | 15.3ms | - |
+| **pgmux** | 50 | **2,369** | **21.1ms** | **72%** |
+| PgBouncer | 50 | 2,717 | 18.4ms | 83% |
+
+> For CPU-bound workloads (SELECT-only), pgmux achieves 83% of direct connection throughput. For I/O-bound workloads (TPC-B), 72%. PgBouncer (written in C) is a specialized pooler with lower proxy overhead, but pgmux offers caching, firewall, mirroring, and other features PgBouncer lacks. With caching enabled, repeated queries can be faster than direct connections.
 >
 > Full results: [`bench-results/results.md`](bench-results/results.md) | Reproduce: `make bench-compare`
 

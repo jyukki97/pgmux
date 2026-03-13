@@ -59,23 +59,23 @@ graph LR
 
 pgbench (PostgreSQL 표준 벤치마크 도구)로 측정한 Direct DB / pgmux / PgBouncer 3자 비교 결과입니다.
 
-**TPC-B (혼합 읽기/쓰기 워크로드)**
-
-| Target | Clients | TPS | Avg Latency | vs Direct |
-|--------|---------|-----|-------------|-----------|
-| Direct | 50 | 3,227 | 15.5ms | - |
-| **pgmux** | 50 | **2,345** | **21.3ms** | **73%** |
-| PgBouncer | 50 | 2,707 | 18.5ms | 84% |
-
 **SELECT-only (읽기 전용 워크로드)**
 
 | Target | Clients | TPS | Avg Latency | vs Direct |
 |--------|---------|-----|-------------|-----------|
-| Direct | 50 | 25,806 | 1.94ms | - |
-| **pgmux** | 50 | **11,879** | **4.21ms** | **46%** |
-| PgBouncer | 50 | 25,354 | 1.97ms | 98% |
+| Direct | 50 | 25,533 | 1.96ms | - |
+| **pgmux** | 50 | **21,131** | **2.37ms** | **83%** |
+| PgBouncer | 50 | 24,827 | 2.01ms | 97% |
 
-> I/O 바운드 워크로드(TPC-B)에서 pgmux는 PgBouncer의 87% 수준 성능을 보입니다. CPU 바운드(SELECT-only)에서는 C로 작성된 PgBouncer가 유리하지만, pgmux는 캐싱, 방화벽, 미러링 등 PgBouncer에 없는 기능을 제공합니다. 캐시 활성화 시 반복 쿼리는 직접 연결보다 빠릅니다.
+**TPC-B (혼합 읽기/쓰기 워크로드)**
+
+| Target | Clients | TPS | Avg Latency | vs Direct |
+|--------|---------|-----|-------------|-----------|
+| Direct | 50 | 3,275 | 15.3ms | - |
+| **pgmux** | 50 | **2,369** | **21.1ms** | **72%** |
+| PgBouncer | 50 | 2,717 | 18.4ms | 83% |
+
+> CPU 바운드(SELECT-only)에서 pgmux는 Direct의 83% 수준. I/O 바운드(TPC-B)에서는 72%. PgBouncer는 C로 작성된 특화 pooler라 raw throughput에서 유리하지만, pgmux는 캐싱, 방화벽, 미러링 등 PgBouncer에 없는 기능을 제공합니다. 캐시 활성화 시 반복 쿼리는 직접 연결보다 빠릅니다.
 >
 > 전체 결과: [`bench-results/results.md`](bench-results/results.md) | 재현: `make bench-compare`
 

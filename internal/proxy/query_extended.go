@@ -181,7 +181,7 @@ func (s *Server) forwardExtBatch(backendConn net.Conn, buf []*protocol.Message, 
 }
 
 // executeSynthesizedQuery executes a synthesized Simple Query on the appropriate backend.
-func (s *Server) executeSynthesizedQuery(ctx context.Context, clientConn net.Conn, query string, route router.Route, session *router.Session, boundWriter **pool.Conn, extTxStart, extTxEnd bool, ct *cancelTarget, dbg *DatabaseGroup) error {
+func (s *Server) executeSynthesizedQuery(ctx context.Context, clientConn net.Conn, query string, route router.Route, session *router.Session, boundWriter **pool.Conn, boundWriterPool **pool.Pool, extTxStart, extTxEnd bool, ct *cancelTarget, dbg *DatabaseGroup) error {
 	// Build Simple Query message
 	queryPayload := append([]byte(query), 0)
 
@@ -191,7 +191,8 @@ func (s *Server) executeSynthesizedQuery(ctx context.Context, clientConn net.Con
 		return s.handleSynthesizedRead(ctx, clientConn, queryPayload, readerAddr, ct, dbg)
 	}
 
-	// Writer path
+	// Writer path — capture pool reference before acquire
+	acquiredPool := dbg.writerPool
 	wConn, acquired, err := s.acquireWriterConn(ctx, *boundWriter, dbg)
 	if err != nil {
 		s.sendError(clientConn, "cannot acquire backend connection")
@@ -202,7 +203,7 @@ func (s *Server) executeSynthesizedQuery(ctx context.Context, clientConn net.Con
 	if err := protocol.WriteMessage(wConn, protocol.MsgQuery, queryPayload); err != nil {
 		ct.clear()
 		if acquired {
-			dbg.writerPool.Discard(wConn)
+			discardToPool(wConn, acquiredPool)
 		}
 		return fmt.Errorf("send synthesized query: %w", err)
 	}
@@ -210,10 +211,11 @@ func (s *Server) executeSynthesizedQuery(ctx context.Context, clientConn net.Con
 	if err := s.relayUntilReady(clientConn, wConn); err != nil {
 		ct.clear()
 		if acquired {
-			dbg.writerPool.Discard(wConn)
+			discardToPool(wConn, acquiredPool)
 		} else if *boundWriter != nil {
-			dbg.writerPool.Discard(*boundWriter)
+			discardToPool(*boundWriter, *boundWriterPool)
 			*boundWriter = nil
+			*boundWriterPool = nil
 		}
 		return fmt.Errorf("relay synthesized response: %w", err)
 	}
@@ -230,11 +232,14 @@ func (s *Server) executeSynthesizedQuery(ctx context.Context, clientConn net.Con
 	switch {
 	case extTxStart && !extTxEnd:
 		*boundWriter = wConn
+		*boundWriterPool = acquiredPool
 	case extTxEnd:
+		bwp := *boundWriterPool
 		*boundWriter = nil
-		s.resetAndReleaseWriter(wConn, dbg)
+		*boundWriterPool = nil
+		s.resetAndReleaseToPool(wConn, bwp)
 	case acquired:
-		s.resetAndReleaseWriter(wConn, dbg)
+		s.resetAndReleaseToPool(wConn, acquiredPool)
 	}
 	return nil
 }

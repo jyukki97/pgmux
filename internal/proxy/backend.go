@@ -58,6 +58,30 @@ func (s *Server) releaseWriterFast(conn *pool.Conn, dbg *DatabaseGroup) {
 	dbg.writerPool.Release(conn)
 }
 
+// resetAndReleaseToPool sends DISCARD ALL and returns the connection to the specified pool.
+// Use this instead of resetAndReleaseWriter when the connection may outlive a config reload
+// (e.g., boundWriter in a transaction), to ensure Release goes to the pool that issued Acquire.
+func (s *Server) resetAndReleaseToPool(conn *pool.Conn, p *pool.Pool) {
+	if err := s.resetConn(conn); err != nil {
+		slog.Warn("reset writer conn failed, discarding", "error", err)
+		p.Discard(conn)
+		return
+	}
+	p.Release(conn)
+}
+
+// releaseToPool returns the connection to the specified pool without DISCARD ALL.
+// Use this instead of releaseWriterFast when the connection may outlive a config reload.
+func releaseToPool(conn *pool.Conn, p *pool.Pool) {
+	p.Release(conn)
+}
+
+// discardToPool discards the connection to the specified pool.
+// Use this instead of dbg.writerPool.Discard when the connection may outlive a config reload.
+func discardToPool(conn *pool.Conn, p *pool.Pool) {
+	p.Discard(conn)
+}
+
 // resetConn sends the configured reset query (e.g. DISCARD ALL) to clean up session state
 // before returning a connection to the pool.
 func (s *Server) resetConn(conn net.Conn) error {

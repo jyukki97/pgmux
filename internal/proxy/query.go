@@ -24,6 +24,10 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 	// boundWriter is non-nil when a transaction is in progress.
 	// The connection stays bound from BEGIN until COMMIT/ROLLBACK.
 	var boundWriter *pool.Conn
+	// boundWriterPool tracks the pool from which boundWriter was acquired.
+	// On config reload, dbg.writerPool may be replaced with a new pool.
+	// We must Release/Discard to the original pool to avoid cross-pool contamination.
+	var boundWriterPool *pool.Pool
 	// connDirty tracks if the current borrow cycle has seen session-modifying commands
 	// (SET, PREPARE, LISTEN, CREATE TEMP, etc.) that require DISCARD ALL on release.
 	var connDirty bool
@@ -31,9 +35,9 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 	defer func() {
 		if boundWriter != nil {
 			if connDirty {
-				s.resetAndReleaseWriter(boundWriter, dbg)
+				s.resetAndReleaseToPool(boundWriter, boundWriterPool)
 			} else {
-				s.releaseWriterFast(boundWriter, dbg)
+				releaseToPool(boundWriter, boundWriterPool)
 			}
 		}
 	}()
@@ -200,6 +204,10 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 			queryTimeout := s.resolveQueryTimeout(query, queryCfg)
 
 			if route == router.RouteWriter {
+				// Capture the current writerPool reference before acquire.
+				// If acquired==true, this is the pool the conn came from.
+				// If acquired==false (reusing boundWriter), acquiredPool is unused.
+				acquiredPool := dbg.writerPool
 				wConn, acquired, err := s.acquireWriterConn(ctx, boundWriter, dbg)
 				if err != nil {
 					if tracingEnabled {
@@ -229,23 +237,26 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				case !wasInTx && nowInTx:
 					// BEGIN — bind writer for transaction duration
 					boundWriter = wConn
+					boundWriterPool = acquiredPool
 				case wasInTx && !nowInTx:
-					// COMMIT/ROLLBACK — unbind and release
+					// COMMIT/ROLLBACK — unbind and release to the pool that issued Acquire
+					bwp := boundWriterPool
 					boundWriter = nil
+					boundWriterPool = nil
 					if connDirty {
-						s.resetAndReleaseWriter(wConn, dbg)
+						s.resetAndReleaseToPool(wConn, bwp)
 					} else {
-						s.releaseWriterFast(wConn, dbg)
+						releaseToPool(wConn, bwp)
 					}
 					connDirty = false
 				case acquired:
 					// Single statement outside transaction — release immediately
 					// Skip DISCARD ALL unless session state was modified
 					if connDirty || isSessionModifying(query) {
-						s.resetAndReleaseWriter(wConn, dbg)
+						s.resetAndReleaseToPool(wConn, acquiredPool)
 						connDirty = false
 					} else {
-						s.releaseWriterFast(wConn, dbg)
+						releaseToPool(wConn, acquiredPool)
 					}
 				}
 				// If !acquired && still in transaction → keep using boundWriter
@@ -428,7 +439,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				slog.Debug("synthesized query", "sql", synthesized, "route", target)
 				extSpan.SetAttributes(attribute.String("db.statement", truncateStr(synthesized, 100)))
 
-				if err := s.executeSynthesizedQuery(extCtx, clientConn, synthesized, extRoute, session, &boundWriter, extTxStart, extTxEnd, ct, dbg); err != nil {
+				if err := s.executeSynthesizedQuery(extCtx, clientConn, synthesized, extRoute, session, &boundWriter, &boundWriterPool, extTxStart, extTxEnd, ct, dbg); err != nil {
 					extSpan.SetStatus(codes.Error, err.Error())
 					extSpan.End()
 					slog.Error("execute synthesized query", "error", err)
@@ -449,6 +460,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				}
 			} else {
 				// Writer path (proxy mode) — acquire from pool or use bound connection
+				acquiredPool := dbg.writerPool
 				_, acquireSpan := telemetry.Tracer().Start(extCtx, "pgmux.pool.acquire",
 					trace.WithAttributes(attribute.String("pgmux.route", "writer")),
 				)
@@ -484,10 +496,11 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 					extSpan.End()
 					slog.Error("forward ext batch to writer", "error", writeErr)
 					if acquired {
-						dbg.writerPool.Discard(wConn)
+						discardToPool(wConn, acquiredPool)
 					} else if boundWriter != nil {
-						dbg.writerPool.Discard(boundWriter)
+						discardToPool(boundWriter, boundWriterPool)
 						boundWriter = nil
+						boundWriterPool = nil
 					}
 					return
 				}
@@ -503,10 +516,11 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 					extSpan.End()
 					slog.Error("relay writer response (sync)", "error", err)
 					if acquired {
-						dbg.writerPool.Discard(wConn)
+						discardToPool(wConn, acquiredPool)
 					} else if boundWriter != nil {
-						dbg.writerPool.Discard(boundWriter)
+						discardToPool(boundWriter, boundWriterPool)
 						boundWriter = nil
+						boundWriterPool = nil
 					}
 					return
 				}
@@ -529,22 +543,25 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				case extTxStart && !extTxEnd:
 					// BEGIN — bind writer
 					boundWriter = wConn
+					boundWriterPool = acquiredPool
 				case extTxEnd:
-					// COMMIT/ROLLBACK — unbind and release
+					// COMMIT/ROLLBACK — unbind and release to origin pool
+					bwp := boundWriterPool
 					boundWriter = nil
+					boundWriterPool = nil
 					if connDirty {
-						s.resetAndReleaseWriter(wConn, dbg)
+						s.resetAndReleaseToPool(wConn, bwp)
 					} else {
-						s.releaseWriterFast(wConn, dbg)
+						releaseToPool(wConn, bwp)
 					}
 					connDirty = false
 				case acquired:
 					// Single batch outside transaction — release
 					if connDirty {
-						s.resetAndReleaseWriter(wConn, dbg)
+						s.resetAndReleaseToPool(wConn, acquiredPool)
 						connDirty = false
 					} else {
-						s.releaseWriterFast(wConn, dbg)
+						releaseToPool(wConn, acquiredPool)
 					}
 				}
 			}

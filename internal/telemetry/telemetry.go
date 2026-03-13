@@ -61,13 +61,14 @@ func Init(cfg config.TelemetryConfig) (shutdown func(context.Context) error, err
 		return nil, fmt.Errorf("unknown telemetry exporter: %q", cfg.Exporter)
 	}
 
+	ratio := *cfg.SampleRatio
 	var sampler sdktrace.Sampler
-	if cfg.SampleRatio >= 1.0 {
+	if ratio >= 1.0 {
 		sampler = sdktrace.AlwaysSample()
-	} else if cfg.SampleRatio <= 0 {
+	} else if ratio <= 0 {
 		sampler = sdktrace.NeverSample()
 	} else {
-		sampler = sdktrace.TraceIDRatioBased(cfg.SampleRatio)
+		sampler = sdktrace.TraceIDRatioBased(ratio)
 	}
 
 	tp := sdktrace.NewTracerProvider(
@@ -86,7 +87,7 @@ func Init(cfg config.TelemetryConfig) (shutdown func(context.Context) error, err
 		"exporter", cfg.Exporter,
 		"endpoint", cfg.Endpoint,
 		"service", cfg.ServiceName,
-		"sample_ratio", cfg.SampleRatio)
+		"sample_ratio", *cfg.SampleRatio)
 
 	return tp.Shutdown, nil
 }

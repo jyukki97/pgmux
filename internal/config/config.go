@@ -50,7 +50,7 @@ type TelemetryConfig struct {
 	Exporter    string  `yaml:"exporter"`      // "otlp" or "stdout"
 	Endpoint    string  `yaml:"endpoint"`       // OTLP gRPC endpoint
 	ServiceName string  `yaml:"service_name"`
-	SampleRatio float64 `yaml:"sample_ratio"`   // 0.0 ~ 1.0
+	SampleRatio *float64 `yaml:"sample_ratio"`  // 0.0 ~ 1.0
 }
 
 type DataAPIConfig struct {
@@ -361,8 +361,9 @@ func (c *Config) applyDefaults() {
 	if c.Telemetry.ServiceName == "" {
 		c.Telemetry.ServiceName = "pgmux"
 	}
-	if c.Telemetry.SampleRatio == 0 {
-		c.Telemetry.SampleRatio = 1.0
+	if c.Telemetry.SampleRatio == nil {
+		defaultRatio := 1.0
+		c.Telemetry.SampleRatio = &defaultRatio
 	}
 	if c.Mirror.Mode == "" {
 		c.Mirror.Mode = "read_only"

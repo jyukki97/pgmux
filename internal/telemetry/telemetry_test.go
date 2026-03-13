@@ -19,12 +19,14 @@ func TestInit_Disabled(t *testing.T) {
 	}
 }
 
+func ptrFloat64(v float64) *float64 { return &v }
+
 func TestInit_Stdout(t *testing.T) {
 	shutdown, err := Init(config.TelemetryConfig{
 		Enabled:     true,
 		Exporter:    "stdout",
 		ServiceName: "pgmux-test",
-		SampleRatio: 1.0,
+		SampleRatio: ptrFloat64(1.0),
 	})
 	if err != nil {
 		t.Fatalf("Init stdout: %v", err)
@@ -60,7 +62,7 @@ func TestInit_SampleRatioZero(t *testing.T) {
 		Enabled:     true,
 		Exporter:    "stdout",
 		ServiceName: "pgmux-test",
-		SampleRatio: 0,
+		SampleRatio: ptrFloat64(0),
 	})
 	if err != nil {
 		t.Fatalf("Init with zero sample ratio: %v", err)
@@ -73,7 +75,7 @@ func TestInit_SampleRatioFractional(t *testing.T) {
 		Enabled:     true,
 		Exporter:    "stdout",
 		ServiceName: "pgmux-test",
-		SampleRatio: 0.5,
+		SampleRatio: ptrFloat64(0.5),
 	})
 	if err != nil {
 		t.Fatalf("Init with fractional sample ratio: %v", err)

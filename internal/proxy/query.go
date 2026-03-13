@@ -20,14 +20,14 @@ import (
 
 // relayQueries handles the main query loop with transaction-level connection pooling.
 // Writer connections are acquired from writerPool per query/transaction and released back.
-func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session *router.Session, ct *cancelTarget) {
+func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session *router.Session, ct *cancelTarget, dbg *DatabaseGroup) {
 	// boundWriter is non-nil when a transaction is in progress.
 	// The connection stays bound from BEGIN until COMMIT/ROLLBACK.
 	var boundWriter *pool.Conn
 
 	defer func() {
 		if boundWriter != nil {
-			s.resetAndReleaseWriter(boundWriter)
+			s.resetAndReleaseWriter(boundWriter, dbg)
 		}
 	}()
 
@@ -157,7 +157,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				_, acquireSpan := telemetry.Tracer().Start(queryCtx, "pgmux.pool.acquire",
 					trace.WithAttributes(attribute.String("pgmux.route", "writer")),
 				)
-				wConn, acquired, err := s.acquireWriterConn(ctx, boundWriter)
+				wConn, acquired, err := s.acquireWriterConn(ctx, boundWriter, dbg)
 				if err != nil {
 					acquireSpan.SetStatus(codes.Error, err.Error())
 					acquireSpan.End()
@@ -173,8 +173,8 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				_, execSpan := telemetry.Tracer().Start(queryCtx, "pgmux.backend.exec",
 					trace.WithAttributes(attribute.String("pgmux.route", "writer")),
 				)
-				ct.setFromConn(s.writerAddr, wConn)
-				s.handleWriteQuery(clientConn, wConn, msg, query, session, parsedQuery)
+				ct.setFromConn(dbg.writerAddr, wConn)
+				s.handleWriteQuery(clientConn, wConn, msg, query, session, parsedQuery, dbg)
 				ct.clear()
 				execSpan.End()
 
@@ -186,14 +186,14 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				case wasInTx && !nowInTx:
 					// COMMIT/ROLLBACK — unbind and release
 					boundWriter = nil
-					s.resetAndReleaseWriter(wConn)
+					s.resetAndReleaseWriter(wConn, dbg)
 				case acquired:
 					// Single statement outside transaction — release immediately
-					s.resetAndReleaseWriter(wConn)
+					s.resetAndReleaseWriter(wConn, dbg)
 				}
 				// If !acquired && still in transaction → keep using boundWriter
 			} else {
-				if err := s.handleReadQueryTraced(queryCtx, ctx, clientConn, msg, query, session, ct, parsedQuery); err != nil {
+				if err := s.handleReadQueryTraced(queryCtx, ctx, clientConn, msg, query, session, ct, parsedQuery, dbg); err != nil {
 					querySpan.SetStatus(codes.Error, err.Error())
 					querySpan.End()
 					slog.Error("handle read query", "error", err)
@@ -314,7 +314,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 		case protocol.MsgDescribe:
 			if multiplexMode {
 				// In multiplex mode, handle Describe by forwarding to backend
-				if err := s.handleMultiplexDescribe(ctx, clientConn, msg, synth, boundWriter, ct); err != nil {
+				if err := s.handleMultiplexDescribe(ctx, clientConn, msg, synth, boundWriter, ct, dbg); err != nil {
 					slog.Error("multiplex describe", "error", err)
 					return
 				}
@@ -366,7 +366,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				slog.Debug("synthesized query", "sql", synthesized, "route", target)
 				extSpan.SetAttributes(attribute.String("db.statement", truncateStr(synthesized, 100)))
 
-				if err := s.executeSynthesizedQuery(extCtx, clientConn, synthesized, extRoute, session, &boundWriter, extTxStart, extTxEnd, ct); err != nil {
+				if err := s.executeSynthesizedQuery(extCtx, clientConn, synthesized, extRoute, session, &boundWriter, extTxStart, extTxEnd, ct, dbg); err != nil {
 					extSpan.SetStatus(codes.Error, err.Error())
 					extSpan.End()
 					slog.Error("execute synthesized query", "error", err)
@@ -378,8 +378,8 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				s.sendReadyForQuery(clientConn, session.InTransaction())
 			} else if extRoute == router.RouteReader && !session.InTransaction() && boundWriter == nil {
 				// Reader path (proxy mode)
-				readerAddr := s.balancer.Next()
-				if err := s.handleExtendedRead(extCtx, clientConn, extBuf, msg, readerAddr, ct); err != nil {
+				readerAddr := dbg.balancer.Next()
+				if err := s.handleExtendedRead(extCtx, clientConn, extBuf, msg, readerAddr, ct, dbg); err != nil {
 					extSpan.SetStatus(codes.Error, err.Error())
 					extSpan.End()
 					slog.Error("extended read query", "error", err)
@@ -390,7 +390,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				_, acquireSpan := telemetry.Tracer().Start(extCtx, "pgmux.pool.acquire",
 					trace.WithAttributes(attribute.String("pgmux.route", "writer")),
 				)
-				wConn, acquired, err := s.acquireWriterConn(ctx, boundWriter)
+				wConn, acquired, err := s.acquireWriterConn(ctx, boundWriter, dbg)
 				if err != nil {
 					acquireSpan.SetStatus(codes.Error, err.Error())
 					acquireSpan.End()
@@ -408,7 +408,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				)
 
 				// Forward all buffered messages + Sync to writer
-				ct.setFromConn(s.writerAddr, wConn)
+				ct.setFromConn(dbg.writerAddr, wConn)
 				writeErr := s.forwardExtBatch(wConn, extBuf, msg)
 				if writeErr != nil {
 					ct.clear()
@@ -418,9 +418,9 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 					extSpan.End()
 					slog.Error("forward ext batch to writer", "error", writeErr)
 					if acquired {
-						s.writerPool.Discard(wConn)
+						dbg.writerPool.Discard(wConn)
 					} else if boundWriter != nil {
-						s.writerPool.Discard(boundWriter)
+						dbg.writerPool.Discard(boundWriter)
 						boundWriter = nil
 					}
 					return
@@ -434,9 +434,9 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 					extSpan.End()
 					slog.Error("relay writer response (sync)", "error", err)
 					if acquired {
-						s.writerPool.Discard(wConn)
+						dbg.writerPool.Discard(wConn)
 					} else if boundWriter != nil {
-						s.writerPool.Discard(boundWriter)
+						dbg.writerPool.Discard(boundWriter)
 						boundWriter = nil
 					}
 					return
@@ -460,10 +460,10 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				case extTxEnd:
 					// COMMIT/ROLLBACK — unbind and release
 					boundWriter = nil
-					s.resetAndReleaseWriter(wConn)
+					s.resetAndReleaseWriter(wConn, dbg)
 				case acquired:
 					// Single batch outside transaction — release
-					s.resetAndReleaseWriter(wConn)
+					s.resetAndReleaseWriter(wConn, dbg)
 				}
 			}
 
@@ -490,4 +490,3 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 		}
 	}
 }
-

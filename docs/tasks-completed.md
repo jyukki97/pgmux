@@ -1,4 +1,4 @@
-## 완료된 Task (Phase 1-16)
+## 완료된 Task (Phase 1-23)
 
 모든 Task 완료됨.
 
@@ -576,3 +576,25 @@
 | - | 패턴별 P50/P99 레이턴시 비교, 순환 버퍼 통계, 자동 회귀 감지 | #165 / #166 |
 | - | MirrorConfig 설정, 테이블 필터, read_only/all 모드 | #165 / #166 |
 | - | Admin API: GET /admin/mirror/stats 엔드포인트 | #165 / #166 |
+
+### Phase 20: OSS Release Ready (CI/CD)
+
+| Task | 작업 | 이슈/PR |
+|------|------|---------|
+| - | GitHub Actions CI: lint (golangci-lint), test (-race), build, benchmark | #169 / #170 |
+| - | GitHub Actions Release: v* 태그 시 multi-platform Docker 이미지 GHCR 자동 배포 | #169 / #170 |
+| - | Dockerfile multi-platform 빌드 지원 (TARGETARCH) | #169 / #170 |
+| - | golangci-lint errcheck 위반 전체 수정 (프로덕션 코드 + 테스트 파일 제외 규칙) | #169 / #170 |
+| - | README CI 뱃지 추가 | #169 / #170 |
+
+### Phase 23: Multi-Database Routing
+
+| Task | 작업 | 이슈/PR |
+|------|------|---------|
+| - | Config: DatabaseConfig 구조체, Databases 맵, ResolvedDatabases(), DefaultDatabaseName() | #171 |
+| - | DatabaseGroup 구조체: per-DB writer/reader 풀, 밸런서, CB 캡슐화 | #171 |
+| - | Server 리팩터링: dbGroups 맵, handleConn DB 라우팅, Reload diff | #171 |
+| - | 모든 쿼리 경로(query, backend, query_read, query_extended)에 dbg 전달 | #171 |
+| - | 캐시 키에 DB명 XOR 혼합 (FNV-1a), LSN 폴링 DB 그룹별 순회 | #171 |
+| - | Admin API: DB별 health/stats, Data API: ?database= 파라미터 | #171 |
+| - | 기존 single-DB config 완전 하위호환 | #171 |

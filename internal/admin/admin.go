@@ -3,7 +3,6 @@ package admin
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -13,7 +12,7 @@ import (
 	"github.com/jyukki97/pgmux/internal/audit"
 	"github.com/jyukki97/pgmux/internal/cache"
 	"github.com/jyukki97/pgmux/internal/config"
-	"github.com/jyukki97/pgmux/internal/pool"
+	"github.com/jyukki97/pgmux/internal/proxy"
 )
 
 // Server is the Admin API HTTP server.
@@ -21,8 +20,8 @@ type Server struct {
 	cfgFn         func() *config.Config
 	cacheFn       func() *cache.Cache
 	invalidatorFn func() *cache.Invalidator
-	writerPoolFn  func() *pool.Pool
-	readerPoolsFn func() map[string]*pool.Pool
+	dbGroupsFn    func() map[string]*proxy.DatabaseGroup
+	defaultDBName string
 	auditLoggerFn func() *audit.Logger
 	mirrorStatsFn func() any
 	digestStatsFn func() any
@@ -41,13 +40,13 @@ func (s *Server) SetReloadFunc(fn func() error) {
 // New creates a new Admin server.
 // All parameters except reloadFunc are getter functions so that Admin always
 // accesses the latest objects even after a hot-reload.
-func New(cfgFn func() *config.Config, cacheFn func() *cache.Cache, invalidatorFn func() *cache.Invalidator, writerPoolFn func() *pool.Pool, readerPoolsFn func() map[string]*pool.Pool, auditLoggerFn func() *audit.Logger, mirrorStatsFn func() any, digestStatsFn func() any, digestResetFn func()) *Server {
+func New(cfgFn func() *config.Config, cacheFn func() *cache.Cache, invalidatorFn func() *cache.Invalidator, dbGroupsFn func() map[string]*proxy.DatabaseGroup, defaultDBName string, auditLoggerFn func() *audit.Logger, mirrorStatsFn func() any, digestStatsFn func() any, digestResetFn func()) *Server {
 	return &Server{
 		cfgFn:         cfgFn,
 		cacheFn:       cacheFn,
 		invalidatorFn: invalidatorFn,
-		writerPoolFn:  writerPoolFn,
-		readerPoolsFn: readerPoolsFn,
+		dbGroupsFn:    dbGroupsFn,
+		defaultDBName: defaultDBName,
 		auditLoggerFn: auditLoggerFn,
 		mirrorStatsFn: mirrorStatsFn,
 		digestStatsFn: digestStatsFn,
@@ -78,57 +77,75 @@ func (s *Server) ListenAndServe(addr string) error {
 	return srv.ListenAndServe()
 }
 
-// handleHealth returns the health status of all backends.
-// All backend TCP checks run concurrently so that total latency is bounded
-// by a single check timeout (~2 s) regardless of backend count.
+// handleHealth returns the health status of all backends, grouped by database.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	cfg := s.cfgFn()
+	groups := s.dbGroupsFn()
 
 	type backendHealth struct {
 		Addr    string `json:"addr"`
 		Healthy bool   `json:"healthy"`
 	}
 
-	writerAddr := fmt.Sprintf("%s:%d", cfg.Writer.Host, cfg.Writer.Port)
-
-	// Pre-allocate readers slice so each goroutine writes to its own index.
-	readers := make([]backendHealth, len(cfg.Readers))
-	for i, rd := range cfg.Readers {
-		readers[i].Addr = fmt.Sprintf("%s:%d", rd.Host, rd.Port)
+	type dbHealth struct {
+		Writer  backendHealth   `json:"writer"`
+		Readers []backendHealth `json:"readers"`
 	}
 
+	result := make(map[string]dbHealth)
 	var wg sync.WaitGroup
-	var writerHealthy bool
+	var mu sync.Mutex
 
-	// Check writer concurrently.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		writerHealthy = checkTCP(writerAddr)
-	}()
-
-	// Check all readers concurrently.
-	for i := range readers {
+	for name, dbg := range groups {
+		name, dbg := name, dbg
 		wg.Add(1)
-		go func(idx int) {
+		go func() {
 			defer wg.Done()
-			readers[idx].Healthy = checkTCP(readers[idx].Addr)
-		}(i)
+
+			// Check writer in parallel with readers
+			var writerHealthy bool
+			var wwg sync.WaitGroup
+			wwg.Add(1)
+			go func() {
+				defer wwg.Done()
+				writerHealthy = checkTCP(dbg.WriterAddr())
+			}()
+
+			readerPools := dbg.ReaderPools()
+			readers := make([]backendHealth, 0, len(readerPools))
+
+			var rwg sync.WaitGroup
+			var rmu sync.Mutex
+			for addr := range readerPools {
+				addr := addr
+				rwg.Add(1)
+				go func() {
+					defer rwg.Done()
+					healthy := checkTCP(addr)
+					rmu.Lock()
+					readers = append(readers, backendHealth{Addr: addr, Healthy: healthy})
+					rmu.Unlock()
+				}()
+			}
+
+			wwg.Wait()
+			rwg.Wait()
+
+			mu.Lock()
+			result[name] = dbHealth{
+				Writer:  backendHealth{Addr: dbg.WriterAddr(), Healthy: writerHealthy},
+				Readers: readers,
+			}
+			mu.Unlock()
+		}()
 	}
 
 	wg.Wait()
-
-	resp := map[string]any{
-		"writer":  backendHealth{Addr: writerAddr, Healthy: writerHealthy},
-		"readers": readers,
-	}
-
-	writeJSON(w, resp)
+	writeJSON(w, map[string]any{"databases": result})
 }
 
 // handleStats returns pool, cache, and routing statistics.
@@ -138,35 +155,33 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfg := s.cfgFn()
-	writerPool := s.writerPoolFn()
-	readerPools := s.readerPoolsFn()
+	groups := s.dbGroupsFn()
 	c := s.cacheFn()
 	auditLogger := s.auditLoggerFn()
 
-	poolStats := make(map[string]any)
-
-	// Writer pool stats
-	if writerPool != nil {
-		wOpen, wIdle := writerPool.Stats()
-		writerAddr := fmt.Sprintf("%s:%d", cfg.Writer.Host, cfg.Writer.Port)
-		poolStats["writer"] = map[string]any{
-			"addr": writerAddr,
-			"open": wOpen,
-			"idle": wIdle,
+	dbPoolStats := make(map[string]any)
+	for name, dbg := range groups {
+		dbStats := make(map[string]any)
+		wp := dbg.WriterPool()
+		if wp != nil {
+			wOpen, wIdle := wp.Stats()
+			dbStats["writer"] = map[string]any{
+				"addr": dbg.WriterAddr(),
+				"open": wOpen,
+				"idle": wIdle,
+			}
 		}
-	}
-
-	// Reader pool stats
-	readerStats := make(map[string]any)
-	for addr, p := range readerPools {
-		open, idle := p.Stats()
-		readerStats[addr] = map[string]any{
-			"open": open,
-			"idle": idle,
+		readerStats := make(map[string]any)
+		for addr, p := range dbg.ReaderPools() {
+			open, idle := p.Stats()
+			readerStats[addr] = map[string]any{
+				"open": open,
+				"idle": idle,
+			}
 		}
+		dbStats["readers"] = readerStats
+		dbPoolStats[name] = dbStats
 	}
-	poolStats["readers"] = readerStats
 
 	cacheStats := map[string]any{
 		"enabled": c != nil,
@@ -176,7 +191,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]any{
-		"pool":  poolStats,
+		"pool":  dbPoolStats,
 		"cache": cacheStats,
 	}
 
@@ -206,15 +221,25 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
+	type safeDBConfig struct {
+		Writer  config.DBConfig `json:"writer"`
+		Readers []config.DBConfig `json:"readers"`
+		Backend struct {
+			User     string `json:"user"`
+			Password string `json:"password"`
+			Database string `json:"database"`
+		} `json:"backend"`
+	}
+
 	safe := struct {
-		Proxy   config.ProxyConfig   `json:"proxy"`
-		Writer  config.DBConfig      `json:"writer"`
-		Readers []config.DBConfig    `json:"readers"`
-		Pool    config.PoolConfig    `json:"pool"`
-		Routing config.RoutingConfig `json:"routing"`
-		Cache   config.CacheConfig   `json:"cache"`
-		TLS     config.TLSConfig     `json:"tls"`
-		Auth    struct {
+		Proxy     config.ProxyConfig   `json:"proxy"`
+		Writer    config.DBConfig      `json:"writer,omitempty"`
+		Readers   []config.DBConfig    `json:"readers,omitempty"`
+		Pool      config.PoolConfig    `json:"pool"`
+		Routing   config.RoutingConfig `json:"routing"`
+		Cache     config.CacheConfig   `json:"cache"`
+		TLS       config.TLSConfig     `json:"tls"`
+		Auth      struct {
 			Enabled bool           `json:"enabled"`
 			Users   []safeAuthUser `json:"users,omitempty"`
 		} `json:"auth"`
@@ -223,6 +248,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			Password string `json:"password"`
 			Database string `json:"database"`
 		} `json:"backend"`
+		Databases map[string]safeDBConfig `json:"databases,omitempty"`
 	}{
 		Proxy:   cfg.Proxy,
 		Writer:  cfg.Writer,
@@ -242,6 +268,20 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	safe.Backend.User = cfg.Backend.User
 	safe.Backend.Password = "********"
 	safe.Backend.Database = cfg.Backend.Database
+
+	if len(cfg.Databases) > 0 {
+		safe.Databases = make(map[string]safeDBConfig)
+		for name, db := range cfg.Databases {
+			sdb := safeDBConfig{
+				Writer:  db.Writer,
+				Readers: db.Readers,
+			}
+			sdb.Backend.User = db.Backend.User
+			sdb.Backend.Password = "********"
+			sdb.Backend.Database = db.Backend.Database
+			safe.Databases[name] = sdb
+		}
+	}
 
 	writeJSON(w, safe)
 }

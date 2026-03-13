@@ -7,34 +7,39 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/jyukki97/pgmux/internal/cache"
 	"github.com/jyukki97/pgmux/internal/config"
-	"github.com/jyukki97/pgmux/internal/pool"
+	"github.com/jyukki97/pgmux/internal/proxy"
 	"github.com/jyukki97/pgmux/internal/resilience"
-	"github.com/jyukki97/pgmux/internal/router"
 )
 
 func testServer() *Server {
 	cfg := &config.Config{
 		Firewall: config.FirewallConfig{Enabled: false},
-		Pool:     config.PoolConfig{ResetQuery: "DISCARD ALL"},
+		Pool:     config.PoolConfig{MaxConnections: 1, IdleTimeout: time.Minute, ResetQuery: "DISCARD ALL"},
 		DataAPI: config.DataAPIConfig{
 			Enabled: true,
 			APIKeys: []string{"test-key-1", "test-key-2"},
 		},
+		Writer:  config.DBConfig{Host: "127.0.0.1", Port: 5432},
+		Backend: config.BackendConfig{Database: "testdb"},
 	}
+	proxySrv := proxy.NewServer(cfg)
 	return New(
 		func() *config.Config { return cfg },
-		nilPool, nilPools, nilBalancer, nilCache, nil, nilRateLimiter, nil,
+		proxySrv.DBGroups,
+		proxySrv.DefaultDBName(),
+		nilCache,
+		nil,
+		nilRateLimiter,
+		nil,
 	)
 }
 
 // Helper nil-returning getter functions for tests.
 var (
-	nilPool        = func() *pool.Pool { return nil }
-	nilPools       = func() map[string]*pool.Pool { return nil }
-	nilBalancer    = func() *router.RoundRobin { return nil }
 	nilCache       = func() *cache.Cache { return nil }
 	nilRateLimiter = func() *resilience.RateLimiter { return nil }
 )
@@ -61,13 +66,13 @@ func TestAuthValid(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.handleQuery(w, req)
 
-	// Auth should pass — will get 500 from nil pool, not 401
+	// Auth should pass — will get 500 from pool connection failure, not 401
 	if w.Code == http.StatusUnauthorized {
 		t.Error("expected auth to pass, got 401")
 	}
-	// Expect 500 because no pool is configured
+	// Expect 500 because no real backend is running
 	if w.Code != http.StatusInternalServerError {
-		t.Errorf("expected 500 (no pool), got %d", w.Code)
+		t.Errorf("expected 500 (no backend), got %d", w.Code)
 	}
 }
 
@@ -100,12 +105,13 @@ func TestMethodNotAllowed(t *testing.T) {
 func TestEmptySQL(t *testing.T) {
 	// No API keys = no auth required
 	cfg := &config.Config{
-		Pool: config.PoolConfig{ResetQuery: "DISCARD ALL"},
-		DataAPI: config.DataAPIConfig{
-			Enabled: true,
-		},
+		Pool:    config.PoolConfig{MaxConnections: 1, IdleTimeout: time.Minute, ResetQuery: "DISCARD ALL"},
+		DataAPI: config.DataAPIConfig{Enabled: true},
+		Writer:  config.DBConfig{Host: "127.0.0.1", Port: 5432},
+		Backend: config.BackendConfig{Database: "testdb"},
 	}
-	srv := New(func() *config.Config { return cfg }, nilPool, nilPools, nilBalancer, nilCache, nil, nilRateLimiter, nil)
+	proxySrv := proxy.NewServer(cfg)
+	srv := New(func() *config.Config { return cfg }, proxySrv.DBGroups, proxySrv.DefaultDBName(), nilCache, nil, nilRateLimiter, nil)
 
 	body := `{"sql": ""}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/query", bytes.NewBufferString(body))
@@ -119,10 +125,13 @@ func TestEmptySQL(t *testing.T) {
 
 func TestInvalidBody(t *testing.T) {
 	cfg := &config.Config{
-		Pool:    config.PoolConfig{ResetQuery: "DISCARD ALL"},
+		Pool:    config.PoolConfig{MaxConnections: 1, IdleTimeout: time.Minute, ResetQuery: "DISCARD ALL"},
 		DataAPI: config.DataAPIConfig{Enabled: true},
+		Writer:  config.DBConfig{Host: "127.0.0.1", Port: 5432},
+		Backend: config.BackendConfig{Database: "testdb"},
 	}
-	srv := New(func() *config.Config { return cfg }, nilPool, nilPools, nilBalancer, nilCache, nil, nilRateLimiter, nil)
+	proxySrv := proxy.NewServer(cfg)
+	srv := New(func() *config.Config { return cfg }, proxySrv.DBGroups, proxySrv.DefaultDBName(), nilCache, nil, nilRateLimiter, nil)
 
 	body := `not json`
 	req := httptest.NewRequest(http.MethodPost, "/v1/query", bytes.NewBufferString(body))
@@ -136,15 +145,18 @@ func TestInvalidBody(t *testing.T) {
 
 func TestFirewallBlock(t *testing.T) {
 	cfg := &config.Config{
-		Pool: config.PoolConfig{ResetQuery: "DISCARD ALL"},
+		Pool: config.PoolConfig{MaxConnections: 1, IdleTimeout: time.Minute, ResetQuery: "DISCARD ALL"},
 		Firewall: config.FirewallConfig{
 			Enabled:                true,
 			BlockDeleteWithoutWhere: true,
 		},
 		Routing: config.RoutingConfig{ASTParser: true},
 		DataAPI: config.DataAPIConfig{Enabled: true},
+		Writer:  config.DBConfig{Host: "127.0.0.1", Port: 5432},
+		Backend: config.BackendConfig{Database: "testdb"},
 	}
-	srv := New(func() *config.Config { return cfg }, nilPool, nilPools, nilBalancer, nilCache, nil, nilRateLimiter, nil)
+	proxySrv := proxy.NewServer(cfg)
+	srv := New(func() *config.Config { return cfg }, proxySrv.DBGroups, proxySrv.DefaultDBName(), nilCache, nil, nilRateLimiter, nil)
 
 	body := `{"sql": "DELETE FROM users"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/query", bytes.NewBufferString(body))

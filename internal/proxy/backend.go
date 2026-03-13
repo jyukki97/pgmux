@@ -15,40 +15,40 @@ import (
 
 // acquireWriterConn returns the bound transaction connection or acquires a new one from the pool.
 // The bool return indicates whether the connection was newly acquired (true) or was already bound (false).
-func (s *Server) acquireWriterConn(ctx context.Context, bound *pool.Conn) (*pool.Conn, bool, error) {
+func (s *Server) acquireWriterConn(ctx context.Context, bound *pool.Conn, dbg *DatabaseGroup) (*pool.Conn, bool, error) {
 	if bound != nil {
 		return bound, false, nil
 	}
 	// Circuit breaker check
-	if s.writerCB != nil {
-		if err := s.writerCB.Allow(); err != nil {
+	if dbg.writerCB != nil {
+		if err := dbg.writerCB.Allow(); err != nil {
 			return nil, false, fmt.Errorf("writer circuit breaker open: %w", err)
 		}
 	}
 	acquireStart := time.Now()
-	conn, err := s.writerPool.Acquire(ctx)
+	conn, err := dbg.writerPool.Acquire(ctx)
 	if err != nil {
-		if s.writerCB != nil {
-			s.writerCB.RecordFailure()
+		if dbg.writerCB != nil {
+			dbg.writerCB.RecordFailure()
 		}
 		return nil, false, fmt.Errorf("acquire writer: %w", err)
 	}
 	if s.metrics != nil {
-		s.metrics.PoolAcquires.WithLabelValues("writer", s.writerAddr).Inc()
-		s.metrics.PoolAcquireDur.WithLabelValues("writer", s.writerAddr).Observe(time.Since(acquireStart).Seconds())
+		s.metrics.PoolAcquires.WithLabelValues("writer", dbg.writerAddr).Inc()
+		s.metrics.PoolAcquireDur.WithLabelValues("writer", dbg.writerAddr).Observe(time.Since(acquireStart).Seconds())
 	}
 	return conn, true, nil
 }
 
 // resetAndReleaseWriter sends a reset query (DISCARD ALL) and returns the connection to the pool.
 // If the reset fails, the connection is discarded instead.
-func (s *Server) resetAndReleaseWriter(conn *pool.Conn) {
+func (s *Server) resetAndReleaseWriter(conn *pool.Conn, dbg *DatabaseGroup) {
 	if err := s.resetConn(conn); err != nil {
 		slog.Warn("reset writer conn failed, discarding", "error", err)
-		s.writerPool.Discard(conn)
+		dbg.writerPool.Discard(conn)
 		return
 	}
-	s.writerPool.Release(conn)
+	dbg.writerPool.Release(conn)
 }
 
 // resetConn sends the configured reset query (e.g. DISCARD ALL) to clean up session state
@@ -77,33 +77,33 @@ func (s *Server) resetConn(conn net.Conn) error {
 }
 
 // fallbackToWriter acquires a writer connection from the pool and forwards the query.
-func (s *Server) fallbackToWriter(ctx context.Context, clientConn net.Conn, msg *protocol.Message, ct *cancelTarget) error {
-	wConn, err := s.writerPool.Acquire(ctx)
+func (s *Server) fallbackToWriter(ctx context.Context, clientConn net.Conn, msg *protocol.Message, ct *cancelTarget, dbg *DatabaseGroup) error {
+	wConn, err := dbg.writerPool.Acquire(ctx)
 	if err != nil {
 		s.sendError(clientConn, "no available backend connections")
 		return fmt.Errorf("acquire writer for fallback: %w", err)
 	}
 	if s.metrics != nil {
-		s.metrics.PoolAcquires.WithLabelValues("writer", s.writerAddr).Inc()
+		s.metrics.PoolAcquires.WithLabelValues("writer", dbg.writerAddr).Inc()
 	}
-	ct.setFromConn(s.writerAddr, wConn)
+	ct.setFromConn(dbg.writerAddr, wConn)
 	err = s.forwardAndRelay(clientConn, wConn, msg)
 	ct.clear()
-	s.resetAndReleaseWriter(wConn)
+	s.resetAndReleaseWriter(wConn, dbg)
 	return err
 }
 
 // handleWriteQuery forwards a write query to the writer and invalidates cache.
-func (s *Server) handleWriteQuery(clientConn net.Conn, writerConn net.Conn, msg *protocol.Message, query string, session *router.Session, pq *router.ParsedQuery) {
+func (s *Server) handleWriteQuery(clientConn net.Conn, writerConn net.Conn, msg *protocol.Message, query string, session *router.Session, pq *router.ParsedQuery, dbg *DatabaseGroup) {
 	if err := s.forwardAndRelay(clientConn, writerConn, msg); err != nil {
 		slog.Error("forward write to writer", "error", err)
-		if s.writerCB != nil {
-			s.writerCB.RecordFailure()
+		if dbg.writerCB != nil {
+			dbg.writerCB.RecordFailure()
 		}
 		return
 	}
-	if s.writerCB != nil {
-		s.writerCB.RecordSuccess()
+	if dbg.writerCB != nil {
+		dbg.writerCB.RecordSuccess()
 	}
 
 	// Track WAL LSN for causal consistency

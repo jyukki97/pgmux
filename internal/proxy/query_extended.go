@@ -21,30 +21,30 @@ import (
 )
 
 // handleExtendedRead sends buffered Extended Query messages to a reader, falling back to writer.
-func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, buf []*protocol.Message, syncMsg *protocol.Message, readerAddr string, ct *cancelTarget) error {
+func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, buf []*protocol.Message, syncMsg *protocol.Message, readerAddr string, ct *cancelTarget, dbg *DatabaseGroup) error {
 	// Fallback helper: send entire batch to writer via pool
 	fallbackToWriter := func() error {
 		if s.metrics != nil {
 			s.metrics.ReaderFallback.Inc()
 		}
-		wConn, err := s.writerPool.Acquire(ctx)
+		wConn, err := dbg.writerPool.Acquire(ctx)
 		if err != nil {
 			s.sendError(clientConn, "no available backend connections")
 			return fmt.Errorf("acquire writer for ext fallback: %w", err)
 		}
-		ct.setFromConn(s.writerAddr, wConn)
+		ct.setFromConn(dbg.writerAddr, wConn)
 		if err := s.forwardExtBatch(wConn, buf, syncMsg); err != nil {
 			ct.clear()
-			s.writerPool.Discard(wConn)
+			dbg.writerPool.Discard(wConn)
 			return fmt.Errorf("forward ext to writer: %w", err)
 		}
 		if err := s.relayUntilReady(clientConn, wConn); err != nil {
 			ct.clear()
-			s.writerPool.Discard(wConn)
+			dbg.writerPool.Discard(wConn)
 			return err
 		}
 		ct.clear()
-		s.resetAndReleaseWriter(wConn)
+		s.resetAndReleaseWriter(wConn, dbg)
 		return nil
 	}
 
@@ -53,7 +53,7 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, bu
 		return fallbackToWriter()
 	}
 
-	rPool, ok := s.getReaderPool(readerAddr)
+	rPool, ok := dbg.ReaderPool(readerAddr)
 	if !ok {
 		slog.Warn("no pool for reader, fallback to writer", "addr", readerAddr)
 		return fallbackToWriter()
@@ -106,7 +106,7 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, bu
 		// Cache the response keyed by the batch (first Parse query), skip if oversize
 		if collected != nil && len(buf) > 0 && buf[0].Type == protocol.MsgParse {
 			_, query := protocol.ParseParseMessage(buf[0].Payload)
-			key := cache.WithNamespace(s.cacheKey(query), cache.NSExtended)
+			key := cache.WithNamespace(s.cacheKey(query, dbg.name), cache.NSExtended)
 			tables := s.extractReadQueryTables(query)
 			s.queryCache.Set(key, collected, tables)
 			if s.metrics != nil {
@@ -143,28 +143,28 @@ func (s *Server) forwardExtBatch(backendConn net.Conn, buf []*protocol.Message, 
 }
 
 // executeSynthesizedQuery executes a synthesized Simple Query on the appropriate backend.
-func (s *Server) executeSynthesizedQuery(ctx context.Context, clientConn net.Conn, query string, route router.Route, session *router.Session, boundWriter **pool.Conn, extTxStart, extTxEnd bool, ct *cancelTarget) error {
+func (s *Server) executeSynthesizedQuery(ctx context.Context, clientConn net.Conn, query string, route router.Route, session *router.Session, boundWriter **pool.Conn, extTxStart, extTxEnd bool, ct *cancelTarget, dbg *DatabaseGroup) error {
 	// Build Simple Query message
 	queryPayload := append([]byte(query), 0)
 
 	if route == router.RouteReader && !session.InTransaction() && *boundWriter == nil {
 		// Reader path
-		readerAddr := s.balancer.Next()
-		return s.handleSynthesizedRead(ctx, clientConn, queryPayload, readerAddr, ct)
+		readerAddr := dbg.balancer.Next()
+		return s.handleSynthesizedRead(ctx, clientConn, queryPayload, readerAddr, ct, dbg)
 	}
 
 	// Writer path
-	wConn, acquired, err := s.acquireWriterConn(ctx, *boundWriter)
+	wConn, acquired, err := s.acquireWriterConn(ctx, *boundWriter, dbg)
 	if err != nil {
 		s.sendError(clientConn, "cannot acquire backend connection")
 		return fmt.Errorf("acquire writer for synthesized query: %w", err)
 	}
 
-	ct.setFromConn(s.writerAddr, wConn)
+	ct.setFromConn(dbg.writerAddr, wConn)
 	if err := protocol.WriteMessage(wConn, protocol.MsgQuery, queryPayload); err != nil {
 		ct.clear()
 		if acquired {
-			s.writerPool.Discard(wConn)
+			dbg.writerPool.Discard(wConn)
 		}
 		return fmt.Errorf("send synthesized query: %w", err)
 	}
@@ -172,9 +172,9 @@ func (s *Server) executeSynthesizedQuery(ctx context.Context, clientConn net.Con
 	if err := s.relayUntilReady(clientConn, wConn); err != nil {
 		ct.clear()
 		if acquired {
-			s.writerPool.Discard(wConn)
+			dbg.writerPool.Discard(wConn)
 		} else if *boundWriter != nil {
-			s.writerPool.Discard(*boundWriter)
+			dbg.writerPool.Discard(*boundWriter)
 			*boundWriter = nil
 		}
 		return fmt.Errorf("relay synthesized response: %w", err)
@@ -194,37 +194,37 @@ func (s *Server) executeSynthesizedQuery(ctx context.Context, clientConn net.Con
 		*boundWriter = wConn
 	case extTxEnd:
 		*boundWriter = nil
-		s.resetAndReleaseWriter(wConn)
+		s.resetAndReleaseWriter(wConn, dbg)
 	case acquired:
-		s.resetAndReleaseWriter(wConn)
+		s.resetAndReleaseWriter(wConn, dbg)
 	}
 	return nil
 }
 
 // handleSynthesizedRead sends a synthesized Simple Query to a reader.
-func (s *Server) handleSynthesizedRead(ctx context.Context, clientConn net.Conn, queryPayload []byte, readerAddr string, ct *cancelTarget) error {
+func (s *Server) handleSynthesizedRead(ctx context.Context, clientConn net.Conn, queryPayload []byte, readerAddr string, ct *cancelTarget, dbg *DatabaseGroup) error {
 	fallbackToWriter := func() error {
 		if s.metrics != nil {
 			s.metrics.ReaderFallback.Inc()
 		}
-		wConn, err := s.writerPool.Acquire(ctx)
+		wConn, err := dbg.writerPool.Acquire(ctx)
 		if err != nil {
 			s.sendError(clientConn, "no available backend connections")
 			return fmt.Errorf("acquire writer for synthesized fallback: %w", err)
 		}
-		ct.setFromConn(s.writerAddr, wConn)
+		ct.setFromConn(dbg.writerAddr, wConn)
 		if err := protocol.WriteMessage(wConn, protocol.MsgQuery, queryPayload); err != nil {
 			ct.clear()
-			s.writerPool.Discard(wConn)
+			dbg.writerPool.Discard(wConn)
 			return fmt.Errorf("send synthesized to writer: %w", err)
 		}
 		if err := s.relayUntilReady(clientConn, wConn); err != nil {
 			ct.clear()
-			s.writerPool.Discard(wConn)
+			dbg.writerPool.Discard(wConn)
 			return err
 		}
 		ct.clear()
-		s.resetAndReleaseWriter(wConn)
+		s.resetAndReleaseWriter(wConn, dbg)
 		return nil
 	}
 
@@ -232,7 +232,7 @@ func (s *Server) handleSynthesizedRead(ctx context.Context, clientConn net.Conn,
 		return fallbackToWriter()
 	}
 
-	rPool, ok := s.getReaderPool(readerAddr)
+	rPool, ok := dbg.ReaderPool(readerAddr)
 	if !ok {
 		return fallbackToWriter()
 	}
@@ -261,7 +261,7 @@ func (s *Server) handleSynthesizedRead(ctx context.Context, clientConn net.Conn,
 
 // handleMultiplexDescribe handles Describe messages in multiplex mode.
 // It forwards a temporary Parse → Describe → Close to the backend and relays results.
-func (s *Server) handleMultiplexDescribe(ctx context.Context, clientConn net.Conn, msg *protocol.Message, synth *Synthesizer, boundWriter *pool.Conn, ct *cancelTarget) error {
+func (s *Server) handleMultiplexDescribe(ctx context.Context, clientConn net.Conn, msg *protocol.Message, synth *Synthesizer, boundWriter *pool.Conn, ct *cancelTarget, dbg *DatabaseGroup) error {
 	if len(msg.Payload) < 2 {
 		s.sendError(clientConn, "invalid describe message")
 		return nil
@@ -288,7 +288,7 @@ func (s *Server) handleMultiplexDescribe(ctx context.Context, clientConn net.Con
 	}
 
 	// Forward to backend: Parse → Describe → Close → Sync, then relay response
-	wConn, err := s.writerPool.Acquire(ctx)
+	wConn, err := dbg.writerPool.Acquire(ctx)
 	if err != nil {
 		s.sendError(clientConn, "cannot acquire backend connection for describe")
 		return nil
@@ -317,19 +317,19 @@ func (s *Server) handleMultiplexDescribe(ctx context.Context, clientConn net.Con
 
 	// Send Parse → Describe → Close → Sync
 	if err := protocol.WriteMessage(wConn, protocol.MsgParse, parseBuf); err != nil {
-		s.writerPool.Discard(wConn)
+		dbg.writerPool.Discard(wConn)
 		return fmt.Errorf("send describe parse: %w", err)
 	}
 	if err := protocol.WriteMessage(wConn, protocol.MsgDescribe, descBuf); err != nil {
-		s.writerPool.Discard(wConn)
+		dbg.writerPool.Discard(wConn)
 		return fmt.Errorf("send describe: %w", err)
 	}
 	if err := protocol.WriteMessage(wConn, protocol.MsgClose, closeBuf); err != nil {
-		s.writerPool.Discard(wConn)
+		dbg.writerPool.Discard(wConn)
 		return fmt.Errorf("send describe close: %w", err)
 	}
 	if err := protocol.WriteMessage(wConn, protocol.MsgSync, nil); err != nil {
-		s.writerPool.Discard(wConn)
+		dbg.writerPool.Discard(wConn)
 		return fmt.Errorf("send describe sync: %w", err)
 	}
 
@@ -337,7 +337,7 @@ func (s *Server) handleMultiplexDescribe(ctx context.Context, clientConn net.Con
 	for {
 		resp, err := protocol.ReadMessage(wConn)
 		if err != nil {
-			s.writerPool.Discard(wConn)
+			dbg.writerPool.Discard(wConn)
 			return fmt.Errorf("read describe response: %w", err)
 		}
 
@@ -348,12 +348,12 @@ func (s *Server) handleMultiplexDescribe(ctx context.Context, clientConn net.Con
 			continue
 		case protocol.MsgReadyForQuery:
 			// Don't forward ReadyForQuery — caller handles that
-			s.resetAndReleaseWriter(wConn)
+			s.resetAndReleaseWriter(wConn, dbg)
 			return nil
 		default:
 			// Forward ParameterDescription, RowDescription, ErrorResponse, etc.
 			if err := protocol.WriteMessage(clientConn, resp.Type, resp.Payload); err != nil {
-				s.writerPool.Discard(wConn)
+				dbg.writerPool.Discard(wConn)
 				return fmt.Errorf("forward describe response: %w", err)
 			}
 		}

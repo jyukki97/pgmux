@@ -18,11 +18,11 @@ import (
 
 // handleReadQueryTraced handles read queries with OpenTelemetry child spans for
 // cache lookup, pool acquire, backend exec, and cache store.
-func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, clientConn net.Conn, msg *protocol.Message, query string, session *router.Session, ct *cancelTarget, pq *router.ParsedQuery) error {
+func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, clientConn net.Conn, msg *protocol.Message, query string, session *router.Session, ct *cancelTarget, pq *router.ParsedQuery, dbg *DatabaseGroup) error {
 	// Cache lookup span
 	_, cacheLookupSpan := telemetry.Tracer().Start(traceCtx, "pgmux.cache.lookup")
 	if s.queryCache != nil {
-		key := s.cacheKeyParsed(query, pq)
+		key := s.cacheKeyParsed(query, pq, dbg.name)
 		if cached := s.queryCache.Get(key); cached != nil {
 			cacheLookupSpan.SetAttributes(attribute.Bool("pgmux.cached", true))
 			cacheLookupSpan.End()
@@ -44,36 +44,36 @@ func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, client
 	var readerAddr string
 	if s.getConfig().Routing.CausalConsistency {
 		minLSN := session.LastWriteLSN()
-		readerAddr = s.balancer.NextWithLSN(minLSN)
+		readerAddr = dbg.balancer.NextWithLSN(minLSN)
 	} else {
-		readerAddr = s.balancer.Next()
+		readerAddr = dbg.balancer.Next()
 	}
 	if readerAddr == "" {
 		slog.Warn("no healthy reader, fallback to writer")
 		if s.metrics != nil {
 			s.metrics.ReaderFallback.Inc()
 		}
-		return s.fallbackToWriter(poolCtx, clientConn, msg, ct)
+		return s.fallbackToWriter(poolCtx, clientConn, msg, ct, dbg)
 	}
 
 	// Circuit breaker check for reader
-	if cb, ok := s.getReaderCB(readerAddr); ok {
+	if cb, ok := dbg.ReaderCB(readerAddr); ok {
 		if err := cb.Allow(); err != nil {
 			slog.Warn("reader circuit breaker open, fallback to writer", "addr", readerAddr)
 			if s.metrics != nil {
 				s.metrics.ReaderFallback.Inc()
 			}
-			return s.fallbackToWriter(poolCtx, clientConn, msg, ct)
+			return s.fallbackToWriter(poolCtx, clientConn, msg, ct, dbg)
 		}
 	}
 
-	rPool, ok := s.getReaderPool(readerAddr)
+	rPool, ok := dbg.ReaderPool(readerAddr)
 	if !ok {
 		slog.Warn("no pool for reader, fallback to writer", "addr", readerAddr)
 		if s.metrics != nil {
 			s.metrics.ReaderFallback.Inc()
 		}
-		return s.fallbackToWriter(poolCtx, clientConn, msg, ct)
+		return s.fallbackToWriter(poolCtx, clientConn, msg, ct, dbg)
 	}
 
 	// Pool acquire span
@@ -89,10 +89,10 @@ func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, client
 		if s.metrics != nil {
 			s.metrics.ReaderFallback.Inc()
 		}
-		if cb, ok := s.getReaderCB(readerAddr); ok {
+		if cb, ok := dbg.ReaderCB(readerAddr); ok {
 			cb.RecordFailure()
 		}
-		return s.fallbackToWriter(poolCtx, clientConn, msg, ct)
+		return s.fallbackToWriter(poolCtx, clientConn, msg, ct, dbg)
 	}
 	acquireSpan.End()
 	if s.metrics != nil {
@@ -114,7 +114,7 @@ func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, client
 		execSpan.End()
 		slog.Error("forward to reader", "addr", readerAddr, "error", err)
 		rPool.Discard(rConn)
-		return s.fallbackToWriter(poolCtx, clientConn, msg, ct)
+		return s.fallbackToWriter(poolCtx, clientConn, msg, ct, dbg)
 	}
 
 	// Relay response and collect bytes for caching
@@ -124,7 +124,7 @@ func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, client
 		execSpan.End()
 		if err != nil {
 			rPool.Discard(rConn)
-			if cb, ok := s.getReaderCB(readerAddr); ok {
+			if cb, ok := dbg.ReaderCB(readerAddr); ok {
 				cb.RecordFailure()
 			}
 			return fmt.Errorf("relay reader response: %w", err)
@@ -133,7 +133,7 @@ func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, client
 		if collected != nil {
 			// Cache store span
 			_, storeSpan := telemetry.Tracer().Start(traceCtx, "pgmux.cache.store")
-			key := s.cacheKeyParsed(query, pq)
+			key := s.cacheKeyParsed(query, pq, dbg.name)
 			tables := s.extractReadQueryTablesParsed(query, pq)
 			s.queryCache.Set(key, collected, tables)
 			if s.metrics != nil {
@@ -148,7 +148,7 @@ func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, client
 			execSpan.SetStatus(codes.Error, err.Error())
 			execSpan.End()
 			rPool.Discard(rConn)
-			if cb, ok := s.getReaderCB(readerAddr); ok {
+			if cb, ok := dbg.ReaderCB(readerAddr); ok {
 				cb.RecordFailure()
 			}
 			return fmt.Errorf("relay reader response: %w", err)
@@ -158,7 +158,7 @@ func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, client
 		execSpan.End()
 	}
 
-	if cb, ok := s.getReaderCB(readerAddr); ok {
+	if cb, ok := dbg.ReaderCB(readerAddr); ok {
 		cb.RecordSuccess()
 	}
 	return nil

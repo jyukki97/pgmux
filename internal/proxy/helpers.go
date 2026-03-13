@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"hash/fnv"
 	"net"
 	"strconv"
 	"strings"
@@ -43,20 +44,38 @@ func (s *Server) sendError(conn net.Conn, msg string) {
 	_ = protocol.WriteMessage(conn, protocol.MsgErrorResponse, payload)
 }
 
-// cacheKey uses semantic or plain cache key based on config.
-func (s *Server) cacheKey(query string) uint64 {
+// cacheKey uses semantic or plain cache key based on config, mixed with dbName for multi-DB isolation.
+func (s *Server) cacheKey(query string, dbName string) uint64 {
+	var key uint64
 	if s.getConfig().Routing.ASTParser {
-		return cache.SemanticCacheKey(query)
+		key = cache.SemanticCacheKey(query)
+	} else {
+		key = cache.CacheKey(query)
 	}
-	return cache.CacheKey(query)
+	return mixDBName(key, dbName)
 }
 
-// cacheKeyParsed uses a pre-parsed AST tree for semantic cache key generation.
-func (s *Server) cacheKeyParsed(query string, pq *router.ParsedQuery) uint64 {
+// cacheKeyParsed uses a pre-parsed AST tree for semantic cache key generation, mixed with dbName.
+func (s *Server) cacheKeyParsed(query string, pq *router.ParsedQuery, dbName string) uint64 {
+	var key uint64
 	if s.getConfig().Routing.ASTParser && pq != nil {
-		return cache.SemanticCacheKeyWithTree(pq.Tree, query)
+		key = cache.SemanticCacheKeyWithTree(pq.Tree, query)
+	} else if s.getConfig().Routing.ASTParser {
+		key = cache.SemanticCacheKey(query)
+	} else {
+		key = cache.CacheKey(query)
 	}
-	return s.cacheKey(query)
+	return mixDBName(key, dbName)
+}
+
+// mixDBName XORs the cache key with a hash of the database name to isolate per-DB caches.
+func mixDBName(key uint64, dbName string) uint64 {
+	if dbName == "" {
+		return key
+	}
+	h := fnv.New64a()
+	h.Write([]byte(dbName))
+	return key ^ h.Sum64()
 }
 
 // classifyQuery uses AST or string parser based on config.

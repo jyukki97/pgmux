@@ -145,7 +145,7 @@ func TestExecuteOnPool_ContextCancel(t *testing.T) {
 	cfg := &config.Config{
 		Pool: config.PoolConfig{ResetQuery: "DISCARD ALL"},
 	}
-	srv := New(func() *config.Config { return cfg }, func() *pool.Pool { return p }, nil, nil, nil, nil, nil, nil)
+	srv := New(func() *config.Config { return cfg }, nil, "", nil, nil, nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -210,7 +210,7 @@ func TestExecuteOnPool_NormalCompletion(t *testing.T) {
 	cfg := &config.Config{
 		Pool: config.PoolConfig{ResetQuery: "DISCARD ALL"},
 	}
-	srv := New(func() *config.Config { return cfg }, func() *pool.Pool { return p }, nil, nil, nil, nil, nil, nil)
+	srv := New(func() *config.Config { return cfg }, nil, "", nil, nil, nil, nil)
 
 	ctx := context.Background()
 
@@ -262,7 +262,7 @@ func TestExecuteOnPool_DeadlineExceeded(t *testing.T) {
 	cfg := &config.Config{
 		Pool: config.PoolConfig{ResetQuery: "DISCARD ALL"},
 	}
-	srv := New(func() *config.Config { return cfg }, func() *pool.Pool { return p }, nil, nil, nil, nil, nil, nil)
+	srv := New(func() *config.Config { return cfg }, nil, "", nil, nil, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()

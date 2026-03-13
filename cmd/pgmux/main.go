@@ -92,7 +92,7 @@ func run() error {
 
 	// Start Admin API server
 	if cfg.Admin.Enabled {
-		adminSrv := admin.New(srv.Cfg, srv.Cache, srv.Invalidator, srv.WriterPool, srv.ReaderPools, srv.AuditLogger, func() any {
+		adminSrv := admin.New(srv.Cfg, srv.Cache, srv.Invalidator, srv.DBGroups, srv.DefaultDBName(), srv.AuditLogger, func() any {
 			m := srv.QueryMirror()
 			if m == nil {
 				return nil
@@ -135,7 +135,7 @@ func run() error {
 
 	// Start Data API server
 	if cfg.DataAPI.Enabled {
-		apiSrv := dataapi.New(srv.Cfg, srv.WriterPool, srv.ReaderPools, srv.Balancer, srv.Cache, srv.ProxyMetrics(), srv.RateLimiter, func() *cache.Invalidator { return srv.Invalidator() })
+		apiSrv := dataapi.New(srv.Cfg, srv.DBGroups, srv.DefaultDBName(), srv.Cache, srv.ProxyMetrics(), srv.RateLimiter, func() *cache.Invalidator { return srv.Invalidator() })
 		apiHTTP := apiSrv.HTTPServer()
 
 		ln, err := net.Listen("tcp", cfg.DataAPI.Listen)

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -27,8 +28,9 @@ type Config struct {
 	DataAPI        DataAPIConfig        `yaml:"data_api"`
 	ConfigOptions  ConfigOptionsConfig  `yaml:"config"`
 	Telemetry      TelemetryConfig      `yaml:"telemetry"`
-	Mirror         MirrorConfig         `yaml:"mirror"`
-	Digest         DigestConfig         `yaml:"digest"`
+	Mirror         MirrorConfig                  `yaml:"mirror"`
+	Digest         DigestConfig                  `yaml:"digest"`
+	Databases      map[string]DatabaseConfig     `yaml:"databases"`
 }
 
 type ConfigOptionsConfig struct {
@@ -156,6 +158,14 @@ type CacheInvalidationConfig struct {
 	Channel   string `yaml:"channel"`    // Redis channel name
 }
 
+// DatabaseConfig defines per-database routing configuration for multi-DB mode.
+type DatabaseConfig struct {
+	Writer  DBConfig      `yaml:"writer"`
+	Readers []DBConfig    `yaml:"readers"`
+	Backend BackendConfig `yaml:"backend"`
+	Pool    PoolConfig    `yaml:"pool"`
+}
+
 type MirrorConfig struct {
 	Enabled    bool     `yaml:"enabled"`
 	Host       string   `yaml:"host"`
@@ -194,6 +204,43 @@ func Load(path string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// ResolvedDatabases returns the database configurations.
+// If Databases map is not set, it synthesizes a single entry from top-level config.
+func (c *Config) ResolvedDatabases() map[string]DatabaseConfig {
+	if len(c.Databases) > 0 {
+		return c.Databases
+	}
+	name := c.Backend.Database
+	return map[string]DatabaseConfig{
+		name: {
+			Writer:  c.Writer,
+			Readers: c.Readers,
+			Backend: c.Backend,
+			Pool:    c.Pool,
+		},
+	}
+}
+
+// DefaultDatabaseName returns the default database name for connections
+// that don't specify one.
+func (c *Config) DefaultDatabaseName() string {
+	if len(c.Databases) > 0 {
+		if c.Backend.Database != "" {
+			if _, ok := c.Databases[c.Backend.Database]; ok {
+				return c.Backend.Database
+			}
+		}
+		var first string
+		for name := range c.Databases {
+			if first == "" || name < first {
+				first = name
+			}
+		}
+		return first
+	}
+	return c.Backend.Database
 }
 
 func (c *Config) applyDefaults() {
@@ -311,21 +358,80 @@ func (c *Config) applyDefaults() {
 	if c.Digest.SamplesPerPattern <= 0 {
 		c.Digest.SamplesPerPattern = 1000
 	}
+
+	// Apply defaults to each database config
+	for name, db := range c.Databases {
+		if db.Backend.User == "" {
+			db.Backend.User = c.Backend.User
+		}
+		if db.Backend.Password == "" {
+			db.Backend.Password = c.Backend.Password
+		}
+		if db.Backend.Database == "" {
+			db.Backend.Database = name
+		}
+		if db.Pool.MaxConnections == 0 {
+			db.Pool.MaxConnections = c.Pool.MaxConnections
+		}
+		if db.Pool.MinConnections == 0 {
+			db.Pool.MinConnections = c.Pool.MinConnections
+		}
+		if db.Pool.IdleTimeout == 0 {
+			db.Pool.IdleTimeout = c.Pool.IdleTimeout
+		}
+		if db.Pool.MaxLifetime == 0 {
+			db.Pool.MaxLifetime = c.Pool.MaxLifetime
+		}
+		if db.Pool.ConnectionTimeout == 0 {
+			db.Pool.ConnectionTimeout = c.Pool.ConnectionTimeout
+		}
+		if db.Pool.ResetQuery == "" {
+			db.Pool.ResetQuery = c.Pool.ResetQuery
+		}
+		if db.Pool.PreparedStatementMode == "" {
+			db.Pool.PreparedStatementMode = c.Pool.PreparedStatementMode
+		}
+		c.Databases[name] = db
+	}
 }
 
 func (c *Config) validate() error {
-	if c.Writer.Host == "" {
-		return fmt.Errorf("writer.host is required")
-	}
-	if c.Writer.Port <= 0 || c.Writer.Port > 65535 {
-		return fmt.Errorf("writer.port must be between 1 and 65535, got %d", c.Writer.Port)
-	}
-	for i, r := range c.Readers {
-		if r.Host == "" {
-			return fmt.Errorf("readers[%d].host is required", i)
+	if len(c.Databases) > 0 {
+		// Multi-DB validation
+		if c.Writer.Host != "" {
+			slog.Warn("databases config found, top-level writer/readers/backend will be ignored")
 		}
-		if r.Port <= 0 || r.Port > 65535 {
-			return fmt.Errorf("readers[%d].port must be between 1 and 65535, got %d", i, r.Port)
+		for name, db := range c.Databases {
+			if db.Writer.Host == "" {
+				return fmt.Errorf("databases.%s.writer.host is required", name)
+			}
+			if db.Writer.Port <= 0 || db.Writer.Port > 65535 {
+				return fmt.Errorf("databases.%s.writer.port must be between 1 and 65535, got %d", name, db.Writer.Port)
+			}
+			for i, r := range db.Readers {
+				if r.Host == "" {
+					return fmt.Errorf("databases.%s.readers[%d].host is required", name, i)
+				}
+				if r.Port <= 0 || r.Port > 65535 {
+					return fmt.Errorf("databases.%s.readers[%d].port must be between 1 and 65535, got %d", name, i, r.Port)
+				}
+			}
+		}
+	} else {
+		// Single-DB validation
+		if c.Writer.Host == "" {
+			return fmt.Errorf("writer.host is required")
+		}
+		if c.Writer.Port <= 0 || c.Writer.Port > 65535 {
+			return fmt.Errorf("writer.port must be between 1 and 65535, got %d", c.Writer.Port)
+		}
+		for i, r := range c.Readers {
+			if r.Host == "" {
+				return fmt.Errorf("readers[%d].host is required", i)
+			}
+			if r.Port <= 0 || r.Port > 65535 {
+				return fmt.Errorf("readers[%d].port must be between 1 and 65535, got %d", i, r.Port)
+			}
 		}
 	}
 	if c.TLS.Enabled {

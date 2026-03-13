@@ -24,20 +24,16 @@ import (
 )
 
 type Server struct {
-	mu           sync.RWMutex // protects cfg, readerPools, readerCBs, rateLimiter
+	mu           sync.RWMutex // protects cfg, dbGroups, rateLimiter
 	cfg          *config.Config
 	listenAddr   string
-	writerAddr   string
-	writerPool   *pool.Pool
-	readerPools  map[string]*pool.Pool
-	balancer     *router.RoundRobin
+	dbGroups     map[string]*DatabaseGroup
+	defaultDB    string
 	queryCache   *cache.Cache
 	invalidator  *cache.Invalidator
 	metrics      *metrics.Metrics
 	listener     net.Listener
 	tlsConfig    *tls.Config
-	writerCB     *resilience.CircuitBreaker
-	readerCBs    map[string]*resilience.CircuitBreaker
 	rateLimiter  *resilience.RateLimiter
 	auditLogger  *audit.Logger
 	mirror       *mirror.Mirror
@@ -48,19 +44,11 @@ type Server struct {
 }
 
 func NewServer(cfg *config.Config) *Server {
-	writerAddr := fmt.Sprintf("%s:%d", cfg.Writer.Host, cfg.Writer.Port)
-
-	readerAddrs := make([]string, len(cfg.Readers))
-	for i, r := range cfg.Readers {
-		readerAddrs[i] = fmt.Sprintf("%s:%d", r.Host, r.Port)
-	}
-
 	s := &Server{
-		cfg:         cfg,
-		listenAddr:  cfg.Proxy.Listen,
-		writerAddr:  writerAddr,
-		balancer:    router.NewRoundRobin(readerAddrs),
-		readerPools: make(map[string]*pool.Pool),
+		cfg:        cfg,
+		listenAddr: cfg.Proxy.Listen,
+		dbGroups:   make(map[string]*DatabaseGroup),
+		defaultDB:  cfg.DefaultDatabaseName(),
 	}
 
 	// Initialize Prometheus metrics
@@ -99,67 +87,16 @@ func NewServer(cfg *config.Config) *Server {
 		}
 	}
 
-	// Initialize writer connection pool
-	writerPool, err := pool.New(pool.Config{
-		DialFunc: func() (net.Conn, error) {
-			return pgConnect(writerAddr, cfg.Backend.User, cfg.Backend.Password, cfg.Backend.Database)
-		},
-		MinConnections:    0, // lazy creation; backend may not be ready at startup
-		MaxConnections:    cfg.Pool.MaxConnections,
-		IdleTimeout:       cfg.Pool.IdleTimeout,
-		MaxLifetime:       cfg.Pool.MaxLifetime,
-		ConnectionTimeout: cfg.Pool.ConnectionTimeout,
-	})
-	if err != nil {
-		slog.Error("create writer pool", "addr", writerAddr, "error", err)
-	} else {
-		s.writerPool = writerPool
-		slog.Info("writer pool created", "addr", writerAddr, "max_conn", cfg.Pool.MaxConnections)
-	}
-
-	// Initialize reader connection pools (PG-aware via DialFunc)
-	for _, addr := range readerAddrs {
-		addr := addr // capture for closure
-		p, err := pool.New(pool.Config{
-			DialFunc: func() (net.Conn, error) {
-				return pgConnect(addr, cfg.Backend.User, cfg.Backend.Password, cfg.Backend.Database)
-			},
-			MinConnections:    0, // lazy creation; backends may not be ready at startup
-			MaxConnections:    cfg.Pool.MaxConnections,
-			IdleTimeout:       cfg.Pool.IdleTimeout,
-			MaxLifetime:       cfg.Pool.MaxLifetime,
-			ConnectionTimeout: cfg.Pool.ConnectionTimeout,
-		})
-		if err != nil {
-			slog.Error("create reader pool", "addr", addr, "error", err)
-			continue
-		}
-		s.readerPools[addr] = p
-		slog.Info("reader pool created", "addr", addr, "max_conn", cfg.Pool.MaxConnections)
+	// Create database groups
+	for name, dbCfg := range cfg.ResolvedDatabases() {
+		dbg := newDatabaseGroup(name, dbCfg, cfg.CircuitBreaker)
+		s.dbGroups[name] = dbg
 	}
 
 	// Initialize Rate Limiter
 	if cfg.RateLimit.Enabled {
 		s.rateLimiter = resilience.NewRateLimiter(cfg.RateLimit.Rate, cfg.RateLimit.Burst)
 		slog.Info("rate limiter enabled", "rate", cfg.RateLimit.Rate, "burst", cfg.RateLimit.Burst)
-	}
-
-	// Initialize Circuit Breakers
-	if cfg.CircuitBreaker.Enabled {
-		cbCfg := resilience.BreakerConfig{
-			ErrorThreshold: cfg.CircuitBreaker.ErrorThreshold,
-			OpenDuration:   cfg.CircuitBreaker.OpenDuration,
-			HalfOpenMax:    cfg.CircuitBreaker.HalfOpenMax,
-			WindowSize:     cfg.CircuitBreaker.WindowSize,
-		}
-		s.writerCB = resilience.NewCircuitBreaker(cbCfg)
-		s.readerCBs = make(map[string]*resilience.CircuitBreaker)
-		for _, addr := range readerAddrs {
-			s.readerCBs[addr] = resilience.NewCircuitBreaker(cbCfg)
-		}
-		slog.Info("circuit breakers enabled",
-			"threshold", cbCfg.ErrorThreshold,
-			"open_duration", cbCfg.OpenDuration)
 	}
 
 	// Load TLS certificate if enabled
@@ -241,13 +178,9 @@ func NewServer(cfg *config.Config) *Server {
 			"samples_per_pattern", cfg.Digest.SamplesPerPattern)
 	}
 
-	if len(readerAddrs) == 0 {
-		slog.Info("no readers configured, all queries routed to writer")
-	}
-
 	slog.Info("server initialized",
-		"writer", writerAddr,
-		"readers", len(readerAddrs),
+		"databases", len(s.dbGroups),
+		"default_db", s.defaultDB,
 		"cache", cfg.Cache.Enabled,
 		"tls", cfg.TLS.Enabled,
 		"audit", cfg.Audit.Enabled,
@@ -264,20 +197,18 @@ func (s *Server) Start(ctx context.Context) error {
 	s.listener = ln
 	slog.Info("proxy listening", "addr", s.listenAddr)
 
-	// Start writer pool health check
-	if s.writerPool != nil {
-		s.writerPool.StartHealthCheck(ctx, s.cfg.Pool.IdleTimeout/2)
-		slog.Debug("writer health check started", "addr", s.writerAddr)
+	// Start health checks for all database groups
+	for name, dbg := range s.dbGroups {
+		if dbg.writerPool != nil {
+			dbg.writerPool.StartHealthCheck(ctx, s.cfg.Pool.IdleTimeout/2)
+			slog.Debug("writer health check started", "db", name, "addr", dbg.writerAddr)
+		}
+		for addr, p := range dbg.ReaderPools() {
+			p.StartHealthCheck(ctx, s.cfg.Pool.IdleTimeout/2)
+			slog.Debug("reader health check started", "db", name, "addr", addr)
+		}
+		dbg.balancer.StartHealthCheck(ctx, s.cfg.Pool.ConnectionTimeout)
 	}
-
-	// Start reader health checks
-	for addr, p := range s.readerPools {
-		p.StartHealthCheck(ctx, s.cfg.Pool.IdleTimeout/2)
-		slog.Debug("reader health check started", "addr", addr)
-	}
-
-	// Start balancer health check
-	s.balancer.StartHealthCheck(ctx, s.cfg.Pool.ConnectionTimeout)
 
 	// Start cache invalidation subscriber
 	if s.invalidator != nil {
@@ -402,11 +333,22 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 	_, _, params := protocol.ParseStartupParams(startup.Payload)
 	slog.Info("client startup", "user", params["user"], "database", params["database"])
 
-	// 3. Generate proxy cancel key for this session
+	// 3. Resolve database group
+	dbName := params["database"]
+	if dbName == "" {
+		dbName = s.defaultDB
+	}
+	dbg := s.resolveDBGroup(dbName)
+	if dbg == nil {
+		s.sendError(clientConn, fmt.Sprintf("unknown database %q", dbName))
+		return
+	}
+
+	// 4. Generate proxy cancel key for this session
 	ct := s.newCancelTarget()
 	defer s.removeCancelTarget(ct)
 
-	// 4. Authenticate client
+	// 5. Authenticate client
 	cfg := s.getConfig()
 	if cfg.Auth.Enabled {
 		// Front-end auth: proxy authenticates the client directly using MD5.
@@ -417,9 +359,9 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 		slog.Info("frontend auth success", "user", params["user"], "remote", rawConn.RemoteAddr())
 	} else {
 		// Backend auth relay: temporary connection to relay the client's auth handshake.
-		authConn, err := net.Dial("tcp", s.writerAddr)
+		authConn, err := net.Dial("tcp", dbg.writerAddr)
 		if err != nil {
-			slog.Error("connect to writer for auth", "addr", s.writerAddr, "error", err)
+			slog.Error("connect to writer for auth", "addr", dbg.writerAddr, "error", err)
 			s.sendError(clientConn, "cannot connect to backend database")
 			return
 		}
@@ -443,78 +385,42 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 
 	slog.Info("handshake complete", "remote", rawConn.RemoteAddr())
 
-	// 5. Create per-client session router
+	// 6. Create per-client session router
 	session := router.NewSession(cfg.Routing.ReadAfterWriteDelay, cfg.Routing.CausalConsistency, cfg.Routing.ASTParser)
 
-	// 6. Relay queries with transaction-level pooling
-	s.relayQueries(ctx, clientConn, session, ct)
+	// 7. Relay queries with transaction-level pooling
+	s.relayQueries(ctx, clientConn, session, ct, dbg)
 }
 
 // Reload applies a new configuration without restarting the proxy.
-// Reloadable: reader list (add/remove), rate limit settings.
-// NOT reloadable: proxy.listen, writer address, pool sizes (existing pools), cache TTL.
+// Reloadable: reader list (add/remove), rate limit settings, database groups.
+// NOT reloadable: proxy.listen, writer address (per-group), pool sizes (existing pools), cache TTL.
 func (s *Server) Reload(newCfg *config.Config) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	oldCfg := s.cfg
+	newDBs := newCfg.ResolvedDatabases()
 
-	// Update readers if changed
-	newReaderAddrs := make([]string, len(newCfg.Readers))
-	for i, r := range newCfg.Readers {
-		newReaderAddrs[i] = fmt.Sprintf("%s:%d", r.Host, r.Port)
-	}
-
-	oldReaderAddrs := make(map[string]bool)
-	for _, r := range oldCfg.Readers {
-		oldReaderAddrs[fmt.Sprintf("%s:%d", r.Host, r.Port)] = true
-	}
-
-	// Create new reader pools and close removed ones
-	newReaderPools := make(map[string]*pool.Pool)
-	for _, addr := range newReaderAddrs {
-		if existingPool, ok := s.readerPools[addr]; ok {
-			// Keep existing pool
-			newReaderPools[addr] = existingPool
+	// Update existing groups and add new ones
+	for name, dbCfg := range newDBs {
+		if existing, ok := s.dbGroups[name]; ok {
+			existing.Reload(dbCfg, newCfg.CircuitBreaker)
+			slog.Info("reload: database group updated", "db", name)
 		} else {
-			// Create new pool for added reader
-			addr := addr
-			p, err := pool.New(pool.Config{
-				DialFunc: func() (net.Conn, error) {
-					return pgConnect(addr, newCfg.Backend.User, newCfg.Backend.Password, newCfg.Backend.Database)
-				},
-				MinConnections:    0,
-				MaxConnections:    newCfg.Pool.MaxConnections,
-				IdleTimeout:       newCfg.Pool.IdleTimeout,
-				MaxLifetime:       newCfg.Pool.MaxLifetime,
-				ConnectionTimeout: newCfg.Pool.ConnectionTimeout,
-			})
-			if err != nil {
-				slog.Error("reload: create reader pool", "addr", addr, "error", err)
-				continue
-			}
-			newReaderPools[addr] = p
-			slog.Info("reload: reader pool added", "addr", addr)
+			dbg := newDatabaseGroup(name, dbCfg, newCfg.CircuitBreaker)
+			s.dbGroups[name] = dbg
+			slog.Info("reload: database group added", "db", name)
 		}
 	}
 
-	// Close removed reader pools
-	for addr, p := range s.readerPools {
-		found := false
-		for _, newAddr := range newReaderAddrs {
-			if addr == newAddr {
-				found = true
-				break
-			}
-		}
-		if !found {
-			p.Close()
-			slog.Info("reload: reader pool removed", "addr", addr)
+	// Close removed groups
+	for name, dbg := range s.dbGroups {
+		if _, ok := newDBs[name]; !ok {
+			dbg.Close()
+			delete(s.dbGroups, name)
+			slog.Info("reload: database group removed", "db", name)
 		}
 	}
-
-	s.readerPools = newReaderPools
-	s.balancer.UpdateBackends(newReaderAddrs)
 
 	// Update rate limiter
 	if newCfg.RateLimit.Enabled {
@@ -523,25 +429,35 @@ func (s *Server) Reload(newCfg *config.Config) error {
 		s.rateLimiter = nil
 	}
 
+	// Update default DB
+	s.defaultDB = newCfg.DefaultDatabaseName()
+
 	// Update config reference
 	s.cfg = newCfg
 
 	slog.Info("config reloaded",
-		"readers", len(newReaderAddrs),
+		"databases", len(newDBs),
 		"rate_limit", newCfg.RateLimit.Enabled)
 
 	return nil
 }
 
 func (s *Server) closePools() {
-	if s.writerPool != nil {
-		s.writerPool.Close()
-		slog.Debug("writer pool closed", "addr", s.writerAddr)
+	s.mu.RLock()
+	groups := s.dbGroups
+	s.mu.RUnlock()
+	for name, dbg := range groups {
+		dbg.Close()
+		slog.Debug("database group closed", "db", name)
 	}
-	for addr, p := range s.getReaderPools() {
-		p.Close()
-		slog.Debug("reader pool closed", "addr", addr)
-	}
+}
+
+// resolveDBGroup returns the DatabaseGroup for the given name (thread-safe).
+func (s *Server) resolveDBGroup(name string) *DatabaseGroup {
+	s.mu.RLock()
+	dbg := s.dbGroups[name]
+	s.mu.RUnlock()
+	return dbg
 }
 
 // getConfig returns the current config snapshot (thread-safe).
@@ -552,22 +468,6 @@ func (s *Server) getConfig() *config.Config {
 	return cfg
 }
 
-// getReaderPool returns the pool for the given reader address (thread-safe).
-func (s *Server) getReaderPool(addr string) (*pool.Pool, bool) {
-	s.mu.RLock()
-	p, ok := s.readerPools[addr]
-	s.mu.RUnlock()
-	return p, ok
-}
-
-// getReaderPools returns the current reader pools map snapshot (thread-safe).
-func (s *Server) getReaderPools() map[string]*pool.Pool {
-	s.mu.RLock()
-	pools := s.readerPools
-	s.mu.RUnlock()
-	return pools
-}
-
 // getRateLimiter returns the current rate limiter (thread-safe).
 func (s *Server) getRateLimiter() *resilience.RateLimiter {
 	s.mu.RLock()
@@ -576,13 +476,15 @@ func (s *Server) getRateLimiter() *resilience.RateLimiter {
 	return rl
 }
 
-// getReaderCBs returns the circuit breaker for the given reader address (thread-safe).
-func (s *Server) getReaderCB(addr string) (*resilience.CircuitBreaker, bool) {
+// getDBGroups returns the current database groups map snapshot (thread-safe).
+func (s *Server) getDBGroups() map[string]*DatabaseGroup {
 	s.mu.RLock()
-	cb, ok := s.readerCBs[addr]
+	groups := s.dbGroups
 	s.mu.RUnlock()
-	return cb, ok
+	return groups
 }
+
+// --- Public getters ---
 
 // Cfg returns the current config (thread-safe).
 func (s *Server) Cfg() *config.Config {
@@ -594,24 +496,9 @@ func (s *Server) Cache() *cache.Cache {
 	return s.queryCache
 }
 
-// ReaderPools returns the server's reader connection pools (thread-safe).
-func (s *Server) ReaderPools() map[string]*pool.Pool {
-	return s.getReaderPools()
-}
-
-// WriterPool returns the server's writer connection pool.
-func (s *Server) WriterPool() *pool.Pool {
-	return s.writerPool
-}
-
 // Invalidator returns the server's cache invalidator (may be nil).
 func (s *Server) Invalidator() *cache.Invalidator {
 	return s.invalidator
-}
-
-// Balancer returns the server's reader load balancer.
-func (s *Server) Balancer() *router.RoundRobin {
-	return s.balancer
 }
 
 // ProxyMetrics returns the server's Prometheus metrics (may be nil).
@@ -622,4 +509,51 @@ func (s *Server) ProxyMetrics() *metrics.Metrics {
 // RateLimiter returns the server's rate limiter (thread-safe, may be nil).
 func (s *Server) RateLimiter() *resilience.RateLimiter {
 	return s.getRateLimiter()
+}
+
+// DBGroup returns a specific database group by name (thread-safe).
+func (s *Server) DBGroup(name string) *DatabaseGroup {
+	return s.resolveDBGroup(name)
+}
+
+// DBGroups returns all database groups (thread-safe).
+func (s *Server) DBGroups() map[string]*DatabaseGroup {
+	return s.getDBGroups()
+}
+
+// DefaultDBName returns the default database name.
+func (s *Server) DefaultDBName() string {
+	s.mu.RLock()
+	name := s.defaultDB
+	s.mu.RUnlock()
+	return name
+}
+
+// --- Backward-compatible getters (delegate to default DB group) ---
+
+// WriterPool returns the default DB group's writer connection pool.
+func (s *Server) WriterPool() *pool.Pool {
+	dbg := s.resolveDBGroup(s.DefaultDBName())
+	if dbg == nil {
+		return nil
+	}
+	return dbg.writerPool
+}
+
+// ReaderPools returns the default DB group's reader connection pools (thread-safe).
+func (s *Server) ReaderPools() map[string]*pool.Pool {
+	dbg := s.resolveDBGroup(s.DefaultDBName())
+	if dbg == nil {
+		return nil
+	}
+	return dbg.ReaderPools()
+}
+
+// Balancer returns the default DB group's reader load balancer.
+func (s *Server) Balancer() *router.RoundRobin {
+	dbg := s.resolveDBGroup(s.DefaultDBName())
+	if dbg == nil {
+		return nil
+	}
+	return dbg.balancer
 }

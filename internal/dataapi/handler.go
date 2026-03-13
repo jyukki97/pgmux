@@ -23,6 +23,7 @@ import (
 	"github.com/jyukki97/pgmux/internal/metrics"
 	"github.com/jyukki97/pgmux/internal/pool"
 	"github.com/jyukki97/pgmux/internal/protocol"
+	"github.com/jyukki97/pgmux/internal/proxy"
 	"github.com/jyukki97/pgmux/internal/resilience"
 	"github.com/jyukki97/pgmux/internal/router"
 	"github.com/jyukki97/pgmux/internal/telemetry"
@@ -50,28 +51,24 @@ type ErrorResponse struct {
 // Server is the Data API HTTP server.
 type Server struct {
 	cfgFn         func() *config.Config
-	writerPoolFn  func() *pool.Pool
-	readerPoolsFn func() map[string]*pool.Pool
-	balancerFn    func() *router.RoundRobin
+	dbGroupsFn    func() map[string]*proxy.DatabaseGroup
+	defaultDB     string
 	queryCacheFn  func() *cache.Cache
-	met            *metrics.Metrics
-	rateLimiterFn  func() *resilience.RateLimiter
-	invalidatorFn  func() *cache.Invalidator
+	met           *metrics.Metrics
+	rateLimiterFn func() *resilience.RateLimiter
+	invalidatorFn func() *cache.Invalidator
 }
 
 // New creates a new Data API server.
-// Pool, balancer, cache, and rate limiter parameters are getter functions so
-// that Data API always accesses the latest objects even after a hot-reload.
-func New(cfgFn func() *config.Config, writerPoolFn func() *pool.Pool, readerPoolsFn func() map[string]*pool.Pool, balancerFn func() *router.RoundRobin, queryCacheFn func() *cache.Cache, met *metrics.Metrics, rateLimiterFn func() *resilience.RateLimiter, invalidatorFn func() *cache.Invalidator) *Server {
+func New(cfgFn func() *config.Config, dbGroupsFn func() map[string]*proxy.DatabaseGroup, defaultDB string, queryCacheFn func() *cache.Cache, met *metrics.Metrics, rateLimiterFn func() *resilience.RateLimiter, invalidatorFn func() *cache.Invalidator) *Server {
 	return &Server{
-		cfgFn:          cfgFn,
-		writerPoolFn:   writerPoolFn,
-		readerPoolsFn:  readerPoolsFn,
-		balancerFn:     balancerFn,
-		queryCacheFn:   queryCacheFn,
-		met:            met,
-		rateLimiterFn:  rateLimiterFn,
-		invalidatorFn:  invalidatorFn,
+		cfgFn:         cfgFn,
+		dbGroupsFn:    dbGroupsFn,
+		defaultDB:     defaultDB,
+		queryCacheFn:  queryCacheFn,
+		met:           met,
+		rateLimiterFn: rateLimiterFn,
+		invalidatorFn: invalidatorFn,
 	}
 }
 
@@ -139,11 +136,24 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve database group
+	dbName := r.URL.Query().Get("database")
+	if dbName == "" {
+		dbName = s.defaultDB
+	}
+	groups := s.dbGroupsFn()
+	dbg := groups[dbName]
+	if dbg == nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown database %q", dbName))
+		return
+	}
+
 	// Start root span for Data API query
 	ctx, querySpan := telemetry.Tracer().Start(ctx, "pgmux.dataapi.query",
 		trace.WithAttributes(
 			attribute.String("db.system", "postgresql"),
 			attribute.String("db.statement", truncateSQL(req.SQL)),
+			attribute.String("db.name", dbName),
 		),
 	)
 	defer querySpan.End()
@@ -207,10 +217,14 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	var resp *QueryResponse
 	var err error
 
+	writerPool := dbg.WriterPool()
+	readerPools := dbg.ReaderPools()
+	balancer := dbg.Balancer()
+
 	if qtype == router.QueryWrite {
-		resp, err = s.executeWrite(ctx, req.SQL, parsedQuery)
+		resp, err = s.executeWrite(ctx, req.SQL, parsedQuery, writerPool, dbName)
 	} else {
-		resp, err = s.executeRead(ctx, req.SQL, parsedQuery)
+		resp, err = s.executeRead(ctx, req.SQL, parsedQuery, writerPool, readerPools, balancer, dbName)
 	}
 
 	elapsed := time.Since(start)
@@ -230,14 +244,13 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-func (s *Server) executeRead(ctx context.Context, sql string, pq *router.ParsedQuery) (*QueryResponse, error) {
+func (s *Server) executeRead(ctx context.Context, sql string, pq *router.ParsedQuery, writerPool *pool.Pool, readerPools map[string]*pool.Pool, balancer *router.RoundRobin, dbName string) (*QueryResponse, error) {
 	queryCache := s.queryCacheFn()
-	writerPool := s.writerPoolFn()
 
 	// Cache lookup span
 	_, cacheLookupSpan := telemetry.Tracer().Start(ctx, "pgmux.cache.lookup")
 	if queryCache != nil {
-		key := cache.WithNamespace(s.cacheKeyParsed(sql, pq), cache.NSDataAPI)
+		key := cache.WithNamespace(s.cacheKeyParsed(sql, pq, dbName), cache.NSDataAPI)
 		if cached := queryCache.Get(key); cached != nil {
 			if s.met != nil {
 				s.met.CacheHits.Inc()
@@ -256,9 +269,6 @@ func (s *Server) executeRead(ctx context.Context, sql string, pq *router.ParsedQ
 	}
 	cacheLookupSpan.SetAttributes(attribute.Bool("pgmux.cached", false))
 	cacheLookupSpan.End()
-
-	balancer := s.balancerFn()
-	readerPools := s.readerPoolsFn()
 
 	var readerAddr string
 	if balancer != nil {
@@ -285,7 +295,7 @@ func (s *Server) executeRead(ctx context.Context, sql string, pq *router.ParsedQ
 	// Cache store span
 	if queryCache != nil && resp != nil {
 		_, storeSpan := telemetry.Tracer().Start(ctx, "pgmux.cache.store")
-		key := cache.WithNamespace(s.cacheKeyParsed(sql, pq), cache.NSDataAPI)
+		key := cache.WithNamespace(s.cacheKeyParsed(sql, pq, dbName), cache.NSDataAPI)
 		if data, err := json.Marshal(resp); err == nil {
 			tables := s.extractReadTablesParsed(sql, pq)
 			queryCache.Set(key, data, tables)
@@ -299,8 +309,7 @@ func (s *Server) executeRead(ctx context.Context, sql string, pq *router.ParsedQ
 	return resp, nil
 }
 
-func (s *Server) executeWrite(ctx context.Context, sql string, pq *router.ParsedQuery) (*QueryResponse, error) {
-	writerPool := s.writerPoolFn()
+func (s *Server) executeWrite(ctx context.Context, sql string, pq *router.ParsedQuery, writerPool *pool.Pool, dbName string) (*QueryResponse, error) {
 	resp, err := s.executeOnPool(ctx, sql, writerPool)
 	if err != nil {
 		return nil, err
@@ -670,18 +679,29 @@ func (s *Server) classifyQueryParsed(sql string, pq *router.ParsedQuery) router.
 	return s.classifyQuery(sql)
 }
 
-func (s *Server) cacheKey(sql string) uint64 {
-	if s.cfgFn().Routing.ASTParser {
-		return cache.SemanticCacheKey(sql)
+func (s *Server) cacheKeyParsed(sql string, pq *router.ParsedQuery, dbName string) uint64 {
+	var key uint64
+	if s.cfgFn().Routing.ASTParser && pq != nil {
+		key = cache.SemanticCacheKeyWithTree(pq.Tree, sql)
+	} else if s.cfgFn().Routing.ASTParser {
+		key = cache.SemanticCacheKey(sql)
+	} else {
+		key = cache.CacheKey(sql)
 	}
-	return cache.CacheKey(sql)
+	return mixDBNameDataAPI(key, dbName)
 }
 
-func (s *Server) cacheKeyParsed(sql string, pq *router.ParsedQuery) uint64 {
-	if s.cfgFn().Routing.ASTParser && pq != nil {
-		return cache.SemanticCacheKeyWithTree(pq.Tree, sql)
+func mixDBNameDataAPI(key uint64, dbName string) uint64 {
+	if dbName == "" {
+		return key
 	}
-	return s.cacheKey(sql)
+	// Use FNV-1a hash of dbName XORed with key
+	var h uint64 = 14695981039346656037 // FNV offset basis
+	for i := 0; i < len(dbName); i++ {
+		h ^= uint64(dbName[i])
+		h *= 1099511628211 // FNV prime
+	}
+	return key ^ h
 }
 
 func (s *Server) extractTables(sql string) []string {

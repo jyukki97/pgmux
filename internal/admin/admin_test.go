@@ -13,7 +13,7 @@ import (
 	"github.com/jyukki97/pgmux/internal/audit"
 	"github.com/jyukki97/pgmux/internal/cache"
 	"github.com/jyukki97/pgmux/internal/config"
-	"github.com/jyukki97/pgmux/internal/pool"
+	"github.com/jyukki97/pgmux/internal/proxy"
 )
 
 func testServer() (*Server, *cache.Cache) {
@@ -46,22 +46,40 @@ func testServer() (*Server, *cache.Cache) {
 		MaxEntries: 1000,
 		TTL:        10 * time.Second,
 	})
-	readerPools := map[string]*pool.Pool{}
 
 	srv := New(
 		func() *config.Config { return cfg },
 		func() *cache.Cache { return c },
 		func() *cache.Invalidator { return nil },
-		func() *pool.Pool { return nil },
-		func() map[string]*pool.Pool { return readerPools },
+		func() map[string]*proxy.DatabaseGroup { return nil },
+		"testdb",
 		func() *audit.Logger { return nil },
 		nil, nil, nil,
 	)
 	return srv, c
 }
 
+func testServerWithGroups(cfg *config.Config) *Server {
+	proxySrv := proxy.NewServer(cfg)
+	return New(
+		func() *config.Config { return cfg },
+		func() *cache.Cache { return nil },
+		func() *cache.Invalidator { return nil },
+		proxySrv.DBGroups,
+		proxySrv.DefaultDBName(),
+		func() *audit.Logger { return nil },
+		nil, nil, nil,
+	)
+}
+
 func TestHandleHealth(t *testing.T) {
-	srv, _ := testServer()
+	cfg := &config.Config{
+		Writer:  config.DBConfig{Host: "127.0.0.1", Port: 5432},
+		Readers: []config.DBConfig{{Host: "127.0.0.1", Port: 5433}},
+		Backend: config.BackendConfig{Database: "testdb"},
+		Pool:    config.PoolConfig{MaxConnections: 10, IdleTimeout: time.Minute},
+	}
+	srv := testServerWithGroups(cfg)
 	req := httptest.NewRequest(http.MethodGet, "/admin/health", nil)
 	w := httptest.NewRecorder()
 
@@ -74,10 +92,12 @@ func TestHandleHealth(t *testing.T) {
 	var resp map[string]any
 	json.NewDecoder(w.Body).Decode(&resp)
 
-	if resp["writer"] == nil {
+	databases := resp["databases"].(map[string]any)
+	db := databases["testdb"].(map[string]any)
+	if db["writer"] == nil {
 		t.Error("expected writer field in response")
 	}
-	if resp["readers"] == nil {
+	if db["readers"] == nil {
 		t.Error("expected readers field in response")
 	}
 }
@@ -282,26 +302,19 @@ func TestHandleReload_MethodNotAllowed(t *testing.T) {
 }
 
 func TestHandleHealth_ParallelTiming(t *testing.T) {
-	// All backends point to a non-routable address (RFC 5737 TEST-NET)
+	// All backends point to non-routable addresses (RFC 5737 TEST-NET)
 	// to trigger the 2 s dial timeout. With 3 backends checked
 	// sequentially this would take ~6 s; parallel should finish in ~2 s.
 	cfg := &config.Config{
 		Writer: config.DBConfig{Host: "192.0.2.1", Port: 9999},
 		Readers: []config.DBConfig{
-			{Host: "192.0.2.1", Port: 9999},
-			{Host: "192.0.2.1", Port: 9999},
+			{Host: "192.0.2.2", Port: 9999},
+			{Host: "192.0.2.3", Port: 9999},
 		},
+		Backend: config.BackendConfig{Database: "testdb"},
+		Pool:    config.PoolConfig{MaxConnections: 10, IdleTimeout: time.Minute},
 	}
-
-	srv := New(
-		func() *config.Config { return cfg },
-		func() *cache.Cache { return nil },
-		func() *cache.Invalidator { return nil },
-		func() *pool.Pool { return nil },
-		func() map[string]*pool.Pool { return nil },
-		func() *audit.Logger { return nil },
-		nil, nil, nil,
-	)
+	srv := testServerWithGroups(cfg)
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/health", nil)
 	w := httptest.NewRecorder()
@@ -323,27 +336,44 @@ func TestHandleHealth_ParallelTiming(t *testing.T) {
 	var resp map[string]any
 	json.NewDecoder(w.Body).Decode(&resp)
 
-	writer := resp["writer"].(map[string]any)
+	databases := resp["databases"].(map[string]any)
+	db := databases["testdb"].(map[string]any)
+	writer := db["writer"].(map[string]any)
 	if writer["healthy"] != false {
 		t.Error("writer should be unhealthy")
 	}
-	readers := resp["readers"].([]any)
+	readers := db["readers"].([]any)
 	if len(readers) != 2 {
 		t.Fatalf("expected 2 readers, got %d", len(readers))
 	}
 }
 
 func TestHandleHealth_LiveBackends(t *testing.T) {
-	// Start a real TCP listener so checkTCP succeeds.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	// Start real TCP listeners so checkTCP succeeds.
+	ln1, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	defer ln1.Close()
+
+	ln2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln2.Close()
 
 	go func() {
 		for {
-			c, err := ln.Accept()
+			c, err := ln1.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	go func() {
+		for {
+			c, err := ln2.Accept()
 			if err != nil {
 				return
 			}
@@ -351,24 +381,18 @@ func TestHandleHealth_LiveBackends(t *testing.T) {
 		}
 	}()
 
-	lnAddr := ln.Addr().(*net.TCPAddr)
+	port1 := ln1.Addr().(*net.TCPAddr).Port
+	port2 := ln2.Addr().(*net.TCPAddr).Port
 	cfg := &config.Config{
-		Writer: config.DBConfig{Host: "127.0.0.1", Port: lnAddr.Port},
+		Writer: config.DBConfig{Host: "127.0.0.1", Port: port1},
 		Readers: []config.DBConfig{
-			{Host: "127.0.0.1", Port: lnAddr.Port},
-			{Host: "127.0.0.1", Port: lnAddr.Port},
+			{Host: "127.0.0.1", Port: port1},
+			{Host: "127.0.0.1", Port: port2},
 		},
+		Backend: config.BackendConfig{Database: "testdb"},
+		Pool:    config.PoolConfig{MaxConnections: 10, IdleTimeout: time.Minute},
 	}
-
-	srv := New(
-		func() *config.Config { return cfg },
-		func() *cache.Cache { return nil },
-		func() *cache.Invalidator { return nil },
-		func() *pool.Pool { return nil },
-		func() map[string]*pool.Pool { return nil },
-		func() *audit.Logger { return nil },
-		nil, nil, nil,
-	)
+	srv := testServerWithGroups(cfg)
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/health", nil)
 	w := httptest.NewRecorder()
@@ -382,11 +406,13 @@ func TestHandleHealth_LiveBackends(t *testing.T) {
 	var resp map[string]any
 	json.NewDecoder(w.Body).Decode(&resp)
 
-	writer := resp["writer"].(map[string]any)
+	databases := resp["databases"].(map[string]any)
+	db := databases["testdb"].(map[string]any)
+	writer := db["writer"].(map[string]any)
 	if writer["healthy"] != true {
 		t.Error("writer should be healthy")
 	}
-	readers := resp["readers"].([]any)
+	readers := db["readers"].([]any)
 	if len(readers) != 2 {
 		t.Fatalf("expected 2 readers, got %d", len(readers))
 	}
@@ -419,17 +445,10 @@ func TestHandleHealth_NoReaders(t *testing.T) {
 	cfg := &config.Config{
 		Writer:  config.DBConfig{Host: "127.0.0.1", Port: lnAddr.Port},
 		Readers: nil,
+		Backend: config.BackendConfig{Database: "testdb"},
+		Pool:    config.PoolConfig{MaxConnections: 10, IdleTimeout: time.Minute},
 	}
-
-	srv := New(
-		func() *config.Config { return cfg },
-		func() *cache.Cache { return nil },
-		func() *cache.Invalidator { return nil },
-		func() *pool.Pool { return nil },
-		func() map[string]*pool.Pool { return nil },
-		func() *audit.Logger { return nil },
-		nil, nil, nil,
-	)
+	srv := testServerWithGroups(cfg)
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/health", nil)
 	w := httptest.NewRecorder()
@@ -443,11 +462,13 @@ func TestHandleHealth_NoReaders(t *testing.T) {
 	var resp map[string]any
 	json.NewDecoder(w.Body).Decode(&resp)
 
-	writer := resp["writer"].(map[string]any)
+	databases := resp["databases"].(map[string]any)
+	db := databases["testdb"].(map[string]any)
+	writer := db["writer"].(map[string]any)
 	if writer["healthy"] != true {
 		t.Error("writer should be healthy")
 	}
-	readers := resp["readers"].([]any)
+	readers := db["readers"].([]any)
 	if len(readers) != 0 {
 		t.Errorf("expected 0 readers, got %d", len(readers))
 	}

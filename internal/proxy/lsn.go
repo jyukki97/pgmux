@@ -23,17 +23,19 @@ func (s *Server) startLSNPolling(ctx context.Context, interval time.Duration) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				s.pollReaderLSNs(ctx)
+				for _, dbg := range s.getDBGroups() {
+					s.pollReaderLSNsForGroup(ctx, dbg)
+				}
 			}
 		}
 	}()
 	slog.Info("LSN polling started", "interval", interval)
 }
 
-// pollReaderLSNs queries each reader's replay LSN and updates the balancer.
-func (s *Server) pollReaderLSNs(ctx context.Context) {
-	readers := s.getReaderPools()
-	for _, addr := range s.balancer.Backends() {
+// pollReaderLSNsForGroup queries each reader's replay LSN in the given group and updates its balancer.
+func (s *Server) pollReaderLSNsForGroup(ctx context.Context, dbg *DatabaseGroup) {
+	readers := dbg.ReaderPools()
+	for _, addr := range dbg.balancer.Backends() {
 		rPool, ok := readers[addr]
 		if !ok {
 			continue
@@ -41,25 +43,25 @@ func (s *Server) pollReaderLSNs(ctx context.Context) {
 
 		conn, err := rPool.Acquire(ctx)
 		if err != nil {
-			slog.Debug("LSN poll: acquire reader failed", "addr", addr, "error", err)
+			slog.Debug("LSN poll: acquire reader failed", "db", dbg.name, "addr", addr, "error", err)
 			continue
 		}
 
 		lsn, err := s.queryReplayLSN(conn)
 		if err != nil {
 			rPool.Discard(conn)
-			slog.Debug("LSN poll: query replay LSN failed, discarding connection", "addr", addr, "error", err)
+			slog.Debug("LSN poll: query replay LSN failed, discarding connection", "db", dbg.name, "addr", addr, "error", err)
 			continue
 		}
 		rPool.Release(conn)
 
-		s.balancer.SetReplayLSN(addr, lsn)
+		dbg.balancer.SetReplayLSN(addr, lsn)
 
 		if s.metrics != nil {
 			s.metrics.ReaderLSNLag.WithLabelValues(addr).Set(float64(lsn))
 		}
 
-		slog.Debug("LSN poll updated", "addr", addr, "replay_lsn", lsn)
+		slog.Debug("LSN poll updated", "db", dbg.name, "addr", addr, "replay_lsn", lsn)
 	}
 }
 

@@ -36,8 +36,10 @@ func TestServerReload_DataRace(t *testing.T) {
 			case <-ctx.Done():
 				return
 			default:
-				// Thread-safe map read
-				_, _ = srv.getReaderPool("127.0.0.1:5433")
+				// Thread-safe map read via DatabaseGroup
+				if dg := srv.DBGroup(srv.DefaultDBName()); dg != nil {
+					_, _ = dg.ReaderPool("127.0.0.1:5433")
+				}
 				// Thread-safe config read
 				_ = srv.getConfig().Pool.MaxConnections
 			}

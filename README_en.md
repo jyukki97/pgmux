@@ -57,27 +57,27 @@ graph LR
 
 ## Performance Benchmark
 
-Measured with pgbench (PostgreSQL standard benchmark tool): Direct DB vs pgmux vs PgBouncer.
-
-**TPC-B (mixed read/write workload)**
-
-| Target | Clients | TPS | Avg Latency | vs Direct |
-|--------|---------|-----|-------------|-----------|
-| Direct | 50 | 3,227 | 15.5ms | - |
-| **pgmux** | 50 | **2,345** | **21.3ms** | **73%** |
-| PgBouncer | 50 | 2,707 | 18.5ms | 84% |
+Measured with pgbench (PostgreSQL standard benchmark tool): Direct DB vs pgmux vs PgBouncer. 3-round average, warmed up before measurement.
 
 **SELECT-only (read-only workload)**
 
-| Target | Clients | TPS | Avg Latency | vs Direct |
-|--------|---------|-----|-------------|-----------|
-| Direct | 50 | 25,806 | 1.94ms | - |
-| **pgmux** | 50 | **11,879** | **4.21ms** | **46%** |
-| PgBouncer | 50 | 25,354 | 1.97ms | 98% |
+| Target | c=1 | c=10 | c=50 | c=100 |
+|--------|-----|------|------|-------|
+| Direct | 2,964 | 18,665 | 35,970 | 36,893 |
+| **pgmux** | **2,430** | **14,295** | **21,617** | **20,804** |
+| PgBouncer | 2,445 | 15,873 | 28,417 | 28,492 |
 
-> For I/O-bound workloads (TPC-B), pgmux achieves 87% of PgBouncer's throughput. For CPU-bound workloads (SELECT-only), PgBouncer (written in C) has lower proxy overhead, but pgmux offers caching, firewall, mirroring, and other features PgBouncer lacks. With caching enabled, repeated queries can be faster than direct connections.
+**TPC-B (mixed read/write workload)**
+
+| Target | c=1 | c=10 | c=50 | c=100 |
+|--------|-----|------|------|-------|
+| Direct | 393 | 1,832 | 2,902 | 2,760 |
+| **pgmux** | **321** | **1,892** | **2,469** | **2,420** |
+| PgBouncer | 359 | 2,066 | 2,794 | 2,693 |
+
+> **At TPC-B c=10, pgmux (1,892) outperforms Direct (1,832)** — connection pooling reduces PostgreSQL internal lock contention. At high-concurrency SELECT, PgBouncer benefits from its C single-threaded event loop (Go goroutine scheduling overhead), but pgmux offers caching, firewall, mirroring, Prepared Statement Multiplexing, and other features PgBouncer lacks.
 >
-> Full results: [`bench-results/results.md`](bench-results/results.md) | Reproduce: `make bench-compare`
+> Reproduce: `make bench-compare`
 
 ## Quick Start
 

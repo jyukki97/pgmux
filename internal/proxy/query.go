@@ -24,12 +24,22 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 	// boundWriter is non-nil when a transaction is in progress.
 	// The connection stays bound from BEGIN until COMMIT/ROLLBACK.
 	var boundWriter *pool.Conn
+	// connDirty tracks if the current borrow cycle has seen session-modifying commands
+	// (SET, PREPARE, LISTEN, CREATE TEMP, etc.) that require DISCARD ALL on release.
+	var connDirty bool
 
 	defer func() {
 		if boundWriter != nil {
-			s.resetAndReleaseWriter(boundWriter, dbg)
+			if connDirty {
+				s.resetAndReleaseWriter(boundWriter, dbg)
+			} else {
+				s.releaseWriterFast(boundWriter, dbg)
+			}
 		}
 	}()
+
+	// Reusable read buffer for client messages (ReadMessageReuse)
+	var readBuf []byte
 
 	// Extended Query protocol state
 	var extBuf []*protocol.Message
@@ -51,7 +61,9 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 		default:
 		}
 
-		msg, err := protocol.ReadMessage(clientConn)
+		var msg *protocol.Message
+		var err error
+		msg, readBuf, err = protocol.ReadMessageReuse(clientConn, readBuf)
 		if err != nil {
 			slog.Debug("client disconnected", "error", err)
 			return
@@ -78,16 +90,25 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 		if msg.Type == protocol.MsgQuery {
 			query := protocol.ExtractQueryText(msg.Payload)
 
-			// Start root span for query
-			queryCtx, querySpan := telemetry.Tracer().Start(ctx, "pgmux.query",
-				trace.WithAttributes(
-					attribute.String("db.system", "postgresql"),
-					attribute.String("db.statement", truncateSQL(query)),
-				),
-			)
+			// Cache config once per query to avoid repeated RLock
+			queryCfg := s.getConfig()
+			tracingEnabled := queryCfg.Telemetry.Enabled
+
+			// Start root span for query (only allocate attributes when tracing)
+			var queryCtx context.Context
+			var querySpan trace.Span
+			if tracingEnabled {
+				queryCtx, querySpan = telemetry.Tracer().Start(ctx, "pgmux.query",
+					trace.WithAttributes(
+						attribute.String("db.system", "postgresql"),
+						attribute.String("db.statement", truncateSQL(query)),
+					),
+				)
+			} else {
+				queryCtx = ctx
+			}
 
 			// Pre-parse AST once when AST mode is enabled
-			queryCfg := s.getConfig()
 			var parsedQuery *router.ParsedQuery
 			if queryCfg.Routing.ASTParser {
 				if pq, err := router.NewParsedQuery(query); err == nil {
@@ -115,68 +136,68 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 					if s.metrics != nil {
 						s.metrics.FirewallBlocked.WithLabelValues(string(fwResult.Rule)).Inc()
 					}
-					querySpan.SetAttributes(attribute.String("pgmux.firewall.rule", string(fwResult.Rule)))
-					querySpan.SetStatus(codes.Error, "firewall blocked")
-					querySpan.End()
+					if tracingEnabled {
+						querySpan.SetAttributes(attribute.String("pgmux.firewall.rule", string(fwResult.Rule)))
+						querySpan.SetStatus(codes.Error, "firewall blocked")
+						querySpan.End()
+					}
 					s.sendError(clientConn, fwResult.Message)
 					_ = protocol.WriteMessage(clientConn, protocol.MsgReadyForQuery, []byte{'I'})
 					continue
 				}
 			}
 
-			// Parse/classify query
-			_, parseSpan := telemetry.Tracer().Start(queryCtx, "pgmux.parse")
-			wasInTx := session.InTransaction()
-			route := session.Route(query)
-			nowInTx := session.InTransaction()
+			// Route query + get before/after tx state in single lock acquisition
+			route, wasInTx, nowInTx := session.RouteWithTxState(query)
 			target := routeName(route)
-			qtype := s.classifyQueryParsed(query, parsedQuery)
-			var dbOp string
-			if qtype == router.QueryWrite {
-				dbOp = "write"
-			} else {
-				dbOp = "read"
-			}
-			parseSpan.SetAttributes(
-				attribute.String("db.operation", dbOp),
-				attribute.String("pgmux.route", target),
-			)
-			parseSpan.End()
 
-			querySpan.SetAttributes(
-				attribute.String("db.operation", dbOp),
-				attribute.String("pgmux.route", target),
-			)
+			// Derive query type from route to avoid redundant classification.
+			// Only call classifyQueryParsed for writer-routed queries where we need
+			// the distinction between actual writes vs transaction control (BEGIN/COMMIT).
+			var qtype router.QueryType
+			if route == router.RouteReader {
+				qtype = router.QueryRead
+			} else {
+				qtype = s.classifyQueryParsed(query, parsedQuery)
+			}
+
+			if tracingEnabled {
+				var dbOp string
+				if qtype == router.QueryWrite {
+					dbOp = "write"
+				} else {
+					dbOp = "read"
+				}
+				querySpan.SetAttributes(
+					attribute.String("db.operation", dbOp),
+					attribute.String("pgmux.route", target),
+				)
+			}
 
 			slog.Debug("query routed", "sql", query, "route", target)
 
 			start := time.Now()
 
 			if route == router.RouteWriter {
-				// Pool acquire span
-				_, acquireSpan := telemetry.Tracer().Start(queryCtx, "pgmux.pool.acquire",
-					trace.WithAttributes(attribute.String("pgmux.route", "writer")),
-				)
 				wConn, acquired, err := s.acquireWriterConn(ctx, boundWriter, dbg)
 				if err != nil {
-					acquireSpan.SetStatus(codes.Error, err.Error())
-					acquireSpan.End()
-					querySpan.SetStatus(codes.Error, "acquire writer failed")
-					querySpan.End()
+					if tracingEnabled {
+						querySpan.SetStatus(codes.Error, "acquire writer failed")
+						querySpan.End()
+					}
 					slog.Error("acquire writer", "error", err)
 					s.sendError(clientConn, "cannot acquire backend connection")
 					return
 				}
-				acquireSpan.End()
 
-				// Backend exec span
-				_, execSpan := telemetry.Tracer().Start(queryCtx, "pgmux.backend.exec",
-					trace.WithAttributes(attribute.String("pgmux.route", "writer")),
-				)
 				ct.setFromConn(dbg.writerAddr, wConn)
-				s.handleWriteQuery(clientConn, wConn, msg, query, session, parsedQuery, dbg)
+				s.handleWriteQuery(clientConn, wConn, msg, query, session, parsedQuery, qtype, queryCfg, dbg)
 				ct.clear()
-				execSpan.End()
+
+				// Track session-modifying queries for dirty flag
+				if isSessionModifying(query) {
+					connDirty = true
+				}
 
 				// Transaction lifecycle management
 				switch {
@@ -186,16 +207,29 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				case wasInTx && !nowInTx:
 					// COMMIT/ROLLBACK — unbind and release
 					boundWriter = nil
-					s.resetAndReleaseWriter(wConn, dbg)
+					if connDirty {
+						s.resetAndReleaseWriter(wConn, dbg)
+					} else {
+						s.releaseWriterFast(wConn, dbg)
+					}
+					connDirty = false
 				case acquired:
 					// Single statement outside transaction — release immediately
-					s.resetAndReleaseWriter(wConn, dbg)
+					// Skip DISCARD ALL unless session state was modified
+					if connDirty || isSessionModifying(query) {
+						s.resetAndReleaseWriter(wConn, dbg)
+						connDirty = false
+					} else {
+						s.releaseWriterFast(wConn, dbg)
+					}
 				}
 				// If !acquired && still in transaction → keep using boundWriter
 			} else {
-				if err := s.handleReadQueryTraced(queryCtx, ctx, clientConn, msg, query, session, ct, parsedQuery, dbg); err != nil {
-					querySpan.SetStatus(codes.Error, err.Error())
-					querySpan.End()
+				if err := s.handleReadQueryTraced(queryCtx, ctx, clientConn, msg, query, session, ct, parsedQuery, queryCfg, dbg); err != nil {
+					if tracingEnabled {
+						querySpan.SetStatus(codes.Error, err.Error())
+						querySpan.End()
+					}
 					slog.Error("handle read query", "error", err)
 					return
 				}
@@ -209,7 +243,9 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 			s.emitAuditEvent(clientConn, query, target, elapsed, false)
 			s.recordDigest(query, elapsed)
 			s.mirrorQuery(msg, query, qtype, elapsed, parsedQuery)
-			querySpan.End()
+			if tracingEnabled {
+				querySpan.End()
+			}
 			continue
 		}
 
@@ -263,7 +299,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				} else {
 					extRoute = route
 				}
-				extBuf = append(extBuf, msg)
+				extBuf = append(extBuf, protocol.CopyMessage(msg))
 			}
 
 		case protocol.MsgBind:
@@ -290,7 +326,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				if route == router.RouteWriter {
 					extRoute = router.RouteWriter
 				}
-				extBuf = append(extBuf, msg)
+				extBuf = append(extBuf, protocol.CopyMessage(msg))
 			}
 
 		case protocol.MsgClose:
@@ -308,7 +344,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 					return
 				}
 			} else {
-				extBuf = append(extBuf, msg)
+				extBuf = append(extBuf, protocol.CopyMessage(msg))
 			}
 
 		case protocol.MsgDescribe:
@@ -319,7 +355,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 					return
 				}
 			} else {
-				extBuf = append(extBuf, msg)
+				extBuf = append(extBuf, protocol.CopyMessage(msg))
 			}
 
 		case protocol.MsgExecute:
@@ -327,7 +363,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				// In multiplex mode, Execute is handled in Sync
 				// (the synthesized query already replaces Parse+Bind+Execute)
 			} else {
-				extBuf = append(extBuf, msg)
+				extBuf = append(extBuf, protocol.CopyMessage(msg))
 			}
 
 		case protocol.MsgSync:
@@ -460,10 +496,20 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				case extTxEnd:
 					// COMMIT/ROLLBACK — unbind and release
 					boundWriter = nil
-					s.resetAndReleaseWriter(wConn, dbg)
+					if connDirty {
+						s.resetAndReleaseWriter(wConn, dbg)
+					} else {
+						s.releaseWriterFast(wConn, dbg)
+					}
+					connDirty = false
 				case acquired:
 					// Single batch outside transaction — release
-					s.resetAndReleaseWriter(wConn, dbg)
+					if connDirty {
+						s.resetAndReleaseWriter(wConn, dbg)
+						connDirty = false
+					} else {
+						s.releaseWriterFast(wConn, dbg)
+					}
 				}
 			}
 
@@ -485,7 +531,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 		default:
 			// Other messages — buffer them (proxy mode only)
 			if !multiplexMode {
-				extBuf = append(extBuf, msg)
+				extBuf = append(extBuf, protocol.CopyMessage(msg))
 			}
 		}
 	}

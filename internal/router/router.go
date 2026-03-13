@@ -35,23 +35,56 @@ func NewSession(readAfterWriteDelay time.Duration, causalConsistency bool, astPa
 	}
 }
 
+// RouteWithTxState determines the route and returns before/after transaction state in a single lock.
+// Eliminates the 2 extra InTransaction() calls (3 lock acquisitions → 1).
+func (s *Session) RouteWithTxState(query string) (route Route, wasInTx, nowInTx bool) {
+	s.mu.Lock()
+	wasInTx = s.inTransaction
+	route = s.routeQueryLocked(query)
+	nowInTx = s.inTransaction
+	s.mu.Unlock()
+	return
+}
+
 // Route determines where to send the query based on session state and query type.
 // Handles semicolon-separated multi-statement queries by scanning all statements.
 func (s *Session) Route(query string) Route {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.routeQueryLocked(query)
+}
 
-	// Scan all statements in the query for transaction control
-	wasTx := s.inTransaction
-	s.updateTransactionState(query)
+// routeQueryLocked is the lock-free inner routing logic. Caller must hold s.mu.
+func (s *Session) routeQueryLocked(query string) Route {
 
-	// Transaction control statements always go to writer
-	if wasTx || s.inTransaction {
-		return RouteWriter
+	// Fast path for simple queries: check first keyword without splitting.
+	// Most queries are single-statement without transaction control.
+	// Handle trailing semicolons (common: "SELECT ... WHERE aid = 123;")
+	// Zero-allocation: use hasTxPrefix instead of strings.ToUpper.
+	hasTxKeyword := false
+	if isSingleStatement(query) {
+		if tx := hasTxPrefix(query); tx > 0 {
+			if tx == 1 { // BEGIN/START TRANSACTION
+				s.inTransaction = true
+			} else { // COMMIT/ROLLBACK/END
+				s.inTransaction = false
+			}
+			hasTxKeyword = true
+		}
+	} else {
+		// Multi-statement: scan all for transaction control
+		wasTx := s.inTransaction
+		s.updateTransactionState(query)
+		if wasTx || s.inTransaction {
+			return RouteWriter
+		}
+		if containsTransactionKeyword(query) {
+			return RouteWriter
+		}
 	}
 
-	// Check if the query contains any transaction control keywords → writer
-	if containsTransactionKeyword(query) {
+	// Transaction control statements always go to writer
+	if hasTxKeyword || s.inTransaction {
 		return RouteWriter
 	}
 
@@ -73,8 +106,6 @@ func (s *Session) Route(query string) Route {
 
 	// Read-after-write protection
 	if s.causalConsistency {
-		// LSN-based: handled by the caller via LastWriteLSN() + LSN-aware balancer
-		// Route returns RouteReader; the server uses session LSN for balancer selection
 		return RouteReader
 	}
 
@@ -223,6 +254,106 @@ func splitStatements(query string) []string {
 		stmts = append(stmts, s)
 	}
 	return stmts
+}
+
+// hasTxPrefix checks if a (single-statement) query starts with a transaction
+// control keyword. Returns 0 if no match, 1 for BEGIN/START TRANSACTION,
+// 2 for COMMIT/ROLLBACK/END. Zero-allocation: uses byte-level comparison
+// instead of strings.ToUpper.
+func hasTxPrefix(query string) int {
+	// Skip leading whitespace
+	i := 0
+	for i < len(query) && (query[i] == ' ' || query[i] == '\t' || query[i] == '\n' || query[i] == '\r') {
+		i++
+	}
+	if i >= len(query) {
+		return 0
+	}
+
+	rest := query[i:]
+	n := len(rest)
+
+	// Check first byte (case-insensitive) to branch quickly
+	ch := rest[0] | 0x20 // lowercase
+	switch ch {
+	case 'b': // BEGIN
+		if n >= 5 && eqFold5(rest, "BEGIN") && (n == 5 || isSpace(rest[5]) || rest[5] == ';') {
+			return 1
+		}
+	case 's': // START TRANSACTION
+		if n >= 17 && eqFoldN(rest[:17], "START TRANSACTION") && (n == 17 || isSpace(rest[17]) || rest[17] == ';') {
+			return 1
+		}
+	case 'c': // COMMIT
+		if n >= 6 && eqFold6(rest, "COMMIT") && (n == 6 || isSpace(rest[6]) || rest[6] == ';') {
+			return 2
+		}
+	case 'r': // ROLLBACK
+		if n >= 8 && eqFoldN(rest[:8], "ROLLBACK") && (n == 8 || isSpace(rest[8]) || rest[8] == ';') {
+			return 2
+		}
+	case 'e': // END
+		if n >= 3 && eqFold3(rest, "END") && (n == 3 || isSpace(rest[3]) || rest[3] == ';') {
+			return 2
+		}
+	}
+	return 0
+}
+
+// eqFold3 checks case-insensitive equality for 3 bytes.
+func eqFold3(s string, target string) bool {
+	return (s[0]|0x20) == (target[0]|0x20) &&
+		(s[1]|0x20) == (target[1]|0x20) &&
+		(s[2]|0x20) == (target[2]|0x20)
+}
+
+// eqFold5 checks case-insensitive equality for 5 bytes.
+func eqFold5(s string, target string) bool {
+	return (s[0]|0x20) == (target[0]|0x20) &&
+		(s[1]|0x20) == (target[1]|0x20) &&
+		(s[2]|0x20) == (target[2]|0x20) &&
+		(s[3]|0x20) == (target[3]|0x20) &&
+		(s[4]|0x20) == (target[4]|0x20)
+}
+
+// eqFold6 checks case-insensitive equality for 6 bytes.
+func eqFold6(s string, target string) bool {
+	return (s[0]|0x20) == (target[0]|0x20) &&
+		(s[1]|0x20) == (target[1]|0x20) &&
+		(s[2]|0x20) == (target[2]|0x20) &&
+		(s[3]|0x20) == (target[3]|0x20) &&
+		(s[4]|0x20) == (target[4]|0x20) &&
+		(s[5]|0x20) == (target[5]|0x20)
+}
+
+// eqFoldN checks case-insensitive equality for N bytes.
+func eqFoldN(s string, target string) bool {
+	if len(s) < len(target) {
+		return false
+	}
+	for i := 0; i < len(target); i++ {
+		if (s[i] | 0x20) != (target[i] | 0x20) {
+			return false
+		}
+	}
+	return true
+}
+
+func isSpace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
+}
+
+// isSingleStatement returns true if the query contains at most one statement.
+// A trailing semicolon (e.g., "SELECT 1;") is treated as a single statement.
+// This avoids expensive splitStatements for the common case.
+func isSingleStatement(query string) bool {
+	idx := strings.IndexByte(query, ';')
+	if idx < 0 {
+		return true // no semicolon at all
+	}
+	// Check if the semicolon is at the end (only trailing whitespace after it)
+	rest := strings.TrimSpace(query[idx+1:])
+	return rest == ""
 }
 
 // InTransaction returns whether the session is currently in a transaction.

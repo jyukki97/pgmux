@@ -29,6 +29,13 @@ var hintRegex = regexp.MustCompile(`/\*\s*route:(writer|reader)\s*\*/`)
 // Classify determines whether a query is a read or write operation.
 // For multi-statement queries (semicolon-separated), returns QueryWrite if any statement is a write.
 func Classify(query string) QueryType {
+	// Fast path for simple single-statement queries without hints or comments.
+	// This avoids expensive string operations (stripStringLiterals, splitStatements, etc.)
+	// for the common case of "SELECT ..." queries.
+	if qt, ok := classifyFast(query); ok {
+		return qt
+	}
+
 	// 1. Check for routing hint
 	if hint := extractHint(query); hint != "" {
 		if hint == "writer" {
@@ -50,6 +57,51 @@ func Classify(query string) QueryType {
 		}
 	}
 	return QueryRead
+}
+
+// classifyFast is a fast path for simple single-statement queries.
+// Returns (QueryType, true) if the query can be classified without expensive parsing.
+// Returns (0, false) if the full parser is needed.
+func classifyFast(query string) (QueryType, bool) {
+	// Skip leading whitespace
+	i := 0
+	for i < len(query) && (query[i] == ' ' || query[i] == '\t' || query[i] == '\n' || query[i] == '\r') {
+		i++
+	}
+	if i >= len(query) {
+		return QueryRead, true
+	}
+
+	// If contains comments (potential hints), fall through to full parser
+	if strings.Contains(query, "/*") || strings.Contains(query, "--") {
+		return 0, false
+	}
+
+	// If contains multiple statements, need full parser
+	// A single trailing semicolon is fine (e.g., "SELECT 1;")
+	if idx := strings.IndexByte(query, ';'); idx >= 0 {
+		if strings.TrimSpace(query[idx+1:]) != "" {
+			return 0, false // multiple statements
+		}
+	}
+
+	// Extract first keyword (uppercase the first word only)
+	j := i
+	for j < len(query) && query[j] != ' ' && query[j] != '\t' && query[j] != '\n' && query[j] != '(' {
+		j++
+	}
+	if j == i {
+		return QueryRead, true
+	}
+
+	kw := strings.ToUpper(query[i:j])
+	if writeKeywords[kw] {
+		return QueryWrite, true
+	}
+	if kw == "WITH" {
+		return 0, false // CTE needs full parser
+	}
+	return QueryRead, true
 }
 
 // containsWriteKeyword checks if a WITH/CTE query contains write operations.

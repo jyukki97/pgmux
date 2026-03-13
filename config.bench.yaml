@@ -6,6 +6,10 @@ writer:
   host: "127.0.0.1"
   port: 25432
 
+readers:
+  - host: "127.0.0.1"
+    port: 25432
+
 pool:
   min_connections: 5
   max_connections: 20
@@ -15,7 +19,7 @@ pool:
   reset_query: "DISCARD ALL"
 
 routing:
-  read_after_write_delay: 500ms
+  read_after_write_delay: 0s
 
 cache:
   enabled: false

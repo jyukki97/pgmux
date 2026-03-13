@@ -145,6 +145,18 @@ func (p *Pool) Acquire(ctx context.Context) (*Conn, error) {
 				p.mu.Unlock()
 				return nil, err
 			}
+
+			// Re-check: Close() may have run while we were dialing.
+			// Without this check, a live connection can escape a closed pool.
+			p.mu.Lock()
+			if p.closed {
+				p.numOpen--
+				p.mu.Unlock()
+				conn.Close()
+				return nil, ErrPoolClosed
+			}
+			p.mu.Unlock()
+
 			return conn, nil
 		}
 

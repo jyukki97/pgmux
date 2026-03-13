@@ -205,13 +205,21 @@ func (g *DatabaseGroup) Reload(dbCfg config.DatabaseConfig, cbCfg config.Circuit
 	g.backendCfg = dbCfg.Backend
 
 	if cbCfg.Enabled {
-		newCBs := make(map[string]*resilience.CircuitBreaker)
 		brCfg := resilience.BreakerConfig{
 			ErrorThreshold: cbCfg.ErrorThreshold,
 			OpenDuration:   cbCfg.OpenDuration,
 			HalfOpenMax:    cbCfg.HalfOpenMax,
 			WindowSize:     cbCfg.WindowSize,
 		}
+
+		// Writer circuit breaker — create if nil (was previously disabled)
+		if g.writerCB == nil {
+			g.writerCB = resilience.NewCircuitBreaker(brCfg)
+			slog.Info("reload: writer circuit breaker enabled", "db", g.name)
+		}
+
+		// Reader circuit breakers — preserve existing, create for new addrs
+		newCBs := make(map[string]*resilience.CircuitBreaker)
 		for _, addr := range newReaderAddrs {
 			if cb, ok := g.readerCBs[addr]; ok {
 				newCBs[addr] = cb
@@ -220,6 +228,16 @@ func (g *DatabaseGroup) Reload(dbCfg config.DatabaseConfig, cbCfg config.Circuit
 			}
 		}
 		g.readerCBs = newCBs
+	} else {
+		// CB disabled — clear writer and reader circuit breakers
+		if g.writerCB != nil {
+			g.writerCB = nil
+			slog.Info("reload: writer circuit breaker disabled", "db", g.name)
+		}
+		if g.readerCBs != nil {
+			g.readerCBs = nil
+			slog.Info("reload: reader circuit breakers disabled", "db", g.name)
+		}
 	}
 }
 

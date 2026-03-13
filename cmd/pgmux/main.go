@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
@@ -30,9 +31,12 @@ func main() {
 func run() error {
 	cfgPath := "config.yaml"
 	debug := false
+	pprofAddr := ""
 	for _, arg := range os.Args[1:] {
 		if arg == "-debug" {
 			debug = true
+		} else if arg == "-pprof" {
+			pprofAddr = "localhost:6060"
 		} else {
 			cfgPath = arg
 		}
@@ -40,6 +44,16 @@ func run() error {
 
 	if debug {
 		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	}
+
+	// Start pprof server if requested
+	if pprofAddr != "" {
+		go func() {
+			slog.Info("pprof server starting", "listen", pprofAddr)
+			if err := http.ListenAndServe(pprofAddr, nil); err != nil {
+				slog.Error("pprof server", "error", err)
+			}
+		}()
 	}
 
 	cfg, err := config.Load(cfgPath)

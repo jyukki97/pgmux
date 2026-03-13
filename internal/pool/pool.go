@@ -82,57 +82,92 @@ func New(cfg Config) (*Pool, error) {
 }
 
 func (p *Pool) Acquire(ctx context.Context) (*Conn, error) {
-	p.mu.Lock()
-
-	// Try to get a valid idle connection
-	for len(p.idle) > 0 {
-		conn := p.idle[len(p.idle)-1]
-		p.idle = p.idle[:len(p.idle)-1]
-
-		if conn.expired(p.cfg.MaxLifetime) || conn.idle(p.cfg.IdleTimeout) {
-			conn.Close()
-			p.numOpen--
-			continue
+	// Lazy timer — created only when we actually need to wait.
+	// Reused across retries to avoid repeated time.NewTimer allocations
+	// (the previous recursive approach created a new timer per retry).
+	var timer *time.Timer
+	defer func() {
+		if timer != nil {
+			timer.Stop()
 		}
+	}()
 
-		conn.LastUsedAt = time.Now()
-		p.mu.Unlock()
-		return conn, nil
-	}
+	for {
+		p.mu.Lock()
 
-	// Can we create a new connection?
-	if p.numOpen < p.cfg.MaxConnections {
-		p.numOpen++
-		p.mu.Unlock()
+		// Try to get a valid idle connection
+		for len(p.idle) > 0 {
+			conn := p.idle[len(p.idle)-1]
+			p.idle = p.idle[:len(p.idle)-1]
 
-		conn, err := p.newConn()
-		if err != nil {
-			p.mu.Lock()
-			p.numOpen--
+			if conn.expired(p.cfg.MaxLifetime) || conn.idle(p.cfg.IdleTimeout) {
+				conn.Close()
+				p.numOpen--
+				continue
+			}
+
+			conn.LastUsedAt = time.Now()
 			p.mu.Unlock()
-			return nil, err
+			return conn, nil
 		}
-		return conn, nil
-	}
 
-	p.mu.Unlock()
+		// Can we create a new connection?
+		if p.numOpen < p.cfg.MaxConnections {
+			p.numOpen++
+			p.mu.Unlock()
 
-	// Wait for a released connection
-	timeout := p.cfg.ConnectionTimeout
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
+			conn, err := p.newConn()
+			if err != nil {
+				p.mu.Lock()
+				p.numOpen--
+				p.mu.Unlock()
+				return nil, err
+			}
+			return conn, nil
+		}
 
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+		p.mu.Unlock()
 
-	select {
-	case <-p.waitCh:
-		return p.Acquire(ctx)
-	case <-timer.C:
-		return nil, fmt.Errorf("connection pool: acquire timeout after %v", timeout)
-	case <-ctx.Done():
-		return nil, ctx.Err()
+		// Fast path: try non-blocking receive first — avoids timer allocation
+		// when a connection was released between our mu.Unlock and this select.
+		select {
+		case <-p.waitCh:
+			continue
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		// Slow path: wait with timer
+		if timer == nil {
+			timeout := p.cfg.ConnectionTimeout
+			if timeout <= 0 {
+				timeout = 5 * time.Second
+			}
+			timer = time.NewTimer(timeout)
+		} else {
+			// Drain channel before reset to prevent false fires
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timeout := p.cfg.ConnectionTimeout
+			if timeout <= 0 {
+				timeout = 5 * time.Second
+			}
+			timer.Reset(timeout)
+		}
+
+		select {
+		case <-p.waitCh:
+			continue
+		case <-timer.C:
+			return nil, fmt.Errorf("connection pool: acquire timeout after %v", p.cfg.ConnectionTimeout)
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 }
 

@@ -103,8 +103,8 @@ func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, client
 
 	ct.setFromConn(readerAddr, rConn)
 
-	// Forward query to reader
-	if err := protocol.WriteMessage(rConn, msg.Type, msg.Payload); err != nil {
+	// Forward query to reader (zero-copy: use original wire bytes)
+	if err := protocol.ForwardRaw(rConn, msg); err != nil {
 		ct.clear()
 		if tracingEnabled {
 			execSpan.SetStatus(codes.Error, err.Error())

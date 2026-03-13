@@ -12,21 +12,21 @@ import (
 
 // forwardAndRelay forwards a message to backend and relays the response to client.
 func (s *Server) forwardAndRelay(clientConn, backendConn net.Conn, msg *protocol.Message) error {
-	if err := protocol.WriteMessage(backendConn, msg.Type, msg.Payload); err != nil {
+	if err := protocol.ForwardRaw(backendConn, msg); err != nil {
 		return fmt.Errorf("forward message: %w", err)
 	}
 	return s.relayUntilReady(clientConn, backendConn)
 }
 
 // relayUntilReady forwards backend messages to client until ReadyForQuery ('Z').
-// Uses a reusable buffer to minimize allocations in the hot path.
-// If the backend sends CopyInResponse ('G') or CopyOutResponse ('H'),
-// it switches to bidirectional passthrough to avoid deadlock.
+// Each message is forwarded immediately as it arrives — transparent streaming,
+// no buffering. Uses a reusable wire buffer to avoid per-message allocation.
+// If the backend sends CopyInResponse ('G'), CopyOutResponse ('H'), or
+// CopyBothResponse ('W'), it switches to bidirectional passthrough.
 func (s *Server) relayUntilReady(clientConn, backendConn net.Conn) error {
-	// Reuse a header buffer for reading type + length
 	var hdr [5]byte
+	var wire []byte // reusable wire buffer — grows as needed, avoids per-message alloc
 	for {
-		// Read type byte + 4-byte length
 		if _, err := io.ReadFull(backendConn, hdr[:]); err != nil {
 			return fmt.Errorf("read backend response header: %w", err)
 		}
@@ -36,11 +36,14 @@ func (s *Server) relayUntilReady(clientConn, backendConn net.Conn) error {
 			return fmt.Errorf("invalid message length: %d", length)
 		}
 		payloadLen := length - 4
-
-		// Allocate a single buffer for the full wire message (type + length + payload)
-		// and write header + payload into it, then send in one Write call.
 		wireLen := 5 + payloadLen
-		wire := make([]byte, wireLen)
+
+		// Reuse wire buffer to avoid per-message allocation
+		if cap(wire) < wireLen {
+			wire = make([]byte, wireLen)
+		} else {
+			wire = wire[:wireLen]
+		}
 		copy(wire[:5], hdr[:])
 		if payloadLen > 0 {
 			if _, err := io.ReadFull(backendConn, wire[5:]); err != nil {
@@ -48,6 +51,7 @@ func (s *Server) relayUntilReady(clientConn, backendConn net.Conn) error {
 			}
 		}
 
+		// Forward immediately — transparent streaming
 		if _, err := clientConn.Write(wire); err != nil {
 			return fmt.Errorf("forward to client: %w", err)
 		}
@@ -79,7 +83,7 @@ func (s *Server) relayCopyIn(clientConn, backendConn net.Conn) error {
 			return fmt.Errorf("read client copy data: %w", err)
 		}
 
-		if err := protocol.WriteMessage(backendConn, msg.Type, msg.Payload); err != nil {
+		if err := protocol.ForwardRaw(backendConn, msg); err != nil {
 			return fmt.Errorf("forward copy data to backend: %w", err)
 		}
 
@@ -104,7 +108,7 @@ func (s *Server) relayCopyOut(clientConn, backendConn net.Conn) error {
 			return fmt.Errorf("read backend copy data: %w", err)
 		}
 
-		if err := protocol.WriteMessage(clientConn, msg.Type, msg.Payload); err != nil {
+		if err := protocol.ForwardRaw(clientConn, msg); err != nil {
 			return fmt.Errorf("forward copy data to client: %w", err)
 		}
 
@@ -134,7 +138,7 @@ func (s *Server) relayCopyBoth(clientConn, backendConn net.Conn) error {
 				errCh <- fmt.Errorf("read backend copy both: %w", err)
 				return
 			}
-			if err := protocol.WriteMessage(clientConn, msg.Type, msg.Payload); err != nil {
+			if err := protocol.ForwardRaw(clientConn, msg); err != nil {
 				errCh <- fmt.Errorf("forward copy both to client: %w", err)
 				return
 			}
@@ -153,7 +157,7 @@ func (s *Server) relayCopyBoth(clientConn, backendConn net.Conn) error {
 				errCh <- fmt.Errorf("read client copy both: %w", err)
 				return
 			}
-			if err := protocol.WriteMessage(backendConn, msg.Type, msg.Payload); err != nil {
+			if err := protocol.ForwardRaw(backendConn, msg); err != nil {
 				errCh <- fmt.Errorf("forward copy both to backend: %w", err)
 				return
 			}
@@ -185,20 +189,17 @@ func (s *Server) relayAndCollect(clientConn, backendConn net.Conn) ([]byte, erro
 			return nil, fmt.Errorf("read backend response: %w", err)
 		}
 
-		// Serialize message to wire format
-		msgBytes := make([]byte, 1+4+len(msg.Payload))
-		msgBytes[0] = msg.Type
-		binary.BigEndian.PutUint32(msgBytes[1:5], uint32(4+len(msg.Payload)))
-		copy(msgBytes[5:], msg.Payload)
+		// Use original wire bytes (zero-copy) instead of re-serializing
+		wireBytes := msg.Raw
 
 		// Forward to client (always, regardless of cache)
-		if _, err := clientConn.Write(msgBytes); err != nil {
+		if _, err := clientConn.Write(wireBytes); err != nil {
 			return nil, fmt.Errorf("forward to client: %w", err)
 		}
 
 		// Collect for cache only if within size limit
 		if !oversize {
-			buf = append(buf, msgBytes...)
+			buf = append(buf, wireBytes...)
 			if maxSize > 0 && len(buf) > maxSize {
 				slog.Debug("relay collect: result exceeds max_result_size, discarding buffer",
 					"size", len(buf), "max", maxSize)

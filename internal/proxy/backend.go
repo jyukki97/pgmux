@@ -147,6 +147,98 @@ func (s *Server) handleWriteQuery(clientConn net.Conn, writerConn net.Conn, msg 
 	}
 }
 
+// isSessionModifying returns true if a query modifies persistent session state
+// (SET, PREPARE, LISTEN, CREATE TEMP, etc.) that requires DISCARD ALL to clean up.
+// SET LOCAL and SET TRANSACTION are transaction-scoped and don't require reset.
+func isSessionModifying(query string) bool {
+	// Skip leading whitespace
+	i := 0
+	for i < len(query) && (query[i] == ' ' || query[i] == '\t' || query[i] == '\n' || query[i] == '\r') {
+		i++
+	}
+	if i >= len(query) {
+		return false
+	}
+
+	rest := query[i:]
+	n := len(rest)
+	ch := rest[0] | 0x20 // lowercase first char
+
+	switch ch {
+	case 's': // SET (but not SET LOCAL / SET TRANSACTION)
+		if n >= 4 && eqFold3(rest, "SET") && (rest[3] == ' ' || rest[3] == '\t') {
+			// Skip to next word
+			j := 4
+			for j < n && (rest[j] == ' ' || rest[j] == '\t') {
+				j++
+			}
+			if j+5 < n && (eqFold5(rest[j:], "LOCAL") && (rest[j+5] == ' ' || rest[j+5] == '\t')) {
+				return false // SET LOCAL — transaction-scoped
+			}
+			if j+11 < n && eqFoldN(rest[j:j+11], "TRANSACTION") {
+				return false // SET TRANSACTION — transaction-scoped
+			}
+			return true
+		}
+	case 'p': // PREPARE
+		if n >= 7 && eqFoldN(rest[:7], "PREPARE") && (n == 7 || rest[7] == ' ' || rest[7] == '\t') {
+			return true
+		}
+	case 'd': // DECLARE, DEALLOCATE
+		if n >= 7 && eqFoldN(rest[:7], "DECLARE") && (n == 7 || rest[7] == ' ' || rest[7] == '\t') {
+			return true
+		}
+		if n >= 10 && eqFoldN(rest[:10], "DEALLOCATE") && (n == 10 || rest[10] == ' ' || rest[10] == '\t') {
+			return true
+		}
+	case 'l': // LISTEN, LOAD
+		if n >= 6 && eqFold6(rest, "LISTEN") && (n == 6 || rest[6] == ' ' || rest[6] == '\t') {
+			return true
+		}
+		if n >= 4 && eqFoldN(rest[:4], "LOAD") && (n == 4 || rest[4] == ' ' || rest[4] == '\t') {
+			return true
+		}
+	case 'u': // UNLISTEN
+		if n >= 8 && eqFoldN(rest[:8], "UNLISTEN") && (n == 8 || rest[8] == ' ' || rest[8] == '\t') {
+			return true
+		}
+	case 'c': // CREATE TEMP / CREATE TEMPORARY
+		if n >= 6 && eqFold6(rest, "CREATE") {
+			j := 6
+			for j < n && (rest[j] == ' ' || rest[j] == '\t') {
+				j++
+			}
+			if j+4 <= n && eqFoldN(rest[j:j+4], "TEMP") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// eqFold3, eqFold5, eqFold6, eqFoldN are zero-allocation case-insensitive comparisons.
+// Defined in internal/router/router.go — imported via local wrappers to avoid cross-package dependency.
+func eqFold3(s, target string) bool {
+	return (s[0]|0x20) == (target[0]|0x20) && (s[1]|0x20) == (target[1]|0x20) && (s[2]|0x20) == (target[2]|0x20)
+}
+func eqFold5(s, target string) bool {
+	return (s[0]|0x20) == (target[0]|0x20) && (s[1]|0x20) == (target[1]|0x20) && (s[2]|0x20) == (target[2]|0x20) && (s[3]|0x20) == (target[3]|0x20) && (s[4]|0x20) == (target[4]|0x20)
+}
+func eqFold6(s, target string) bool {
+	return (s[0]|0x20) == (target[0]|0x20) && (s[1]|0x20) == (target[1]|0x20) && (s[2]|0x20) == (target[2]|0x20) && (s[3]|0x20) == (target[3]|0x20) && (s[4]|0x20) == (target[4]|0x20) && (s[5]|0x20) == (target[5]|0x20)
+}
+func eqFoldN(s, target string) bool {
+	if len(s) < len(target) {
+		return false
+	}
+	for i := 0; i < len(target); i++ {
+		if (s[i] | 0x20) != (target[i] | 0x20) {
+			return false
+		}
+	}
+	return true
+}
+
 // queryCurrentLSN queries the current WAL LSN from the writer connection.
 func (s *Server) queryCurrentLSN(writerConn net.Conn) (router.LSN, error) {
 	payload := append([]byte("SELECT pg_current_wal_lsn()"), 0)

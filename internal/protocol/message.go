@@ -52,9 +52,13 @@ const MaxMessageSize = 16 * 1024 * 1024
 
 // Message represents a PG wire protocol message.
 // For startup messages, Type is 0.
+// Raw holds the original wire bytes (type + length + payload) when available,
+// enabling zero-copy forwarding via conn.Write(msg.Raw).
+// Payload is a subslice of Raw[5:] — no separate allocation.
 type Message struct {
 	Type    byte
 	Payload []byte
+	Raw     []byte // original wire bytes; nil for startup messages
 }
 
 // ReadStartupMessage reads the initial startup message from a client.
@@ -79,6 +83,8 @@ func ReadStartupMessage(r io.Reader) (*Message, error) {
 }
 
 // ReadMessage reads a typed PG message (1 byte type + 4 byte length + payload).
+// Allocates a single buffer for the full wire message; Payload is a subslice of Raw.
+// This enables zero-copy forwarding: conn.Write(msg.Raw).
 func ReadMessage(r io.Reader) (*Message, error) {
 	// Read header: 1 byte type + 4 byte length in a single ReadFull call
 	var hdr [5]byte
@@ -96,14 +102,51 @@ func ReadMessage(r io.Reader) (*Message, error) {
 		return nil, fmt.Errorf("message too large: %d bytes (max %d)", payloadLen, MaxMessageSize)
 	}
 
-	payload := make([]byte, payloadLen)
+	// Single allocation: raw wire buffer (type + length + payload)
+	raw := make([]byte, 5+payloadLen)
+	copy(raw[:5], hdr[:])
 	if payloadLen > 0 {
-		if _, err := io.ReadFull(r, payload); err != nil {
+		if _, err := io.ReadFull(r, raw[5:]); err != nil {
 			return nil, fmt.Errorf("read message payload: %w", err)
 		}
 	}
 
-	return &Message{Type: hdr[0], Payload: payload}, nil
+	return &Message{Type: raw[0], Payload: raw[5:], Raw: raw}, nil
+}
+
+// ReadMessageReuse reads a typed PG message, reusing the provided buffer to reduce allocations.
+// The buffer is grown if needed and returned (caller should keep the returned slice for next call).
+// The returned Message's Raw and Payload point into the buffer — valid until the next ReadMessageReuse call.
+func ReadMessageReuse(r io.Reader, buf []byte) (*Message, []byte, error) {
+	var hdr [5]byte
+	if _, err := io.ReadFull(r, hdr[:]); err != nil {
+		return nil, buf, fmt.Errorf("read message header: %w", err)
+	}
+
+	length := int(binary.BigEndian.Uint32(hdr[1:5]))
+	if length < 4 {
+		return nil, buf, fmt.Errorf("invalid message length: %d", length)
+	}
+
+	payloadLen := length - 4
+	if payloadLen > MaxMessageSize {
+		return nil, buf, fmt.Errorf("message too large: %d bytes (max %d)", payloadLen, MaxMessageSize)
+	}
+
+	wireLen := 5 + payloadLen
+	if cap(buf) >= wireLen {
+		buf = buf[:wireLen]
+	} else {
+		buf = make([]byte, wireLen)
+	}
+	copy(buf[:5], hdr[:])
+	if payloadLen > 0 {
+		if _, err := io.ReadFull(r, buf[5:]); err != nil {
+			return nil, buf, fmt.Errorf("read message payload: %w", err)
+		}
+	}
+
+	return &Message{Type: buf[0], Payload: buf[5:wireLen], Raw: buf[:wireLen]}, buf, nil
 }
 
 // WriteMessage writes a typed PG message to the writer.
@@ -112,9 +155,19 @@ func WriteMessage(w io.Writer, msgType byte, payload []byte) error {
 	buf[0] = msgType
 	binary.BigEndian.PutUint32(buf[1:5], uint32(4+len(payload)))
 	copy(buf[5:], payload)
-
 	_, err := w.Write(buf)
 	return err
+}
+
+// ForwardRaw writes the original wire bytes of a message directly.
+// Zero-copy: no buffer allocation, no re-serialization.
+// Use this instead of WriteMessage when forwarding a message read via ReadMessage.
+func ForwardRaw(w io.Writer, msg *Message) error {
+	if msg.Raw != nil {
+		_, err := w.Write(msg.Raw)
+		return err
+	}
+	return WriteMessage(w, msg.Type, msg.Payload)
 }
 
 // WriteRaw writes raw bytes (for startup messages that have no type byte).
@@ -362,6 +415,20 @@ func ParseCloseMessage(payload []byte) (closeType byte, name string) {
 		return closeType, ""
 	}
 	return closeType, string(payload[1 : 1+nameEnd])
+}
+
+// CopyMessage creates a deep copy of a Message, allocating new backing storage.
+// Use this when the original Message's Raw/Payload point into a reusable buffer
+// and the message needs to outlive the buffer (e.g., for Extended Query buffering).
+func CopyMessage(msg *Message) *Message {
+	if msg.Raw != nil {
+		raw := make([]byte, len(msg.Raw))
+		copy(raw, msg.Raw)
+		return &Message{Type: raw[0], Payload: raw[5:], Raw: raw}
+	}
+	payload := make([]byte, len(msg.Payload))
+	copy(payload, msg.Payload)
+	return &Message{Type: msg.Type, Payload: payload}
 }
 
 func indexOf(data []byte, b byte) int {

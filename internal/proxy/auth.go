@@ -31,7 +31,7 @@ func (s *Server) relayAuth(clientConn, backendConn net.Conn, proxyPID, proxySecr
 			continue
 		}
 
-		if err := protocol.WriteMessage(clientConn, msg.Type, msg.Payload); err != nil {
+		if err := protocol.ForwardRaw(clientConn, msg); err != nil {
 			return fmt.Errorf("forward auth message to client: %w", err)
 		}
 

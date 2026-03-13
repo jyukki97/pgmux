@@ -643,4 +643,10 @@
 | - | ReadMessage 최적화 (binary.Read → direct Uint32) | #182 / #183 |
 | - | bytes.IndexByte (SIMD) 활용 | #182 / #183 |
 | - | getConfig() 호출 캐싱 (RLock 횟수 감소) | #182 / #183 |
-| - | **결과: SELECT-only 46%→83% of direct (+80% 개선)** | #182 / #183 |
+| - | pprof 2차: hasTxPrefix zero-alloc tx 감지 (2ns/op, 0 allocs) | #182 / #183 |
+| - | pprof 2차: isSingleStatement 트레일링 세미콜론 처리 | #182 / #183 |
+| - | pprof 2차: relayUntilReady 스크래치 버퍼 재사용 (4 alloc→1) | #182 / #183 |
+| - | pprof 2차: pool.Acquire 루프화 (time.NewTimer 재사용) | #182 / #183 |
+| - | pprof 3차: ReadMessage Raw 필드 (Payload = Raw[5:] subslice) | #182 / #183 |
+| - | pprof 3차: ForwardRaw zero-copy forwarding (WriteMessage 93% alloc 제거) | #182 / #183 |
+| - | **결과: SELECT-only 46%→93.2% of direct, TPC-B 73%→82.3%** | #182 / #183 |

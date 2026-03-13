@@ -72,9 +72,17 @@ func classifyFast(query string) (QueryType, bool) {
 		return QueryRead, true
 	}
 
-	// If contains comments (potential hints) or semicolons, fall through to full parser
-	if strings.IndexByte(query, ';') >= 0 || strings.Contains(query, "/*") || strings.Contains(query, "--") {
+	// If contains comments (potential hints), fall through to full parser
+	if strings.Contains(query, "/*") || strings.Contains(query, "--") {
 		return 0, false
+	}
+
+	// If contains multiple statements, need full parser
+	// A single trailing semicolon is fine (e.g., "SELECT 1;")
+	if idx := strings.IndexByte(query, ';'); idx >= 0 {
+		if strings.TrimSpace(query[idx+1:]) != "" {
+			return 0, false // multiple statements
+		}
 	}
 
 	// Extract first keyword (uppercase the first word only)

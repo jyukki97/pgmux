@@ -24,12 +24,22 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 	// boundWriter is non-nil when a transaction is in progress.
 	// The connection stays bound from BEGIN until COMMIT/ROLLBACK.
 	var boundWriter *pool.Conn
+	// connDirty tracks if the current borrow cycle has seen session-modifying commands
+	// (SET, PREPARE, LISTEN, CREATE TEMP, etc.) that require DISCARD ALL on release.
+	var connDirty bool
 
 	defer func() {
 		if boundWriter != nil {
-			s.resetAndReleaseWriter(boundWriter, dbg)
+			if connDirty {
+				s.resetAndReleaseWriter(boundWriter, dbg)
+			} else {
+				s.releaseWriterFast(boundWriter, dbg)
+			}
 		}
 	}()
+
+	// Reusable read buffer for client messages (ReadMessageReuse)
+	var readBuf []byte
 
 	// Extended Query protocol state
 	var extBuf []*protocol.Message
@@ -51,7 +61,9 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 		default:
 		}
 
-		msg, err := protocol.ReadMessage(clientConn)
+		var msg *protocol.Message
+		var err error
+		msg, readBuf, err = protocol.ReadMessageReuse(clientConn, readBuf)
 		if err != nil {
 			slog.Debug("client disconnected", "error", err)
 			return
@@ -135,10 +147,8 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				}
 			}
 
-			// Route query (session.Route already classifies internally)
-			wasInTx := session.InTransaction()
-			route := session.Route(query)
-			nowInTx := session.InTransaction()
+			// Route query + get before/after tx state in single lock acquisition
+			route, wasInTx, nowInTx := session.RouteWithTxState(query)
 			target := routeName(route)
 
 			// Derive query type from route to avoid redundant classification.
@@ -184,6 +194,11 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				s.handleWriteQuery(clientConn, wConn, msg, query, session, parsedQuery, qtype, queryCfg, dbg)
 				ct.clear()
 
+				// Track session-modifying queries for dirty flag
+				if isSessionModifying(query) {
+					connDirty = true
+				}
+
 				// Transaction lifecycle management
 				switch {
 				case !wasInTx && nowInTx:
@@ -192,14 +207,20 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				case wasInTx && !nowInTx:
 					// COMMIT/ROLLBACK — unbind and release
 					boundWriter = nil
-					s.resetAndReleaseWriter(wConn, dbg)
+					if connDirty {
+						s.resetAndReleaseWriter(wConn, dbg)
+					} else {
+						s.releaseWriterFast(wConn, dbg)
+					}
+					connDirty = false
 				case acquired:
 					// Single statement outside transaction — release immediately
-					// Skip DISCARD ALL for read-only queries (e.g. read-after-write fallback)
-					if qtype == router.QueryRead {
-						s.releaseWriterFast(wConn, dbg)
-					} else {
+					// Skip DISCARD ALL unless session state was modified
+					if connDirty || isSessionModifying(query) {
 						s.resetAndReleaseWriter(wConn, dbg)
+						connDirty = false
+					} else {
+						s.releaseWriterFast(wConn, dbg)
 					}
 				}
 				// If !acquired && still in transaction → keep using boundWriter
@@ -278,7 +299,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				} else {
 					extRoute = route
 				}
-				extBuf = append(extBuf, msg)
+				extBuf = append(extBuf, protocol.CopyMessage(msg))
 			}
 
 		case protocol.MsgBind:
@@ -305,7 +326,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				if route == router.RouteWriter {
 					extRoute = router.RouteWriter
 				}
-				extBuf = append(extBuf, msg)
+				extBuf = append(extBuf, protocol.CopyMessage(msg))
 			}
 
 		case protocol.MsgClose:
@@ -323,7 +344,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 					return
 				}
 			} else {
-				extBuf = append(extBuf, msg)
+				extBuf = append(extBuf, protocol.CopyMessage(msg))
 			}
 
 		case protocol.MsgDescribe:
@@ -334,7 +355,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 					return
 				}
 			} else {
-				extBuf = append(extBuf, msg)
+				extBuf = append(extBuf, protocol.CopyMessage(msg))
 			}
 
 		case protocol.MsgExecute:
@@ -342,7 +363,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				// In multiplex mode, Execute is handled in Sync
 				// (the synthesized query already replaces Parse+Bind+Execute)
 			} else {
-				extBuf = append(extBuf, msg)
+				extBuf = append(extBuf, protocol.CopyMessage(msg))
 			}
 
 		case protocol.MsgSync:
@@ -475,10 +496,20 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				case extTxEnd:
 					// COMMIT/ROLLBACK — unbind and release
 					boundWriter = nil
-					s.resetAndReleaseWriter(wConn, dbg)
+					if connDirty {
+						s.resetAndReleaseWriter(wConn, dbg)
+					} else {
+						s.releaseWriterFast(wConn, dbg)
+					}
+					connDirty = false
 				case acquired:
 					// Single batch outside transaction — release
-					s.resetAndReleaseWriter(wConn, dbg)
+					if connDirty {
+						s.resetAndReleaseWriter(wConn, dbg)
+						connDirty = false
+					} else {
+						s.releaseWriterFast(wConn, dbg)
+					}
 				}
 			}
 
@@ -500,7 +531,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 		default:
 			// Other messages — buffer them (proxy mode only)
 			if !multiplexMode {
-				extBuf = append(extBuf, msg)
+				extBuf = append(extBuf, protocol.CopyMessage(msg))
 			}
 		}
 	}

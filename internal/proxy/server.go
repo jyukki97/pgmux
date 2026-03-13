@@ -24,8 +24,9 @@ import (
 )
 
 type Server struct {
-	mu           sync.RWMutex // protects cfg, dbGroups, rateLimiter
-	cfg          *config.Config
+	mu           sync.RWMutex // protects dbGroups, defaultDB
+	cfgPtr       atomic.Pointer[config.Config]
+	rateLimitPtr atomic.Pointer[resilience.RateLimiter]
 	listenAddr   string
 	dbGroups     map[string]*DatabaseGroup
 	defaultDB    string
@@ -34,7 +35,6 @@ type Server struct {
 	metrics      *metrics.Metrics
 	listener     net.Listener
 	tlsConfig    *tls.Config
-	rateLimiter  *resilience.RateLimiter
 	auditLogger  *audit.Logger
 	mirror       *mirror.Mirror
 	queryDigest  *digest.Digest
@@ -45,11 +45,11 @@ type Server struct {
 
 func NewServer(cfg *config.Config) *Server {
 	s := &Server{
-		cfg:        cfg,
 		listenAddr: cfg.Proxy.Listen,
 		dbGroups:   make(map[string]*DatabaseGroup),
 		defaultDB:  cfg.DefaultDatabaseName(),
 	}
+	s.cfgPtr.Store(cfg)
 
 	// Initialize Prometheus metrics
 	if cfg.Metrics.Enabled {
@@ -95,7 +95,8 @@ func NewServer(cfg *config.Config) *Server {
 
 	// Initialize Rate Limiter
 	if cfg.RateLimit.Enabled {
-		s.rateLimiter = resilience.NewRateLimiter(cfg.RateLimit.Rate, cfg.RateLimit.Burst)
+		rl := resilience.NewRateLimiter(cfg.RateLimit.Rate, cfg.RateLimit.Burst)
+		s.rateLimitPtr.Store(rl)
 		slog.Info("rate limiter enabled", "rate", cfg.RateLimit.Rate, "burst", cfg.RateLimit.Burst)
 	}
 
@@ -200,14 +201,14 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start health checks for all database groups
 	for name, dbg := range s.dbGroups {
 		if dbg.writerPool != nil {
-			dbg.writerPool.StartHealthCheck(ctx, s.cfg.Pool.IdleTimeout/2)
+			dbg.writerPool.StartHealthCheck(ctx, s.cfgPtr.Load().Pool.IdleTimeout/2)
 			slog.Debug("writer health check started", "db", name, "addr", dbg.writerAddr)
 		}
 		for addr, p := range dbg.ReaderPools() {
-			p.StartHealthCheck(ctx, s.cfg.Pool.IdleTimeout/2)
+			p.StartHealthCheck(ctx, s.cfgPtr.Load().Pool.IdleTimeout/2)
 			slog.Debug("reader health check started", "db", name, "addr", addr)
 		}
-		dbg.balancer.StartHealthCheck(ctx, s.cfg.Pool.ConnectionTimeout)
+		dbg.balancer.StartHealthCheck(ctx, s.cfgPtr.Load().Pool.ConnectionTimeout)
 	}
 
 	// Start cache invalidation subscriber
@@ -216,7 +217,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	// Start LSN polling for causal consistency
-	if s.cfg.Routing.CausalConsistency {
+	if s.cfgPtr.Load().Routing.CausalConsistency {
 		s.startLSNPolling(ctx, time.Second)
 	}
 
@@ -422,18 +423,19 @@ func (s *Server) Reload(newCfg *config.Config) error {
 		}
 	}
 
-	// Update rate limiter
+	// Update rate limiter (atomic — no lock needed for readers)
 	if newCfg.RateLimit.Enabled {
-		s.rateLimiter = resilience.NewRateLimiter(newCfg.RateLimit.Rate, newCfg.RateLimit.Burst)
+		rl := resilience.NewRateLimiter(newCfg.RateLimit.Rate, newCfg.RateLimit.Burst)
+		s.rateLimitPtr.Store(rl)
 	} else {
-		s.rateLimiter = nil
+		s.rateLimitPtr.Store(nil)
 	}
 
 	// Update default DB
 	s.defaultDB = newCfg.DefaultDatabaseName()
 
-	// Update config reference
-	s.cfg = newCfg
+	// Update config reference (atomic — no lock needed for readers)
+	s.cfgPtr.Store(newCfg)
 
 	slog.Info("config reloaded",
 		"databases", len(newDBs),
@@ -460,20 +462,14 @@ func (s *Server) resolveDBGroup(name string) *DatabaseGroup {
 	return dbg
 }
 
-// getConfig returns the current config snapshot (thread-safe).
+// getConfig returns the current config snapshot (lock-free via atomic.Pointer).
 func (s *Server) getConfig() *config.Config {
-	s.mu.RLock()
-	cfg := s.cfg
-	s.mu.RUnlock()
-	return cfg
+	return s.cfgPtr.Load()
 }
 
-// getRateLimiter returns the current rate limiter (thread-safe).
+// getRateLimiter returns the current rate limiter (lock-free via atomic.Pointer).
 func (s *Server) getRateLimiter() *resilience.RateLimiter {
-	s.mu.RLock()
-	rl := s.rateLimiter
-	s.mu.RUnlock()
-	return rl
+	return s.rateLimitPtr.Load()
 }
 
 // getDBGroups returns the current database groups map snapshot (thread-safe).

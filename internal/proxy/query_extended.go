@@ -135,12 +135,13 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, bu
 			stopTimer()
 		}
 		ct.clear()
-		rPool.Release(rConn)
 		execSpan.End()
 		if err != nil {
+			rPool.Discard(rConn)
 			dbg.balancer.MarkUnhealthy(readerAddr)
 			return fmt.Errorf("relay reader extended response: %w", err)
 		}
+		rPool.Release(rConn)
 		// Cache the response keyed by the batch (first Parse query), skip if oversize.
 		// Skip parameterized queries — bind params are not part of the key (#207).
 		if cacheable && collected != nil && len(buf) > 0 && buf[0].Type == protocol.MsgParse {

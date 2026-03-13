@@ -22,6 +22,23 @@ import (
 
 // handleExtendedRead sends buffered Extended Query messages to a reader, falling back to writer.
 func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, buf []*protocol.Message, syncMsg *protocol.Message, readerAddr string, ct *cancelTarget, dbg *DatabaseGroup, queryTimeout ...time.Duration) error {
+	// Cache lookup — mirror the simple-query read path (query_read.go)
+	if s.queryCache != nil && len(buf) > 0 && buf[0].Type == protocol.MsgParse {
+		_, query := protocol.ParseParseMessage(buf[0].Payload)
+		key := cache.WithNamespace(s.cacheKey(query, dbg.name), cache.NSExtended)
+		if cached := s.queryCache.Get(key); cached != nil {
+			slog.Debug("extended cache hit", "sql", query)
+			if s.metrics != nil {
+				s.metrics.CacheHits.Inc()
+			}
+			_, err := clientConn.Write(cached)
+			return err
+		}
+		if s.metrics != nil {
+			s.metrics.CacheMisses.Inc()
+		}
+	}
+
 	var extTimeout time.Duration
 	if len(queryTimeout) > 0 {
 		extTimeout = queryTimeout[0]

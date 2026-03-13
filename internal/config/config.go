@@ -29,6 +29,7 @@ type Config struct {
 	ConfigOptions  ConfigOptionsConfig  `yaml:"config"`
 	Telemetry      TelemetryConfig      `yaml:"telemetry"`
 	Mirror         MirrorConfig                  `yaml:"mirror"`
+	Digest         DigestConfig                  `yaml:"digest"`
 	Databases      map[string]DatabaseConfig     `yaml:"databases"`
 }
 
@@ -177,6 +178,12 @@ type MirrorConfig struct {
 	Compare    bool     `yaml:"compare"`
 	Workers    int      `yaml:"workers"`      // default 4
 	BufferSize int      `yaml:"buffer_size"`  // default 10000
+}
+
+type DigestConfig struct {
+	Enabled           bool `yaml:"enabled"`
+	MaxPatterns       int  `yaml:"max_patterns"`
+	SamplesPerPattern int  `yaml:"samples_per_pattern"`
 }
 
 func Load(path string) (*Config, error) {
@@ -344,6 +351,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Mirror.BufferSize <= 0 {
 		c.Mirror.BufferSize = 10000
+	}
+	if c.Digest.MaxPatterns <= 0 {
+		c.Digest.MaxPatterns = 1000
+	}
+	if c.Digest.SamplesPerPattern <= 0 {
+		c.Digest.SamplesPerPattern = 1000
 	}
 
 	// Apply defaults to each database config

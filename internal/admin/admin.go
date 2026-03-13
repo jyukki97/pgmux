@@ -24,6 +24,8 @@ type Server struct {
 	defaultDBName string
 	auditLoggerFn func() *audit.Logger
 	mirrorStatsFn func() any
+	digestStatsFn func() any
+	digestResetFn func()
 	reloadFunc    func() error
 	mu            sync.RWMutex
 }
@@ -38,7 +40,7 @@ func (s *Server) SetReloadFunc(fn func() error) {
 // New creates a new Admin server.
 // All parameters except reloadFunc are getter functions so that Admin always
 // accesses the latest objects even after a hot-reload.
-func New(cfgFn func() *config.Config, cacheFn func() *cache.Cache, invalidatorFn func() *cache.Invalidator, dbGroupsFn func() map[string]*proxy.DatabaseGroup, defaultDBName string, auditLoggerFn func() *audit.Logger, mirrorStatsFn func() any) *Server {
+func New(cfgFn func() *config.Config, cacheFn func() *cache.Cache, invalidatorFn func() *cache.Invalidator, dbGroupsFn func() map[string]*proxy.DatabaseGroup, defaultDBName string, auditLoggerFn func() *audit.Logger, mirrorStatsFn func() any, digestStatsFn func() any, digestResetFn func()) *Server {
 	return &Server{
 		cfgFn:         cfgFn,
 		cacheFn:       cacheFn,
@@ -47,6 +49,8 @@ func New(cfgFn func() *config.Config, cacheFn func() *cache.Cache, invalidatorFn
 		defaultDBName: defaultDBName,
 		auditLoggerFn: auditLoggerFn,
 		mirrorStatsFn: mirrorStatsFn,
+		digestStatsFn: digestStatsFn,
+		digestResetFn: digestResetFn,
 	}
 }
 
@@ -60,6 +64,8 @@ func (s *Server) HTTPServer() *http.Server {
 	mux.HandleFunc("/admin/cache/flush", s.handleCacheFlush)
 	mux.HandleFunc("/admin/reload", s.handleReload)
 	mux.HandleFunc("/admin/mirror/stats", s.handleMirrorStats)
+	mux.HandleFunc("/admin/queries/top", s.handleQueryDigest)
+	mux.HandleFunc("/admin/queries/reset", s.handleQueryDigestReset)
 	return &http.Server{Handler: mux}
 }
 
@@ -364,6 +370,41 @@ func (s *Server) handleMirrorStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, stats)
+}
+
+// handleQueryDigest returns top-N query digest statistics.
+func (s *Server) handleQueryDigest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.digestStatsFn == nil {
+		writeJSON(w, map[string]string{"status": "digest disabled"})
+		return
+	}
+	stats := s.digestStatsFn()
+	if stats == nil {
+		writeJSON(w, map[string]string{"status": "digest disabled"})
+		return
+	}
+	writeJSON(w, stats)
+}
+
+// handleQueryDigestReset clears all collected query digest statistics.
+func (s *Server) handleQueryDigestReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.digestResetFn == nil {
+		writeJSON(w, map[string]string{"status": "digest disabled"})
+		return
+	}
+	s.digestResetFn()
+	slog.Info("admin: query digest reset")
+	writeJSON(w, map[string]string{"status": "reset"})
 }
 
 func checkTCP(addr string) bool {

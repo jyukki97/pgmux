@@ -70,7 +70,7 @@ pgmux는 **캐싱, 방화벽, AST 파서, Audit, Data API, Query Mirroring, Mult
 | 기능 | 설명 | 우선순위 |
 |------|------|----------|
 | **Grafana Dashboard 템플릿** | `deploy/grafana/` 디렉토리에 JSON 대시보드 제공. 커넥션 풀, 캐시 히트율, 쿼리 레이턴시, 방화벽 차단 등 한눈에 확인 | **높음** |
-| **Query Digest / Top-N Queries** | 쿼리를 정규화(`$N` 치환)하여 패턴별 실행 횟수, 평균/P99 레이턴시 집계. `GET /admin/queries/top` | 중간 |
+| ~~**Query Digest / Top-N Queries**~~ | ~~쿼리를 정규화(`$N` 치환)하여 패턴별 실행 횟수, 평균/P99 레이턴시 집계. `GET /admin/queries/top`~~ | ✅ **기구현** |
 | **Connection 추적 대시보드** | `GET /admin/connections` — 현재 활성 세션 목록 (클라이언트 IP, 실행 중 쿼리, 지속 시간). `pg_stat_activity`의 프록시 버전 | 중간 |
 | **Structured JSON Logging** | 현재 `slog` 사용 중이지만 출력 포맷 설정 추가 (`log.format: json|text`). 로그 수집기(Loki, ELK)와 연동 용이 | 낮음 |
 
@@ -104,8 +104,9 @@ pgmux는 **캐싱, 방화벽, AST 파서, Audit, Data API, Query Mirroring, Mult
 Phase 20: OSS Release Ready          ✅ 완료 — GitHub Actions CI/CD + Docker Image (GHCR) + lint 정비
 Phase 22: Graceful Shutdown          ✅ 기구현 — ShutdownTimeout + wg.Wait + Connection Draining
 Phase 23: Multi-Database Routing     ✅ 완료 — DatabaseGroup 추상화, per-DB 풀/밸런서/CB, 하위호환
-Phase 24: Grafana + Query Digest     ← 관측성 강화
-Phase 25: Query Rewriting Rules      ← 무중단 마이그레이션 지원
-Phase 26: Multi-Tenancy              ← Per-User Limits
-Phase 27: 벤치마크 + 문서 사이트      ← 오픈소스 생태계
+Phase 24: Query Digest               ✅ 완료 — Top-N 쿼리 패턴 통계, Admin API, Prometheus 메트릭
+Phase 25: Grafana Dashboard          ← 관측성 강화
+Phase 26: Query Rewriting Rules      ← 무중단 마이그레이션 지원
+Phase 27: Multi-Tenancy              ← Per-User Limits
+Phase 28: 벤치마크 + 문서 사이트      ← 오픈소스 생태계
 ```

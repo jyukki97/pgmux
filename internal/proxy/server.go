@@ -14,6 +14,7 @@ import (
 	"github.com/jyukki97/pgmux/internal/audit"
 	"github.com/jyukki97/pgmux/internal/cache"
 	"github.com/jyukki97/pgmux/internal/config"
+	"github.com/jyukki97/pgmux/internal/digest"
 	"github.com/jyukki97/pgmux/internal/metrics"
 	"github.com/jyukki97/pgmux/internal/mirror"
 	"github.com/jyukki97/pgmux/internal/pool"
@@ -36,6 +37,7 @@ type Server struct {
 	rateLimiter  *resilience.RateLimiter
 	auditLogger  *audit.Logger
 	mirror       *mirror.Mirror
+	queryDigest  *digest.Digest
 	wg           sync.WaitGroup
 	cancelMap    sync.Map         // cancelKeyPair → *cancelTarget
 	nextProxyPID atomic.Uint32
@@ -163,6 +165,17 @@ func NewServer(cfg *config.Config) *Server {
 				"addr", mirrorAddr, "mode", cfg.Mirror.Mode,
 				"compare", cfg.Mirror.Compare, "workers", cfg.Mirror.Workers)
 		}
+	}
+
+	// Initialize Query Digest
+	if cfg.Digest.Enabled {
+		s.queryDigest = digest.New(digest.Config{
+			MaxPatterns:       cfg.Digest.MaxPatterns,
+			SamplesPerPattern: cfg.Digest.SamplesPerPattern,
+		})
+		slog.Info("query digest enabled",
+			"max_patterns", cfg.Digest.MaxPatterns,
+			"samples_per_pattern", cfg.Digest.SamplesPerPattern)
 	}
 
 	slog.Info("server initialized",

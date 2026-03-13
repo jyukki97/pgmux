@@ -339,6 +339,34 @@ deploy/grafana/                   # Grafana 대시보드 JSON 템플릿
 deploy/helm/pgmux/             # Kubernetes Helm Chart
 ```
 
+## Health Check (LB / K8s Probe)
+
+인증 없이 접근 가능한 경량 헬스체크 엔드포인트입니다. 로드밸런서, K8s liveness/readiness probe 연동에 사용합니다.
+
+| 엔드포인트 | 메서드 | 인증 | 설명 |
+|-----------|--------|------|------|
+| `/healthz` | GET | 불필요 | Liveness — 프로세스 생존 확인. 항상 `200 {"status":"ok"}` |
+| `/readyz` | GET | 불필요 | Readiness — 모든 Writer 백엔드 TCP 연결 가능 시 `200 {"status":"ready"}`, 불가 시 `503 {"status":"not_ready","reason":"..."}` |
+
+**K8s probe 설정 예시:**
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 9091
+  initialDelaySeconds: 5
+  periodSeconds: 10
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 9091
+  initialDelaySeconds: 5
+  periodSeconds: 5
+```
+
+> `/admin/health`는 상세 진단용 (Writer + Reader별 개별 상태)이며 인증이 필요합니다. probe에는 `/healthz`, `/readyz`를 사용하세요.
+
 ## Admin API
 
 `admin.auth.enabled: true`로 인증을 활성화하면 모든 엔드포인트에 Bearer API Key가 필요합니다:
@@ -350,7 +378,7 @@ curl -H "Authorization: Bearer your-admin-api-key" http://localhost:9091/admin/s
 | 엔드포인트 | 메서드 | 필요 역할 | 설명 |
 |-----------|--------|----------|------|
 | `/admin/stats` | GET | viewer | 풀, 캐시, 라우팅 통계 |
-| `/admin/health` | GET | viewer | 백엔드 헬스 상태 (Writer + Reader별) |
+| `/admin/health` | GET | viewer | 백엔드 헬스 상태 (Writer + Reader별 상세 진단) |
 | `/admin/config` | GET | viewer | 현재 적용된 설정 (비밀번호/API Key 마스킹) |
 | `/admin/cache/flush` | POST | admin | 전체 캐시 플러시 |
 | `/admin/cache/flush/{table}` | POST | admin | 특정 테이블 캐시 무효화 |

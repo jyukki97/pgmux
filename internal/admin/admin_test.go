@@ -480,6 +480,181 @@ func TestHandleHealth_LiveBackends(t *testing.T) {
 	}
 }
 
+// --- Healthz / Readyz Tests ---
+
+func TestHandleHealthz(t *testing.T) {
+	srv, _ := testServer()
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	w := httptest.NewRecorder()
+
+	srv.handleHealthz(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+
+	var resp map[string]string
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "ok" {
+		t.Errorf("status = %q, want ok", resp["status"])
+	}
+}
+
+func TestHandleHealthz_MethodNotAllowed(t *testing.T) {
+	srv, _ := testServer()
+	req := httptest.NewRequest(http.MethodPost, "/healthz", nil)
+	w := httptest.NewRecorder()
+
+	srv.handleHealthz(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", w.Code)
+	}
+}
+
+func TestHandleReadyz_AllWritersHealthy(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+
+	port := ln.Addr().(*net.TCPAddr).Port
+	cfg := &config.Config{
+		Writer:  config.DBConfig{Host: "127.0.0.1", Port: port},
+		Backend: config.BackendConfig{Database: "testdb"},
+		Pool:    config.PoolConfig{MaxConnections: 10, IdleTimeout: time.Minute},
+	}
+	srv := testServerWithGroups(cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+
+	srv.handleReadyz(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+
+	var resp map[string]string
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "ready" {
+		t.Errorf("status = %q, want ready", resp["status"])
+	}
+}
+
+func TestHandleReadyz_WriterUnreachable(t *testing.T) {
+	cfg := &config.Config{
+		Writer:  config.DBConfig{Host: "127.0.0.1", Port: 1}, // unreachable port
+		Backend: config.BackendConfig{Database: "testdb"},
+		Pool:    config.PoolConfig{MaxConnections: 10, IdleTimeout: time.Minute},
+	}
+	srv := testServerWithGroups(cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+
+	srv.handleReadyz(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", w.Code)
+	}
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "not_ready" {
+		t.Errorf("status = %q, want not_ready", resp["status"])
+	}
+	reason, ok := resp["reason"].(string)
+	if !ok || !strings.Contains(reason, "testdb") {
+		t.Errorf("reason = %q, want to contain 'testdb'", reason)
+	}
+}
+
+func TestHandleReadyz_NoGroups(t *testing.T) {
+	srv, _ := testServer() // testServer returns nil dbGroups
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+
+	srv.handleReadyz(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", w.Code)
+	}
+
+	var resp map[string]string
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "not_ready" {
+		t.Errorf("status = %q, want not_ready", resp["status"])
+	}
+}
+
+func TestHandleReadyz_MethodNotAllowed(t *testing.T) {
+	srv, _ := testServer()
+	req := httptest.NewRequest(http.MethodPost, "/readyz", nil)
+	w := httptest.NewRecorder()
+
+	srv.handleReadyz(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", w.Code)
+	}
+}
+
+func TestHealthzReadyz_NoAuth(t *testing.T) {
+	cfg := testConfig()
+	cfg.Admin.Auth = config.AdminAuthConfig{
+		Enabled: true,
+		APIKeys: []config.AdminAPIKey{
+			{Key: "key", Role: "admin"},
+		},
+	}
+
+	srv := New(
+		func() *config.Config { return cfg },
+		func() *cache.Cache { return nil },
+		func() *cache.Invalidator { return nil },
+		func() map[string]*proxy.DatabaseGroup { return nil },
+		"testdb",
+		func() *audit.Logger { return nil },
+		nil, nil, nil, nil,
+	)
+
+	ts := httptest.NewServer(srv.HTTPServer().Handler)
+	defer ts.Close()
+
+	// /healthz should work WITHOUT auth token
+	resp, err := http.Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/healthz status = %d, want 200 (no auth needed)", resp.StatusCode)
+	}
+
+	// /readyz should work WITHOUT auth token (returns 503 because no groups, but not 401)
+	resp2, err := http.Get(ts.URL + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode == http.StatusUnauthorized {
+		t.Error("/readyz should not require auth, got 401")
+	}
+}
+
 // --- Admin Auth Tests ---
 
 func TestAuth_Disabled_NoToken(t *testing.T) {

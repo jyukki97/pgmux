@@ -60,6 +60,10 @@ func New(cfgFn func() *config.Config, cacheFn func() *cache.Cache, invalidatorFn
 // The caller is responsible for calling Serve/Shutdown.
 func (s *Server) HTTPServer() *http.Server {
 	mux := http.NewServeMux()
+	// Unauthenticated probe endpoints for LB / K8s
+	mux.HandleFunc("/healthz", s.handleHealthz)
+	mux.HandleFunc("/readyz", s.handleReadyz)
+	// Authenticated admin endpoints
 	mux.HandleFunc("/admin/health", s.withAuth(s.handleHealth, false))
 	mux.HandleFunc("/admin/stats", s.withAuth(s.handleStats, false))
 	mux.HandleFunc("/admin/config", s.withAuth(s.handleConfig, false))
@@ -178,6 +182,66 @@ func (s *Server) ListenAndServe(addr string) error {
 	srv.Addr = addr
 	slog.Info("admin server starting", "listen", addr)
 	return srv.ListenAndServe()
+}
+
+// handleHealthz is a lightweight liveness probe. Returns 200 if the process is running.
+// No authentication required — intended for LB / K8s livenessProbe.
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+// handleReadyz is a readiness probe. Returns 200 if all Writer backends are reachable,
+// 503 otherwise. No authentication required — intended for LB / K8s readinessProbe.
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	groups := s.dbGroupsFn()
+	if len(groups) == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"status": "not_ready",
+			"reason": "no database groups configured",
+		})
+		return
+	}
+
+	var failed []string
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	for name, dbg := range groups {
+		name, dbg := name, dbg
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if !checkTCP(dbg.WriterAddr()) {
+				mu.Lock()
+				failed = append(failed, name)
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if len(failed) > 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "not_ready",
+			"reason": "writer unreachable for: " + strings.Join(failed, ", "),
+		})
+		return
+	}
+
+	writeJSON(w, map[string]string{"status": "ready"})
 }
 
 // handleHealth returns the health status of all backends, grouped by database.

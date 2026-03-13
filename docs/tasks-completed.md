@@ -685,3 +685,13 @@
 | - | handleConfig API Key 마스킹 | #190 |
 | - | 설정 검증 (API Key 필수, role 유효성, CIDR 파싱) | #190 |
 | - | 유닛 테스트 13건 (인증, 역할, IP allowlist, hot-reload, 응답 형식) | #190 |
+
+### Phase 30: Health Check Endpoint (LB / K8s Probe)
+
+| Task | 작업 | 이슈/PR |
+|------|------|---------|
+| - | GET /healthz — Liveness probe (인증 불필요, 프로세스 생존 확인) | #192 |
+| - | GET /readyz — Readiness probe (인증 불필요, Writer TCP 연결 확인, 503 on failure) | #192 |
+| - | /admin/health와 역할 분리 (상세 진단 vs 경량 probe) | #192 |
+| - | K8s livenessProbe/readinessProbe 설정 예시 문서화 | #192 |
+| - | 유닛 테스트 7건 (정상/비정상 Writer, 인증 우회, method not allowed) | #192 |

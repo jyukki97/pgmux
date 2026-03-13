@@ -9,6 +9,9 @@ import (
 	"time"
 )
 
+// ErrPoolClosed is returned when Acquire is called on a closed pool.
+var ErrPoolClosed = fmt.Errorf("connection pool: closed")
+
 // BackendKeyHolder is implemented by connections that carry PostgreSQL BackendKeyData.
 type BackendKeyHolder interface {
 	BackendKey() (pid, secret uint32)
@@ -108,6 +111,11 @@ func (p *Pool) Acquire(ctx context.Context) (*Conn, error) {
 
 	for {
 		p.mu.Lock()
+
+		if p.closed {
+			p.mu.Unlock()
+			return nil, ErrPoolClosed
+		}
 
 		// Try to get a valid idle connection
 		for len(p.idle) > 0 {

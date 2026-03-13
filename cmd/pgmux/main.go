@@ -208,6 +208,7 @@ func run() error {
 				slog.Error("config file watcher error", "error", err)
 			}
 		}()
+		<-fw.Ready() // wait for watcher to be armed before proceeding
 	}
 
 	// Graceful shutdown of HTTP servers when context is cancelled

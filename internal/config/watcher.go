@@ -25,6 +25,7 @@ type FileWatcher struct {
 	mu      sync.Mutex
 	stopped bool
 	stopCh  chan struct{}
+	readyCh chan struct{} // closed when watcher is actively monitoring
 }
 
 // NewFileWatcher creates a FileWatcher that monitors the given file path.
@@ -46,11 +47,22 @@ func NewFileWatcher(path string, onChange func()) (*FileWatcher, error) {
 		onChange: onChange,
 		watcher:  watcher,
 		stopCh:   make(chan struct{}),
+		readyCh:  make(chan struct{}),
 	}, nil
 }
 
+// Ready returns a channel that is closed when the watcher is actively monitoring
+// the target directory. Callers can use this to synchronize with watcher startup:
+//
+//	go func() { _ = fw.Start(ctx) }()
+//	<-fw.Ready()
+func (fw *FileWatcher) Ready() <-chan struct{} {
+	return fw.readyCh
+}
+
 // Start begins watching for file changes. It blocks until the context is
-// cancelled or Stop is called.
+// cancelled or Stop is called. The directory watch is registered before
+// signalling readiness, so no events can be lost after Ready() returns.
 func (fw *FileWatcher) Start(ctx context.Context) error {
 	// Watch the parent directory to catch symlink swaps (K8s ConfigMap).
 	dir := filepath.Dir(fw.path)
@@ -59,6 +71,9 @@ func (fw *FileWatcher) Start(ctx context.Context) error {
 	}
 
 	slog.Info("config file watcher started", "path", fw.path, "dir", dir)
+
+	// Signal that the directory watch is armed.
+	close(fw.readyCh)
 
 	var debounceTimer *time.Timer
 

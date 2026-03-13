@@ -81,6 +81,17 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, bu
 		return fallbackToWriter()
 	}
 
+	// Circuit breaker check for reader
+	if cb, ok := dbg.ReaderCB(readerAddr); ok {
+		if err := cb.Allow(); err != nil {
+			slog.Warn("reader circuit breaker open for extended query, fallback to writer", "addr", readerAddr)
+			if s.metrics != nil {
+				s.metrics.ReaderFallback.Inc()
+			}
+			return fallbackToWriter()
+		}
+	}
+
 	rPool, ok := dbg.ReaderPool(readerAddr)
 	if !ok {
 		slog.Warn("no pool for reader, fallback to writer", "addr", readerAddr)
@@ -97,6 +108,9 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, bu
 		acquireSpan.SetStatus(codes.Error, err.Error())
 		acquireSpan.End()
 		slog.Warn("acquire reader failed for extended query, fallback to writer", "addr", readerAddr, "error", err)
+		if cb, ok := dbg.ReaderCB(readerAddr); ok {
+			cb.RecordFailure()
+		}
 		dbg.balancer.MarkUnhealthy(readerAddr)
 		return fallbackToWriter()
 	}
@@ -124,6 +138,9 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, bu
 		execSpan.End()
 		slog.Error("forward ext to reader", "addr", readerAddr, "error", err)
 		rPool.Discard(rConn)
+		if cb, ok := dbg.ReaderCB(readerAddr); ok {
+			cb.RecordFailure()
+		}
 		dbg.balancer.MarkUnhealthy(readerAddr)
 		return fallbackToWriter()
 	}
@@ -138,6 +155,9 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, bu
 		execSpan.End()
 		if err != nil {
 			rPool.Discard(rConn)
+			if cb, ok := dbg.ReaderCB(readerAddr); ok {
+				cb.RecordFailure()
+			}
 			dbg.balancer.MarkUnhealthy(readerAddr)
 			return fmt.Errorf("relay reader extended response: %w", err)
 		}
@@ -162,6 +182,9 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, bu
 			execSpan.SetStatus(codes.Error, err.Error())
 			execSpan.End()
 			rPool.Discard(rConn)
+			if cb, ok := dbg.ReaderCB(readerAddr); ok {
+				cb.RecordFailure()
+			}
 			dbg.balancer.MarkUnhealthy(readerAddr)
 			return fmt.Errorf("relay reader extended response: %w", err)
 		}
@@ -173,6 +196,9 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, bu
 		execSpan.End()
 	}
 
+	if cb, ok := dbg.ReaderCB(readerAddr); ok {
+		cb.RecordSuccess()
+	}
 	return nil
 }
 
@@ -291,6 +317,17 @@ func (s *Server) handleSynthesizedRead(ctx context.Context, clientConn net.Conn,
 		return fallbackToWriter()
 	}
 
+	// Circuit breaker check for reader
+	if cb, ok := dbg.ReaderCB(readerAddr); ok {
+		if err := cb.Allow(); err != nil {
+			slog.Warn("reader circuit breaker open for synthesized query, fallback to writer", "addr", readerAddr)
+			if s.metrics != nil {
+				s.metrics.ReaderFallback.Inc()
+			}
+			return fallbackToWriter()
+		}
+	}
+
 	rPool, ok := dbg.ReaderPool(readerAddr)
 	if !ok {
 		return fallbackToWriter()
@@ -298,6 +335,9 @@ func (s *Server) handleSynthesizedRead(ctx context.Context, clientConn net.Conn,
 
 	rConn, err := rPool.Acquire(ctx)
 	if err != nil {
+		if cb, ok := dbg.ReaderCB(readerAddr); ok {
+			cb.RecordFailure()
+		}
 		dbg.balancer.MarkUnhealthy(readerAddr)
 		return fallbackToWriter()
 	}
@@ -306,6 +346,9 @@ func (s *Server) handleSynthesizedRead(ctx context.Context, clientConn net.Conn,
 	if err := protocol.WriteMessage(rConn, protocol.MsgQuery, queryPayload); err != nil {
 		ct.clear()
 		rPool.Discard(rConn)
+		if cb, ok := dbg.ReaderCB(readerAddr); ok {
+			cb.RecordFailure()
+		}
 		dbg.balancer.MarkUnhealthy(readerAddr)
 		return fallbackToWriter()
 	}
@@ -313,11 +356,17 @@ func (s *Server) handleSynthesizedRead(ctx context.Context, clientConn net.Conn,
 	if err := s.relayUntilReady(clientConn, rConn); err != nil {
 		ct.clear()
 		rPool.Discard(rConn)
+		if cb, ok := dbg.ReaderCB(readerAddr); ok {
+			cb.RecordFailure()
+		}
 		dbg.balancer.MarkUnhealthy(readerAddr)
 		return fmt.Errorf("relay reader synthesized response: %w", err)
 	}
 	ct.clear()
 	rPool.Release(rConn)
+	if cb, ok := dbg.ReaderCB(readerAddr); ok {
+		cb.RecordSuccess()
+	}
 	return nil
 }
 

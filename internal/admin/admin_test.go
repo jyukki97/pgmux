@@ -862,7 +862,10 @@ func TestAuth_ErrorResponseFormat(t *testing.T) {
 	ts := httptest.NewServer(srv.HTTPServer().Handler)
 	defer ts.Close()
 
-	resp, _ := http.Get(ts.URL + "/admin/stats")
+	resp, err := http.Get(ts.URL + "/admin/stats")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 
 	ct := resp.Header.Get("Content-Type")

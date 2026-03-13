@@ -5,7 +5,8 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=1 GOOS=linux go build -o /pgmux ./cmd/pgmux
+ARG TARGETARCH
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=${TARGETARCH} go build -o /pgmux ./cmd/pgmux
 
 # Stage 2: Runtime
 FROM debian:bookworm-slim

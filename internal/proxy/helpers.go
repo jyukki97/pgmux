@@ -19,7 +19,7 @@ func (s *Server) sendReadyForQuery(conn net.Conn, inTransaction bool) {
 	if inTransaction {
 		status = 'T' // in transaction
 	}
-	protocol.WriteMessage(conn, protocol.MsgReadyForQuery, []byte{status})
+	_ = protocol.WriteMessage(conn, protocol.MsgReadyForQuery, []byte{status})
 }
 
 // truncateStr truncates a string to maxLen characters.
@@ -39,7 +39,7 @@ func (s *Server) sendError(conn net.Conn, msg string) {
 	payload = append(payload, []byte(msg)...)
 	payload = append(payload, 0)
 	payload = append(payload, 0) // terminator
-	protocol.WriteMessage(conn, protocol.MsgErrorResponse, payload)
+	_ = protocol.WriteMessage(conn, protocol.MsgErrorResponse, payload)
 }
 
 // cacheKey uses semantic or plain cache key based on config.

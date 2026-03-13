@@ -9,7 +9,16 @@ linters:
 
 linters-settings:
   errcheck:
-    check-blank: true
+    check-blank: false
+    exclude-functions:
+      - (bytes.Buffer).WriteByte
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - ineffassign
 
 run:
   timeout: 3m

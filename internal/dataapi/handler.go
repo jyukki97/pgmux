@@ -227,7 +227,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) executeRead(ctx context.Context, sql string, pq *router.ParsedQuery) (*QueryResponse, error) {
@@ -353,7 +353,7 @@ func (s *Server) executeOnPool(ctx context.Context, sql string, p *pool.Pool) (*
 		select {
 		case <-ctx.Done():
 			cancelled.Store(true)
-			conn.SetDeadline(time.Now()) // unblock blocking reads
+			_ = conn.SetDeadline(time.Now()) // unblock blocking reads
 			slog.Debug("dataapi: context cancelled, forced connection deadline",
 				"sql", truncateSQL(sql))
 		case <-stopCh:
@@ -608,11 +608,11 @@ func convertValue(val string, oid uint32) any {
 		return val == "t" || val == "true"
 	case 20, 21, 23: // int8, int2, int4
 		var n int64
-		fmt.Sscanf(val, "%d", &n)
+		_, _ = fmt.Sscanf(val, "%d", &n)
 		return n
 	case 700, 701: // float4, float8
 		var f float64
-		fmt.Sscanf(val, "%f", &f)
+		_, _ = fmt.Sscanf(val, "%f", &f)
 		return f
 	default:
 		return val
@@ -731,5 +731,5 @@ func extractBearerToken(r *http.Request) string {
 func writeError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(ErrorResponse{Error: msg})
+	_ = json.NewEncoder(w).Encode(ErrorResponse{Error: msg})
 }

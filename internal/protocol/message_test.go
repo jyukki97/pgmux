@@ -33,7 +33,7 @@ func TestReadStartupMessage(t *testing.T) {
 func TestReadMessage(t *testing.T) {
 	var buf bytes.Buffer
 	payload := []byte("SELECT 1\x00")
-	WriteMessage(&buf, MsgQuery, payload)
+	_ = WriteMessage(&buf, MsgQuery, payload)
 
 	msg, err := ReadMessage(&buf)
 	if err != nil {
@@ -67,8 +67,8 @@ func TestWriteMessage(t *testing.T) {
 
 func TestReadStartupMessage_SSLRequest(t *testing.T) {
 	var buf bytes.Buffer
-	binary.Write(&buf, binary.BigEndian, int32(8))
-	binary.Write(&buf, binary.BigEndian, int32(SSLRequestCode))
+	_ = binary.Write(&buf, binary.BigEndian, int32(8))
+	_ = binary.Write(&buf, binary.BigEndian, int32(SSLRequestCode))
 
 	msg, err := ReadStartupMessage(&buf)
 	if err != nil {

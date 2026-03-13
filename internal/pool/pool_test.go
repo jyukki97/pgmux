@@ -81,6 +81,7 @@ func TestPool_AcquireRelease(t *testing.T) {
 	}
 
 	numOpen, numIdle := p.Stats()
+	_ = numOpen
 	if numIdle != 0 {
 		t.Errorf("after acquire: numIdle = %d, want 0", numIdle)
 	}

@@ -58,7 +58,7 @@ type cancelKeyPair struct {
 func (s *Server) newCancelTarget() *cancelTarget {
 	pid := s.nextProxyPID.Add(1)
 	var secretBuf [4]byte
-	rand.Read(secretBuf[:])
+	_, _ = rand.Read(secretBuf[:])
 	secret := binary.BigEndian.Uint32(secretBuf[:])
 
 	ct := &cancelTarget{

@@ -25,7 +25,9 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, bu
 	// Cache lookup — mirror the simple-query read path (query_read.go)
 	// Skip cache entirely for parameterized queries to avoid returning
 	// wrong results when bind parameters differ (issue #207).
-	cacheable := !hasParameterPlaceholders(buf)
+	// Also skip for binary result format or partial fetch (maxRows≠0)
+	// since the cache key does not capture these settings (#217).
+	cacheable := !hasParameterPlaceholders(buf) && !hasBinaryFormatOrPartialFetch(buf)
 	if cacheable && s.queryCache != nil && len(buf) > 0 && buf[0].Type == protocol.MsgParse {
 		_, query := protocol.ParseParseMessage(buf[0].Payload)
 		key := cache.WithNamespace(s.cacheKey(query, dbg.name), cache.NSExtended)
@@ -322,6 +324,37 @@ func hasParameterPlaceholders(buf []*protocol.Message) bool {
 			_, query := protocol.ParseParseMessage(m.Payload)
 			for i := 0; i < len(query)-1; i++ {
 				if query[i] == '$' && query[i+1] >= '1' && query[i+1] <= '9' {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// hasBinaryFormatOrPartialFetch reports whether the batch contains Bind messages
+// with binary result format codes or Execute messages with maxRows != 0 (partial fetch).
+// Such batches must not be cached because the cache key (Parse SQL text) does not
+// capture these settings, and different settings produce different wire responses (#217).
+func hasBinaryFormatOrPartialFetch(buf []*protocol.Message) bool {
+	for _, m := range buf {
+		switch m.Type {
+		case protocol.MsgBind:
+			detail, err := protocol.ParseBindMessageFull(m.Payload)
+			if err != nil {
+				return true // can't parse → skip cache to be safe
+			}
+			for _, fc := range detail.ResultFormatCodes {
+				if fc != 0 { // 0 = text, 1 = binary
+					return true
+				}
+			}
+		case protocol.MsgExecute:
+			// Execute: portal_name\0 + int32(maxRows)
+			idx := bytes.IndexByte(m.Payload, 0)
+			if idx >= 0 && idx+5 <= len(m.Payload) {
+				maxRows := binary.BigEndian.Uint32(m.Payload[idx+1 : idx+5])
+				if maxRows != 0 {
 					return true
 				}
 			}

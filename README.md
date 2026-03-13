@@ -1,3 +1,5 @@
+**한국어** | [English](README_en.md)
+
 # pgmux
 
 [![CI](https://github.com/jyukki97/pgmux/actions/workflows/ci.yml/badge.svg)](https://github.com/jyukki97/pgmux/actions/workflows/ci.yml)

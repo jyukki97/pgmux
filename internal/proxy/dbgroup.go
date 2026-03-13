@@ -117,11 +117,50 @@ func (g *DatabaseGroup) Close() {
 	}
 }
 
-// Reload updates reader pools and circuit breakers for a config change.
+// Reload updates writer/reader pools and circuit breakers for a config change.
+// If backend credentials (user, password, database) changed, all pools are
+// recreated so that new connections use the updated credentials.
 func (g *DatabaseGroup) Reload(dbCfg config.DatabaseConfig, cbCfg config.CircuitBreakerConfig) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
+	oldCfg := g.backendCfg
+	credsChanged := oldCfg.User != dbCfg.Backend.User ||
+		oldCfg.Password != dbCfg.Backend.Password ||
+		oldCfg.Database != dbCfg.Backend.Database
+
+	if credsChanged {
+		slog.Info("reload: backend credentials changed, recreating pools", "db", g.name)
+	}
+
+	// --- Writer pool ---
+	newWriterAddr := fmt.Sprintf("%s:%d", dbCfg.Writer.Host, dbCfg.Writer.Port)
+	if credsChanged || newWriterAddr != g.writerAddr {
+		if g.writerPool != nil {
+			g.writerPool.Close()
+			slog.Info("reload: writer pool closed (recreating)", "db", g.name, "old_addr", g.writerAddr)
+		}
+		wp, err := pool.New(pool.Config{
+			DialFunc: func() (net.Conn, error) {
+				return pgConnect(newWriterAddr, dbCfg.Backend.User, dbCfg.Backend.Password, dbCfg.Backend.Database)
+			},
+			MinConnections:    0,
+			MaxConnections:    dbCfg.Pool.MaxConnections,
+			IdleTimeout:       dbCfg.Pool.IdleTimeout,
+			MaxLifetime:       dbCfg.Pool.MaxLifetime,
+			ConnectionTimeout: dbCfg.Pool.ConnectionTimeout,
+		})
+		if err != nil {
+			slog.Error("reload: create writer pool", "db", g.name, "addr", newWriterAddr, "error", err)
+			g.writerPool = nil
+		} else {
+			g.writerPool = wp
+			slog.Info("reload: writer pool recreated", "db", g.name, "addr", newWriterAddr)
+		}
+		g.writerAddr = newWriterAddr
+	}
+
+	// --- Reader pools ---
 	newReaderAddrs := make([]string, len(dbCfg.Readers))
 	for i, r := range dbCfg.Readers {
 		newReaderAddrs[i] = fmt.Sprintf("%s:%d", r.Host, r.Port)
@@ -129,27 +168,29 @@ func (g *DatabaseGroup) Reload(dbCfg config.DatabaseConfig, cbCfg config.Circuit
 
 	newPools := make(map[string]*pool.Pool)
 	for _, addr := range newReaderAddrs {
-		if p, ok := g.readerPools[addr]; ok {
-			newPools[addr] = p
-		} else {
-			addr := addr
-			p, err := pool.New(pool.Config{
-				DialFunc: func() (net.Conn, error) {
-					return pgConnect(addr, dbCfg.Backend.User, dbCfg.Backend.Password, dbCfg.Backend.Database)
-				},
-				MinConnections:    0,
-				MaxConnections:    dbCfg.Pool.MaxConnections,
-				IdleTimeout:       dbCfg.Pool.IdleTimeout,
-				MaxLifetime:       dbCfg.Pool.MaxLifetime,
-				ConnectionTimeout: dbCfg.Pool.ConnectionTimeout,
-			})
-			if err != nil {
-				slog.Error("reload: create reader pool", "db", g.name, "addr", addr, "error", err)
+		if !credsChanged {
+			if p, ok := g.readerPools[addr]; ok {
+				newPools[addr] = p
 				continue
 			}
-			newPools[addr] = p
-			slog.Info("reload: reader pool added", "db", g.name, "addr", addr)
 		}
+		addr := addr
+		p, err := pool.New(pool.Config{
+			DialFunc: func() (net.Conn, error) {
+				return pgConnect(addr, dbCfg.Backend.User, dbCfg.Backend.Password, dbCfg.Backend.Database)
+			},
+			MinConnections:    0,
+			MaxConnections:    dbCfg.Pool.MaxConnections,
+			IdleTimeout:       dbCfg.Pool.IdleTimeout,
+			MaxLifetime:       dbCfg.Pool.MaxLifetime,
+			ConnectionTimeout: dbCfg.Pool.ConnectionTimeout,
+		})
+		if err != nil {
+			slog.Error("reload: create reader pool", "db", g.name, "addr", addr, "error", err)
+			continue
+		}
+		newPools[addr] = p
+		slog.Info("reload: reader pool added", "db", g.name, "addr", addr)
 	}
 
 	for addr, p := range g.readerPools {

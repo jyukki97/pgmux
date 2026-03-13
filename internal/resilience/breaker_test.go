@@ -26,11 +26,11 @@ func TestCircuitBreaker_TripsOnErrors(t *testing.T) {
 
 	// 6 failures, 4 successes = 60% error rate → should trip
 	for i := 0; i < 6; i++ {
-		cb.Allow()
+		_ = cb.Allow()
 		cb.RecordFailure()
 	}
 	for i := 0; i < 4; i++ {
-		cb.Allow()
+		_ = cb.Allow()
 		cb.RecordSuccess()
 	}
 
@@ -52,7 +52,7 @@ func TestCircuitBreaker_TransitionsToHalfOpen(t *testing.T) {
 
 	// Trip the breaker
 	for i := 0; i < 4; i++ {
-		cb.Allow()
+		_ = cb.Allow()
 		cb.RecordFailure()
 	}
 
@@ -82,7 +82,7 @@ func TestCircuitBreaker_HalfOpenRecovery(t *testing.T) {
 
 	// Trip the breaker
 	for i := 0; i < 4; i++ {
-		cb.Allow()
+		_ = cb.Allow()
 		cb.RecordFailure()
 	}
 
@@ -90,7 +90,7 @@ func TestCircuitBreaker_HalfOpenRecovery(t *testing.T) {
 
 	// Succeed enough times in half-open to close
 	for i := 0; i < 2; i++ {
-		cb.Allow()
+		_ = cb.Allow()
 		cb.RecordSuccess()
 	}
 
@@ -109,16 +109,16 @@ func TestCircuitBreaker_HalfOpenFailureReopens(t *testing.T) {
 
 	// Trip the breaker
 	for i := 0; i < 4; i++ {
-		cb.Allow()
+		_ = cb.Allow()
 		cb.RecordFailure()
 	}
 
 	time.Sleep(60 * time.Millisecond)
 
 	// One success, then failure in half-open → back to open
-	cb.Allow()
+	_ = cb.Allow()
 	cb.RecordSuccess()
-	cb.Allow()
+	_ = cb.Allow()
 	cb.RecordFailure()
 
 	if cb.State() != StateOpen {
@@ -135,11 +135,11 @@ func TestCircuitBreaker_BelowThresholdStaysClosed(t *testing.T) {
 
 	// 4 failures, 6 successes = 40% error rate → below 50% threshold
 	for i := 0; i < 4; i++ {
-		cb.Allow()
+		_ = cb.Allow()
 		cb.RecordFailure()
 	}
 	for i := 0; i < 6; i++ {
-		cb.Allow()
+		_ = cb.Allow()
 		cb.RecordSuccess()
 	}
 

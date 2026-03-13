@@ -74,9 +74,18 @@ func TestLSNRoundTrip(t *testing.T) {
 }
 
 func TestLSNComparison(t *testing.T) {
-	a, _ := ParseLSN("0/16B3748")
-	b, _ := ParseLSN("0/16B3749")
-	c, _ := ParseLSN("1/0")
+	a, err := ParseLSN("0/16B3748")
+	if err != nil {
+		t.Fatalf("ParseLSN(a): %v", err)
+	}
+	b, err := ParseLSN("0/16B3749")
+	if err != nil {
+		t.Fatalf("ParseLSN(b): %v", err)
+	}
+	c, err := ParseLSN("1/0")
+	if err != nil {
+		t.Fatalf("ParseLSN(c): %v", err)
+	}
 
 	if a >= b {
 		t.Errorf("expected %v < %v", a, b)

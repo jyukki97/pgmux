@@ -11,7 +11,7 @@ func TestReadMessage_MaxSizeExceeded(t *testing.T) {
 	// Simulate a malicious client sending a 1GB length header
 	buf := new(bytes.Buffer)
 	buf.WriteByte('Q')
-	binary.Write(buf, binary.BigEndian, int32(1024*1024*1024)) // 1GB
+	_ = binary.Write(buf, binary.BigEndian, int32(1024*1024*1024)) // 1GB
 
 	_, err := ReadMessage(buf)
 	if err == nil {

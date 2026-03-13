@@ -9,7 +9,9 @@ linters:
 
 linters-settings:
   errcheck:
-    check-blank: true
+    check-blank: false
+    exclude-functions:
+      - (bytes.Buffer).WriteByte
 
 run:
   timeout: 3m

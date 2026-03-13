@@ -8,6 +8,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/jyukki97/pgmux/internal/config"
 	"github.com/jyukki97/pgmux/internal/pool"
 	"github.com/jyukki97/pgmux/internal/protocol"
 	"github.com/jyukki97/pgmux/internal/router"
@@ -51,6 +52,12 @@ func (s *Server) resetAndReleaseWriter(conn *pool.Conn, dbg *DatabaseGroup) {
 	dbg.writerPool.Release(conn)
 }
 
+// releaseWriterFast returns the connection to the pool without sending DISCARD ALL.
+// Safe for read-only queries that did not modify session state (SET, PREPARE, etc.).
+func (s *Server) releaseWriterFast(conn *pool.Conn, dbg *DatabaseGroup) {
+	dbg.writerPool.Release(conn)
+}
+
 // resetConn sends the configured reset query (e.g. DISCARD ALL) to clean up session state
 // before returning a connection to the pool.
 func (s *Server) resetConn(conn net.Conn) error {
@@ -76,7 +83,8 @@ func (s *Server) resetConn(conn net.Conn) error {
 	}
 }
 
-// fallbackToWriter acquires a writer connection from the pool and forwards the query.
+// fallbackToWriter acquires a writer connection from the pool and forwards a read query.
+// Since this is a read-only fallback, we skip DISCARD ALL on release.
 func (s *Server) fallbackToWriter(ctx context.Context, clientConn net.Conn, msg *protocol.Message, ct *cancelTarget, dbg *DatabaseGroup) error {
 	wConn, err := dbg.writerPool.Acquire(ctx)
 	if err != nil {
@@ -89,12 +97,17 @@ func (s *Server) fallbackToWriter(ctx context.Context, clientConn net.Conn, msg 
 	ct.setFromConn(dbg.writerAddr, wConn)
 	err = s.forwardAndRelay(clientConn, wConn, msg)
 	ct.clear()
-	s.resetAndReleaseWriter(wConn, dbg)
+	if err != nil {
+		dbg.writerPool.Discard(wConn)
+	} else {
+		s.releaseWriterFast(wConn, dbg)
+	}
 	return err
 }
 
 // handleWriteQuery forwards a write query to the writer and invalidates cache.
-func (s *Server) handleWriteQuery(clientConn net.Conn, writerConn net.Conn, msg *protocol.Message, query string, session *router.Session, pq *router.ParsedQuery, dbg *DatabaseGroup) {
+// qtype is the pre-classified query type to avoid redundant classification.
+func (s *Server) handleWriteQuery(clientConn net.Conn, writerConn net.Conn, msg *protocol.Message, query string, session *router.Session, pq *router.ParsedQuery, qtype router.QueryType, cfg *config.Config, dbg *DatabaseGroup) {
 	if err := s.forwardAndRelay(clientConn, writerConn, msg); err != nil {
 		slog.Error("forward write to writer", "error", err)
 		if dbg.writerCB != nil {
@@ -106,8 +119,8 @@ func (s *Server) handleWriteQuery(clientConn net.Conn, writerConn net.Conn, msg 
 		dbg.writerCB.RecordSuccess()
 	}
 
-	// Track WAL LSN for causal consistency
-	if s.getConfig().Routing.CausalConsistency && s.classifyQueryParsed(query, pq) == router.QueryWrite {
+	// Track WAL LSN for causal consistency (only for actual writes, not BEGIN/COMMIT)
+	if cfg.Routing.CausalConsistency && qtype == router.QueryWrite {
 		if lsn, err := s.queryCurrentLSN(writerConn); err != nil {
 			slog.Warn("query WAL LSN after write", "error", err)
 		} else {
@@ -116,8 +129,8 @@ func (s *Server) handleWriteQuery(clientConn net.Conn, writerConn net.Conn, msg 
 		}
 	}
 
-	// Invalidate cache for affected tables
-	if s.queryCache != nil && s.classifyQueryParsed(query, pq) == router.QueryWrite {
+	// Invalidate cache for affected tables (only for actual writes)
+	if s.queryCache != nil && qtype == router.QueryWrite {
 		tables := s.extractQueryTablesParsed(query, pq)
 		for _, table := range tables {
 			s.queryCache.InvalidateTable(table)

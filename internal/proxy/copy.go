@@ -3,6 +3,7 @@ package proxy
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 
@@ -18,38 +19,51 @@ func (s *Server) forwardAndRelay(clientConn, backendConn net.Conn, msg *protocol
 }
 
 // relayUntilReady forwards backend messages to client until ReadyForQuery ('Z').
+// Uses a reusable buffer to minimize allocations in the hot path.
 // If the backend sends CopyInResponse ('G') or CopyOutResponse ('H'),
 // it switches to bidirectional passthrough to avoid deadlock.
 func (s *Server) relayUntilReady(clientConn, backendConn net.Conn) error {
+	// Reuse a header buffer for reading type + length
+	var hdr [5]byte
 	for {
-		msg, err := protocol.ReadMessage(backendConn)
-		if err != nil {
-			return fmt.Errorf("read backend response: %w", err)
+		// Read type byte + 4-byte length
+		if _, err := io.ReadFull(backendConn, hdr[:]); err != nil {
+			return fmt.Errorf("read backend response header: %w", err)
+		}
+		msgType := hdr[0]
+		length := int(binary.BigEndian.Uint32(hdr[1:5]))
+		if length < 4 {
+			return fmt.Errorf("invalid message length: %d", length)
+		}
+		payloadLen := length - 4
+
+		// Allocate a single buffer for the full wire message (type + length + payload)
+		// and write header + payload into it, then send in one Write call.
+		wireLen := 5 + payloadLen
+		wire := make([]byte, wireLen)
+		copy(wire[:5], hdr[:])
+		if payloadLen > 0 {
+			if _, err := io.ReadFull(backendConn, wire[5:]); err != nil {
+				return fmt.Errorf("read backend response payload: %w", err)
+			}
 		}
 
-		if err := protocol.WriteMessage(clientConn, msg.Type, msg.Payload); err != nil {
+		if _, err := clientConn.Write(wire); err != nil {
 			return fmt.Errorf("forward to client: %w", err)
 		}
 
-		switch msg.Type {
+		switch msgType {
 		case protocol.MsgReadyForQuery:
 			return nil
 		case protocol.MsgCopyInResponse:
-			// Backend expects COPY data from client — relay client→backend until CopyDone/CopyFail
 			if err := s.relayCopyIn(clientConn, backendConn); err != nil {
 				return fmt.Errorf("copy in relay: %w", err)
 			}
-			// After CopyIn completes, backend sends CommandComplete + ReadyForQuery
-			// Continue the loop to catch them
 		case protocol.MsgCopyOutResponse:
-			// Backend will send COPY data to client — relay backend→client until CopyDone
 			if err := s.relayCopyOut(clientConn, backendConn); err != nil {
 				return fmt.Errorf("copy out relay: %w", err)
 			}
-			// After CopyOut, backend sends CommandComplete + ReadyForQuery
-			// Continue the loop to catch them
 		case protocol.MsgCopyBothResponse:
-			// Streaming replication — relay bidirectionally
 			if err := s.relayCopyBoth(clientConn, backendConn); err != nil {
 				return fmt.Errorf("copy both relay: %w", err)
 			}

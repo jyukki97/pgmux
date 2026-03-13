@@ -41,17 +41,32 @@ func (s *Session) Route(query string) Route {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Scan all statements in the query for transaction control
-	wasTx := s.inTransaction
-	s.updateTransactionState(query)
-
-	// Transaction control statements always go to writer
-	if wasTx || s.inTransaction {
-		return RouteWriter
+	// Fast path for simple queries: check first keyword without splitting.
+	// Most queries are single-statement without transaction control.
+	hasTxKeyword := false
+	if strings.IndexByte(query, ';') < 0 {
+		upper := strings.ToUpper(strings.TrimSpace(query))
+		if strings.HasPrefix(upper, "BEGIN") || strings.HasPrefix(upper, "START TRANSACTION") {
+			s.inTransaction = true
+			hasTxKeyword = true
+		} else if strings.HasPrefix(upper, "COMMIT") || strings.HasPrefix(upper, "ROLLBACK") || strings.HasPrefix(upper, "END") {
+			s.inTransaction = false
+			hasTxKeyword = true
+		}
+	} else {
+		// Multi-statement: scan all for transaction control
+		wasTx := s.inTransaction
+		s.updateTransactionState(query)
+		if wasTx || s.inTransaction {
+			return RouteWriter
+		}
+		if containsTransactionKeyword(query) {
+			return RouteWriter
+		}
 	}
 
-	// Check if the query contains any transaction control keywords → writer
-	if containsTransactionKeyword(query) {
+	// Transaction control statements always go to writer
+	if hasTxKeyword || s.inTransaction {
 		return RouteWriter
 	}
 
@@ -73,8 +88,6 @@ func (s *Session) Route(query string) Route {
 
 	// Read-after-write protection
 	if s.causalConsistency {
-		// LSN-based: handled by the caller via LastWriteLSN() + LSN-aware balancer
-		// Route returns RouteReader; the server uses session LSN for balancer selection
 		return RouteReader
 	}
 

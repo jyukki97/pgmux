@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -59,10 +60,11 @@ type Message struct {
 // ReadStartupMessage reads the initial startup message from a client.
 // The startup message has no type byte — just length + payload.
 func ReadStartupMessage(r io.Reader) (*Message, error) {
-	var length int32
-	if err := binary.Read(r, binary.BigEndian, &length); err != nil {
+	var lenBuf [4]byte
+	if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
 		return nil, fmt.Errorf("read startup length: %w", err)
 	}
+	length := int(binary.BigEndian.Uint32(lenBuf[:]))
 
 	if length < 4 || length > 10000 {
 		return nil, fmt.Errorf("invalid startup message length: %d", length)
@@ -78,33 +80,30 @@ func ReadStartupMessage(r io.Reader) (*Message, error) {
 
 // ReadMessage reads a typed PG message (1 byte type + 4 byte length + payload).
 func ReadMessage(r io.Reader) (*Message, error) {
-	var typeBuf [1]byte
-	if _, err := io.ReadFull(r, typeBuf[:]); err != nil {
-		return nil, fmt.Errorf("read message type: %w", err)
+	// Read header: 1 byte type + 4 byte length in a single ReadFull call
+	var hdr [5]byte
+	if _, err := io.ReadFull(r, hdr[:]); err != nil {
+		return nil, fmt.Errorf("read message header: %w", err)
 	}
 
-	var length int32
-	if err := binary.Read(r, binary.BigEndian, &length); err != nil {
-		return nil, fmt.Errorf("read message length: %w", err)
-	}
-
+	length := int(binary.BigEndian.Uint32(hdr[1:5]))
 	if length < 4 {
 		return nil, fmt.Errorf("invalid message length: %d", length)
 	}
 
-	payloadLen := int(length - 4)
+	payloadLen := length - 4
 	if payloadLen > MaxMessageSize {
 		return nil, fmt.Errorf("message too large: %d bytes (max %d)", payloadLen, MaxMessageSize)
 	}
 
 	payload := make([]byte, payloadLen)
-	if len(payload) > 0 {
+	if payloadLen > 0 {
 		if _, err := io.ReadFull(r, payload); err != nil {
 			return nil, fmt.Errorf("read message payload: %w", err)
 		}
 	}
 
-	return &Message{Type: typeBuf[0], Payload: payload}, nil
+	return &Message{Type: hdr[0], Payload: payload}, nil
 }
 
 // WriteMessage writes a typed PG message to the writer.
@@ -366,10 +365,5 @@ func ParseCloseMessage(payload []byte) (closeType byte, name string) {
 }
 
 func indexOf(data []byte, b byte) int {
-	for i, v := range data {
-		if v == b {
-			return i
-		}
-	}
-	return -1
+	return bytes.IndexByte(data, b)
 }

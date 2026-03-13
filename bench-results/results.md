@@ -2,52 +2,37 @@
 
 ## Environment
 
-- **Date**: 2026-03-13
-- **OS**: macOS (Apple M4 Pro, arm64)
-- **PostgreSQL**: 16.13 (Docker)
-- **PgBouncer**: 1.25.1 (transaction mode, pool_size=20)
+- **Date**: 2026-03-13T07:12:10Z
+- **OS**: Darwin arm64
+- **CPU**: Apple M4 Pro
+- **PostgreSQL**: 16.13
+- **PgBouncer**: latest (transaction mode, pool_size=20)
 - **pgmux**: pool min=5, max=20, cache=off, firewall=off
-- **Data**: pgbench scale=10 (1M rows)
-- **Tool**: pgbench -T 10
+- **Data**: 100k accounts (pgbench-like schema)
 
 ## SELECT-only (read workload)
 
-| Target | Clients | TPS | Avg Latency (ms) | vs Direct |
-|--------|---------|-----|-------------------|-----------|
-| Direct | 1 | 2,999 | 0.33 | - |
-| pgmux | 1 | 1,512 | 0.66 | 50% |
-| PgBouncer | 1 | 2,527 | 0.40 | 84% |
-| Direct | 10 | 16,883 | 0.59 | - |
-| pgmux | 10 | 8,589 | 1.16 | 51% |
-| PgBouncer | 10 | 14,886 | 0.67 | 88% |
-| Direct | 50 | 25,806 | 1.94 | - |
-| pgmux | 50 | 11,879 | 4.21 | 46% |
-| PgBouncer | 50 | 25,354 | 1.97 | 98% |
+| Target | Clients | TPS | Avg Latency (ms) |
+|--------|---------|-----|-------------------|
+| Direct | 10 | 16932.896822 | 0.591 |
+| pgmux | 10 | 14395.937219 | 0.695 |
+| PgBouncer | 10 | 14983.646808 | 0.667 |
+| Direct | 50 | 25533.290695 | 1.958 |
+| pgmux | 50 | 21130.507930 | 2.366 |
+| PgBouncer | 50 | 24826.683153 | 2.014 |
 
 ## TPC-B (mixed read/write workload)
 
-| Target | Clients | TPS | Avg Latency (ms) | vs Direct |
-|--------|---------|-----|-------------------|-----------|
-| Direct | 1 | 435 | 2.30 | - |
-| pgmux | 1 | 333 | 3.00 | 77% |
-| PgBouncer | 1 | 367 | 2.72 | 84% |
-| Direct | 10 | 2,331 | 4.29 | - |
-| pgmux | 10 | 1,820 | 5.49 | 78% |
-| PgBouncer | 10 | 2,028 | 4.93 | 87% |
-| Direct | 50 | 3,227 | 15.50 | - |
-| pgmux | 50 | 2,345 | 21.32 | 73% |
-| PgBouncer | 50 | 2,707 | 18.47 | 84% |
+| Target | Clients | TPS | Avg Latency (ms) |
+|--------|---------|-----|-------------------|
+| Direct | 10 | 2364.930085 | 4.228 |
+| pgmux | 10 | 1830.527939 | 5.463 |
+| PgBouncer | 10 | 2073.817422 | 4.822 |
+| Direct | 50 | 3274.755549 | 15.268 |
+| pgmux | 50 | 2368.675129 | 21.109 |
+| PgBouncer | 50 | 2716.979381 | 18.403 |
 
-## Analysis
+---
 
-- **TPC-B (I/O bound)**: pgmux achieves 73-78% of direct connection throughput, comparable to PgBouncer (84%). The gap narrows because DB I/O dominates proxy overhead.
-- **SELECT-only (CPU bound)**: PgBouncer (C) has lower proxy overhead than pgmux (Go). This is expected for lightweight queries where proxy processing time is a larger fraction of total latency.
-- **Trade-off**: pgmux provides query caching, firewall, audit logging, query mirroring, and multi-database routing that PgBouncer lacks. With caching enabled, pgmux can exceed direct connection performance for repeated queries.
-
-## Reproduce
-
-```bash
-make bench-compare
-# or with custom parameters:
-BENCH_CLIENTS="1 10 50 100" BENCH_DURATION=30 make bench-compare
-```
+> Benchmarked with `pgbench -T 15`. Lower latency and higher TPS is better.
+> Cache and firewall disabled for fair comparison (proxy overhead only).

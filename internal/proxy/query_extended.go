@@ -213,6 +213,11 @@ func (s *Server) executeSynthesizedQuery(ctx context.Context, clientConn net.Con
 		ct.clear()
 		if acquired {
 			discardToPool(wConn, acquiredPool)
+		} else {
+			// boundWriter write failed — connection is broken, discard it
+			discardToPool(wConn, *boundWriterPool)
+			*boundWriter = nil
+			*boundWriterPool = nil
 		}
 		return fmt.Errorf("send synthesized query: %w", err)
 	}

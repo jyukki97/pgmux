@@ -91,7 +91,7 @@ pgmux는 **캐싱, 방화벽, AST 파서, Audit, Data API, Query Mirroring, Mult
 | 기능 | 설명 | 우선순위 |
 |------|------|----------|
 | ~~**공식 Docker Image (GHCR)**~~ | ~~GitHub Actions CI/CD + `ghcr.io/org/pgmux:latest` 자동 빌드/푸시~~ | ✅ **완료** (Phase 20, PR #170) |
-| **벤치마크 Suite & 비교 문서** | PgBouncer, PgCat 대비 성능 벤치마크. `make bench-compare`로 재현 가능한 결과. 오픈소스 선택 시 가장 먼저 보는 자료 | **높음** |
+| ~~**벤치마크 Suite & 비교 문서**~~ | ~~PgBouncer, PgCat 대비 성능 벤치마크. `make bench-compare`로 재현 가능한 결과. 오픈소스 선택 시 가장 먼저 보는 자료~~ | ✅ **기구현** |
 | **문서 사이트 (GitHub Pages)** | MkDocs 또는 Hugo 기반. 설정 레퍼런스, 아키텍처 가이드, 마이그레이션 가이드(PgBouncer → pgmux) | 중간 |
 | **CONTRIBUTING.md + Issue Templates** | 컨트리뷰터 가이드, PR 템플릿, 이슈 템플릿. 오픈소스 커뮤니티 참여 진입장벽 낮추기 | 중간 |
 | ~~**GitHub Actions CI**~~ | ~~PR마다 lint + unit test + 벤치마크 리그레션 자동 실행~~ | ✅ **완료** (Phase 20, PR #170) |
@@ -106,7 +106,8 @@ Phase 22: Graceful Shutdown          ✅ 기구현 — ShutdownTimeout + wg.Wait
 Phase 23: Multi-Database Routing     ✅ 완료 — DatabaseGroup 추상화, per-DB 풀/밸런서/CB, 하위호환
 Phase 24: Query Digest               ✅ 완료 — Top-N 쿼리 패턴 통계, Admin API, Prometheus 메트릭
 Phase 25: Grafana Dashboard          ✅ 완료 — JSON 대시보드 템플릿 + Helm ConfigMap + Sidecar 연동
-Phase 26: Query Rewriting Rules      ← 무중단 마이그레이션 지원
+Phase 26: Benchmark Suite             ✅ 완료 — pgbench 기반 Direct/pgmux/PgBouncer 3자 비교
+Phase 27: Query Rewriting Rules      ← 무중단 마이그레이션 지원
 Phase 27: Multi-Tenancy              ← Per-User Limits
 Phase 28: 벤치마크 + 문서 사이트      ← 오픈소스 생태계
 ```

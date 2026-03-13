@@ -1,7 +1,7 @@
 BINARY_NAME=pgmux
 BUILD_DIR=bin
 
-.PHONY: build run test test-integration test-coverage bench lint clean docker-up docker-down docker-build
+.PHONY: build run test test-integration test-coverage bench bench-compare lint clean docker-up docker-down docker-build
 
 build:
 	go build -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/pgmux
@@ -21,6 +21,9 @@ test-coverage:
 
 bench:
 	go test ./tests/ -bench=. -benchmem -count=3
+
+bench-compare:
+	./scripts/bench-compare.sh
 
 lint:
 	golangci-lint run ./...

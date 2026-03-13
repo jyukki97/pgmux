@@ -55,6 +55,30 @@ graph LR
     MIRR -.-> S[("Shadow DB")]
 ```
 
+## 성능 벤치마크
+
+pgbench (PostgreSQL 표준 벤치마크 도구)로 측정한 Direct DB / pgmux / PgBouncer 3자 비교 결과입니다.
+
+**TPC-B (혼합 읽기/쓰기 워크로드)**
+
+| Target | Clients | TPS | Avg Latency | vs Direct |
+|--------|---------|-----|-------------|-----------|
+| Direct | 50 | 3,227 | 15.5ms | - |
+| **pgmux** | 50 | **2,345** | **21.3ms** | **73%** |
+| PgBouncer | 50 | 2,707 | 18.5ms | 84% |
+
+**SELECT-only (읽기 전용 워크로드)**
+
+| Target | Clients | TPS | Avg Latency | vs Direct |
+|--------|---------|-----|-------------|-----------|
+| Direct | 50 | 25,806 | 1.94ms | - |
+| **pgmux** | 50 | **11,879** | **4.21ms** | **46%** |
+| PgBouncer | 50 | 25,354 | 1.97ms | 98% |
+
+> I/O 바운드 워크로드(TPC-B)에서 pgmux는 PgBouncer의 87% 수준 성능을 보입니다. CPU 바운드(SELECT-only)에서는 C로 작성된 PgBouncer가 유리하지만, pgmux는 캐싱, 방화벽, 미러링 등 PgBouncer에 없는 기능을 제공합니다. 캐시 활성화 시 반복 쿼리는 직접 연결보다 빠릅니다.
+>
+> 전체 결과: [`bench-results/results.md`](bench-results/results.md) | 재현: `make bench-compare`
+
 ## 빠른 시작
 
 ### 사전 요구사항
@@ -225,7 +249,8 @@ telemetry:
 | `make test` | 전체 단위 테스트 실행 |
 | `make test-integration` | E2E 통합 테스트 실행 |
 | `make test-coverage` | 테스트 커버리지 리포트 생성 |
-| `make bench` | 벤치마크 실행 |
+| `make bench` | 컴포넌트 벤치마크 실행 |
+| `make bench-compare` | Direct/pgmux/PgBouncer 3자 비교 벤치마크 |
 | `make lint` | golangci-lint 실행 |
 | `make docker-up` | 로컬 PostgreSQL Primary + Replica 실행 |
 | `make docker-down` | Docker 컨테이너 정리 |

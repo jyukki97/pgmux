@@ -616,3 +616,15 @@
 | - | Helm ConfigMap 템플릿 (Grafana sidecar 자동 배포) | #175 |
 | - | values.yaml: grafanaDashboard.enabled 옵션 추가 | #175 |
 | - | README Grafana Dashboard 섹션 추가 | #175 |
+
+### Phase 26: Benchmark Suite
+
+| Task | 작업 | 이슈/PR |
+|------|------|---------|
+| - | docker-compose.bench.yml (PostgreSQL + PgBouncer) | #179 |
+| - | PgBouncer 설정 (transaction mode, pool_size=20) | #179 |
+| - | scripts/bench-compare.sh (pgbench 기반 자동화) | #179 |
+| - | config.bench.yaml (벤치마크용 pgmux 설정) | #179 |
+| - | Makefile: bench-compare 타겟 추가 | #179 |
+| - | bench-results/results.md (Direct/pgmux/PgBouncer 3자 비교) | #179 |
+| - | README: 성능 벤치마크 섹션 추가 | #179 |

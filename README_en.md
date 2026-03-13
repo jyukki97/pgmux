@@ -55,6 +55,30 @@ graph LR
     MIRR -.-> S[("Shadow DB")]
 ```
 
+## Performance Benchmark
+
+Measured with pgbench (PostgreSQL standard benchmark tool): Direct DB vs pgmux vs PgBouncer.
+
+**TPC-B (mixed read/write workload)**
+
+| Target | Clients | TPS | Avg Latency | vs Direct |
+|--------|---------|-----|-------------|-----------|
+| Direct | 50 | 3,227 | 15.5ms | - |
+| **pgmux** | 50 | **2,345** | **21.3ms** | **73%** |
+| PgBouncer | 50 | 2,707 | 18.5ms | 84% |
+
+**SELECT-only (read-only workload)**
+
+| Target | Clients | TPS | Avg Latency | vs Direct |
+|--------|---------|-----|-------------|-----------|
+| Direct | 50 | 25,806 | 1.94ms | - |
+| **pgmux** | 50 | **11,879** | **4.21ms** | **46%** |
+| PgBouncer | 50 | 25,354 | 1.97ms | 98% |
+
+> For I/O-bound workloads (TPC-B), pgmux achieves 87% of PgBouncer's throughput. For CPU-bound workloads (SELECT-only), PgBouncer (written in C) has lower proxy overhead, but pgmux offers caching, firewall, mirroring, and other features PgBouncer lacks. With caching enabled, repeated queries can be faster than direct connections.
+>
+> Full results: [`bench-results/results.md`](bench-results/results.md) | Reproduce: `make bench-compare`
+
 ## Quick Start
 
 ### Prerequisites
@@ -225,7 +249,8 @@ telemetry:
 | `make test` | Run all unit tests |
 | `make test-integration` | Run E2E integration tests |
 | `make test-coverage` | Generate test coverage report |
-| `make bench` | Run benchmarks |
+| `make bench` | Run component benchmarks |
+| `make bench-compare` | Direct/pgmux/PgBouncer comparison benchmark |
 | `make lint` | Run golangci-lint |
 | `make docker-up` | Start local PostgreSQL Primary + Replica |
 | `make docker-down` | Clean up Docker containers |

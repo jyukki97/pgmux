@@ -1,0 +1,35 @@
+proxy:
+  listen: "0.0.0.0:35432"
+  shutdown_timeout: 5s
+
+writer:
+  host: "127.0.0.1"
+  port: 25432
+
+pool:
+  min_connections: 5
+  max_connections: 20
+  idle_timeout: 10m
+  max_lifetime: 1h
+  connection_timeout: 5s
+  reset_query: "DISCARD ALL"
+
+routing:
+  read_after_write_delay: 500ms
+
+cache:
+  enabled: false
+
+firewall:
+  enabled: false
+
+backend:
+  user: "postgres"
+  password: "postgres"
+  database: "testdb"
+
+metrics:
+  enabled: false
+
+admin:
+  enabled: false

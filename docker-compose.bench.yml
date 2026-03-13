@@ -1,0 +1,39 @@
+services:
+  primary:
+    image: postgres:16-alpine
+    container_name: pgmux-bench-primary
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: testdb
+    ports:
+      - "25432:5432"
+    volumes:
+      - ./docker/primary/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./docker/primary/pg_hba.conf:/var/lib/postgresql/pg_hba.conf
+    command: >
+      postgres
+      -c wal_level=replica
+      -c max_wal_senders=10
+      -c max_replication_slots=10
+      -c hot_standby=on
+      -c hba_file=/var/lib/postgresql/pg_hba.conf
+      -c shared_buffers=256MB
+      -c work_mem=64MB
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: pgmux-bench-pgbouncer
+    ports:
+      - "26432:6432"
+    volumes:
+      - ./docker/pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini
+      - ./docker/pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt
+    depends_on:
+      primary:
+        condition: service_healthy

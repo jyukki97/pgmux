@@ -679,16 +679,6 @@ func (s *Server) classifyQueryParsed(sql string, pq *router.ParsedQuery) router.
 	return s.classifyQuery(sql)
 }
 
-func (s *Server) cacheKey(sql string, dbName string) uint64 {
-	var key uint64
-	if s.cfgFn().Routing.ASTParser {
-		key = cache.SemanticCacheKey(sql)
-	} else {
-		key = cache.CacheKey(sql)
-	}
-	return mixDBNameDataAPI(key, dbName)
-}
-
 func (s *Server) cacheKeyParsed(sql string, pq *router.ParsedQuery, dbName string) uint64 {
 	var key uint64
 	if s.cfgFn().Routing.ASTParser && pq != nil {

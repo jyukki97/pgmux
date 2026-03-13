@@ -38,8 +38,9 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 		}
 	}()
 
-	// Reusable read buffer for client messages (ReadMessageReuse)
-	var readBuf []byte
+	// Reusable read buffer for client messages (ReadMessageReuse).
+	// Pre-allocated to avoid initial growth allocation (pprof: 20% of allocs).
+	readBuf := make([]byte, 0, 512)
 
 	// Extended Query protocol state
 	var extBuf []*protocol.Message

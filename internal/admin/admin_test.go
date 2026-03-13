@@ -54,7 +54,7 @@ func testServer() (*Server, *cache.Cache) {
 		func() map[string]*proxy.DatabaseGroup { return nil },
 		"testdb",
 		func() *audit.Logger { return nil },
-		nil, nil, nil,
+		nil, nil, nil, nil,
 	)
 	return srv, c
 }
@@ -68,7 +68,7 @@ func testServerWithGroups(cfg *config.Config) *Server {
 		proxySrv.DBGroups,
 		proxySrv.DefaultDBName(),
 		func() *audit.Logger { return nil },
-		nil, nil, nil,
+		nil, nil, nil, nil,
 	)
 }
 

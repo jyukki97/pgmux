@@ -28,9 +28,16 @@ type Config struct {
 	DataAPI        DataAPIConfig        `yaml:"data_api"`
 	ConfigOptions  ConfigOptionsConfig  `yaml:"config"`
 	Telemetry      TelemetryConfig      `yaml:"telemetry"`
-	Mirror         MirrorConfig                  `yaml:"mirror"`
-	Digest         DigestConfig                  `yaml:"digest"`
-	Databases      map[string]DatabaseConfig     `yaml:"databases"`
+	Mirror           MirrorConfig                  `yaml:"mirror"`
+	Digest           DigestConfig                  `yaml:"digest"`
+	Databases        map[string]DatabaseConfig     `yaml:"databases"`
+	ConnectionLimits ConnectionLimitsConfig        `yaml:"connection_limits"`
+}
+
+type ConnectionLimitsConfig struct {
+	Enabled                      bool `yaml:"enabled"`
+	DefaultMaxConnectionsPerUser int  `yaml:"default_max_connections_per_user"`
+	DefaultMaxConnectionsPerDB   int  `yaml:"default_max_connections_per_database"`
 }
 
 type ConfigOptionsConfig struct {
@@ -94,8 +101,9 @@ type AuthConfig struct {
 }
 
 type AuthUser struct {
-	Username string `yaml:"username"`
-	Password string `yaml:"password"`
+	Username       string `yaml:"username"`
+	Password       string `yaml:"password"`
+	MaxConnections int    `yaml:"max_connections"` // per-user override (0 = use default)
 }
 
 type CircuitBreakerConfig struct {
@@ -160,10 +168,11 @@ type CacheInvalidationConfig struct {
 
 // DatabaseConfig defines per-database routing configuration for multi-DB mode.
 type DatabaseConfig struct {
-	Writer  DBConfig      `yaml:"writer"`
-	Readers []DBConfig    `yaml:"readers"`
-	Backend BackendConfig `yaml:"backend"`
-	Pool    PoolConfig    `yaml:"pool"`
+	Writer         DBConfig      `yaml:"writer"`
+	Readers        []DBConfig    `yaml:"readers"`
+	Backend        BackendConfig `yaml:"backend"`
+	Pool           PoolConfig    `yaml:"pool"`
+	MaxConnections int           `yaml:"max_connections"` // per-database limit (0 = use default)
 }
 
 type MirrorConfig struct {

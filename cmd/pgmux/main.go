@@ -128,6 +128,12 @@ func run() error {
 			if d != nil {
 				d.Reset()
 			}
+		}, func() any {
+			ct := srv.ConnTracker()
+			if ct == nil {
+				return nil
+			}
+			return ct.Stats()
 		})
 		adminSrv.SetReloadFunc(func() error {
 			return reloadConfig(cfgPath, srv)

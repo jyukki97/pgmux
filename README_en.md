@@ -25,6 +25,7 @@ A lightweight PostgreSQL proxy written in Go. Sitting between your application a
 - **Audit Logging & Slow Query Tracker** -- Records structured audit logs for all queries or only slow queries. Sends alerts via Webhook (e.g., Slack) when thresholds are exceeded, with automatic deduplication of alerts for the same query.
 - **Query Mirroring** -- Asynchronously mirrors production queries to a Shadow DB for latency comparison. Supports per-pattern P50/P99 latency comparison, automatic performance regression detection, table filtering, and read_only/all modes. Validate the performance impact of DB migrations and index changes without affecting production traffic.
 - **Query Digest / Top-N Queries** -- Normalizes queries (replacing literals with `$N`) and aggregates per-pattern execution counts, average/P50/P99 latency. View the most frequently executed query patterns via `GET /admin/queries/top`, and reset statistics with `POST /admin/queries/reset`. A proxy-level equivalent of `pg_stat_statements`.
+- **Per-User / Per-Database Connection Limits** -- Limit the maximum number of connections per user and per database. Prevents a single user from monopolizing the pool in multi-tenant environments. Rejects with PostgreSQL standard error code (53300, `too_many_connections`). Limits can be hot-reloaded and monitored via `GET /admin/connections`.
 - **Multi-Database Routing** -- Proxy multiple PostgreSQL databases from a single proxy instance. Automatically routes to the correct DB group based on the client's `StartupMessage.database` field, maintaining independent Writer/Reader pools, balancers, and Circuit Breakers per database. Existing single-DB configurations remain backward compatible without changes.
 - **OpenTelemetry Distributed Tracing** -- Traces each stage as spans: query parsing, cache lookup, connection pool acquisition, and backend execution. Supports OTLP gRPC or stdout exporters. End-to-end tracing from application to DB is possible through context propagation via the Data API's `traceparent` header.
 - **Direct PostgreSQL Wire Protocol Implementation** -- Handles the PG protocol directly (MD5 & SCRAM-SHA-256 authentication), so any standard PG driver can connect without modification.
@@ -63,19 +64,19 @@ Measured with pgbench (PostgreSQL standard benchmark tool): Direct DB vs pgmux v
 
 | Target | c=1 | c=10 | c=50 | c=100 |
 |--------|-----|------|------|-------|
-| Direct | 2,964 | 18,665 | 35,970 | 36,893 |
-| **pgmux** | **2,430** | **14,295** | **21,617** | **20,804** |
-| PgBouncer | 2,445 | 15,873 | 28,417 | 28,492 |
+| Direct | 2,447 | 16,724 | 25,483 | 25,488 |
+| **pgmux** | **2,467** | **14,482** | **21,069** | **20,137** |
+| PgBouncer | 2,178 | 13,812 | 23,665 | 21,778 |
 
 **TPC-B (mixed read/write workload)**
 
 | Target | c=1 | c=10 | c=50 | c=100 |
 |--------|-----|------|------|-------|
-| Direct | 393 | 1,832 | 2,902 | 2,760 |
-| **pgmux** | **321** | **1,892** | **2,469** | **2,420** |
-| PgBouncer | 359 | 2,066 | 2,794 | 2,693 |
+| Direct | 413 | 2,282 | 3,306 | 3,156 |
+| **pgmux** | **337** | **1,906** | **2,606** | **2,578** |
+| PgBouncer | 370 | 2,070 | 2,757 | 2,745 |
 
-> **At TPC-B c=10, pgmux (1,892) outperforms Direct (1,832)** — connection pooling reduces PostgreSQL internal lock contention. At high-concurrency SELECT, PgBouncer benefits from its C single-threaded event loop (Go goroutine scheduling overhead), but pgmux offers caching, firewall, mirroring, Prepared Statement Multiplexing, and other features PgBouncer lacks.
+> **At c=1, pgmux (2,467) outperforms both Direct (2,447) and PgBouncer (2,178)** — connection pooling works with zero overhead. At high-concurrency SELECT, PgBouncer benefits from its C single-threaded event loop (Go goroutine scheduling overhead), but pgmux offers caching, firewall, mirroring, Prepared Statement Multiplexing, and other features PgBouncer lacks.
 >
 > Reproduce: `make bench-compare`
 
@@ -273,6 +274,7 @@ internal/
   proxy/backend.go                # Backend connection management (acquire, reset, fallback)
   proxy/lsn.go                    # LSN polling (Causal Consistency)
   proxy/helpers.go                # Utilities (sendError, parseSize, emitAuditEvent)
+  proxy/connlimit.go              # Per-User/Per-DB connection limits (ConnTracker)
   proxy/pgconn.go                 # PG authentication (MD5, SCRAM-SHA-256)
   proxy/synthesizer.go            # Prepared Statement to Simple Query synthesis (Multiplexing)
   proxy/cancel.go                 # CancelRequest protocol handling
@@ -321,6 +323,7 @@ deploy/helm/pgmux/             # Kubernetes Helm Chart
 | `/admin/mirror/stats` | GET | Query mirroring statistics (per-pattern P50/P99, regression detection) |
 | `/admin/queries/top` | GET | Query Digest Top-N (per-pattern execution count, avg/P50/P99 latency) |
 | `/admin/queries/reset` | POST | Reset Query Digest statistics |
+| `/admin/connections` | GET | Per-user/per-database active connections and limits |
 
 ## Metrics
 
@@ -342,6 +345,9 @@ When `metrics.enabled` is `true`, Prometheus metrics are available at the config
 - `pgmux_audit_webhook_sent_total` -- Audit Webhook send count
 - `pgmux_audit_webhook_errors_total` -- Audit Webhook failure count
 - `pgmux_digest_patterns` -- Current number of unique Query Digest patterns
+- `pgmux_connection_limit_rejected_total` -- Connections rejected due to per-user/per-database limits
+- `pgmux_active_connections_by_user` -- Current active connections per user
+- `pgmux_active_connections_by_database` -- Current active connections per database
 
 ## Data API (HTTP)
 

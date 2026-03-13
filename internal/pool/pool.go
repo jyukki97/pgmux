@@ -81,14 +81,28 @@ func New(cfg Config) (*Pool, error) {
 	return p, nil
 }
 
+// timerPool recycles time.Timer objects to avoid per-Acquire allocations.
+// At high concurrency (c=100, max_conn=20), many goroutines enter the slow wait
+// path; sync.Pool recycles timers across goroutines (pprof: 34% of allocs).
+var timerPool = sync.Pool{
+	New: func() any {
+		return time.NewTimer(time.Hour)
+	},
+}
+
 func (p *Pool) Acquire(ctx context.Context) (*Conn, error) {
-	// Lazy timer — created only when we actually need to wait.
-	// Reused across retries to avoid repeated time.NewTimer allocations
-	// (the previous recursive approach created a new timer per retry).
+	// Timer is lazily acquired from timerPool when we enter the slow wait path.
+	// sync.Pool recycles timers across goroutines, eliminating per-Acquire allocations.
 	var timer *time.Timer
 	defer func() {
 		if timer != nil {
-			timer.Stop()
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timerPool.Put(timer)
 		}
 	}()
 
@@ -138,27 +152,21 @@ func (p *Pool) Acquire(ctx context.Context) (*Conn, error) {
 		default:
 		}
 
-		// Slow path: wait with timer
-		if timer == nil {
-			timeout := p.cfg.ConnectionTimeout
-			if timeout <= 0 {
-				timeout = 5 * time.Second
-			}
-			timer = time.NewTimer(timeout)
-		} else {
-			// Drain channel before reset to prevent false fires
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			timeout := p.cfg.ConnectionTimeout
-			if timeout <= 0 {
-				timeout = 5 * time.Second
-			}
-			timer.Reset(timeout)
+		// Slow path: wait with pooled timer
+		timeout := p.cfg.ConnectionTimeout
+		if timeout <= 0 {
+			timeout = 5 * time.Second
 		}
+		if timer == nil {
+			timer = timerPool.Get().(*time.Timer)
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(timeout)
 
 		select {
 		case <-p.waitCh:

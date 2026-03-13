@@ -39,6 +39,11 @@ type Metrics struct {
 
 	// Query Digest
 	DigestPatterns prometheus.Gauge
+
+	// Connection limits
+	ConnLimitRejected *prometheus.CounterVec
+	ActiveConnsByUser *prometheus.GaugeVec
+	ActiveConnsByDB   *prometheus.GaugeVec
 }
 
 // New creates and registers all Prometheus metrics.
@@ -170,6 +175,28 @@ func New() *Metrics {
 				Help: "Current number of unique query patterns in the digest.",
 			},
 		),
+
+		ConnLimitRejected: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "pgmux_connection_limit_rejected_total",
+				Help: "Total number of connections rejected due to per-user or per-database limits.",
+			},
+			[]string{"user", "database"},
+		),
+		ActiveConnsByUser: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "pgmux_active_connections_by_user",
+				Help: "Current number of active client connections per user.",
+			},
+			[]string{"user"},
+		),
+		ActiveConnsByDB: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "pgmux_active_connections_by_database",
+				Help: "Current number of active client connections per database.",
+			},
+			[]string{"database"},
+		),
 	}
 
 	prometheus.MustRegister(
@@ -191,6 +218,9 @@ func New() *Metrics {
 		m.WebhookSent,
 		m.WebhookErrors,
 		m.DigestPatterns,
+		m.ConnLimitRejected,
+		m.ActiveConnsByUser,
+		m.ActiveConnsByDB,
 	)
 
 	return m

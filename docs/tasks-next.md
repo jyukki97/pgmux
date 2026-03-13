@@ -51,7 +51,7 @@ pgmux는 **캐싱, 방화벽, AST 파서, Audit, Data API, Query Mirroring, Mult
 | 기능 | 설명 | 우선순위 |
 |------|------|----------|
 | ~~**Multi-Database Routing**~~ | ~~단일 프록시 인스턴스에서 여러 데이터베이스를 동시 프록시. StartupMessage의 `database` 필드로 분기~~ | ✅ **기구현** |
-| **Per-User Connection Limits** | 사용자별/데이터베이스별 최대 커넥션 수 제한. `auth.users[].max_connections` | 중간 |
+| ~~**Per-User Connection Limits**~~ | ~~사용자별/데이터베이스별 최대 커넥션 수 제한. `auth.users[].max_connections`~~ | ✅ **기구현** |
 | **Per-User Rate Limiting** | 현재 전역 Rate Limit만 존재. 사용자별/IP별 차등 제한 (`rate_limit.per_user`) | 중간 |
 
 ---
@@ -108,7 +108,8 @@ Phase 24: Query Digest               ✅ 완료 — Top-N 쿼리 패턴 통계, 
 Phase 25: Grafana Dashboard          ✅ 완료 — JSON 대시보드 템플릿 + Helm ConfigMap + Sidecar 연동
 Phase 26: Benchmark Suite             ✅ 완료 — pgbench 기반 Direct/pgmux/PgBouncer 3자 비교
 Phase 27: Query Path Optimization    ✅ 완료 — SELECT-only 46%→83%, hot path 최적화
-Phase 28: Query Rewriting Rules      ← 무중단 마이그레이션 지원
-Phase 28: Multi-Tenancy              ← Per-User Limits
-Phase 29: 문서 사이트                 ← 오픈소스 생태계
+Phase 28: Per-User Connection Limits ✅ 완료 — Per-User/Per-DB 커넥션 제한, Admin API, Prometheus 메트릭
+Phase 29: Query Rewriting Rules      ← 무중단 마이그레이션 지원
+Phase 29: Multi-Tenancy (Rate Limit) ← Per-User Rate Limiting
+Phase 30: 문서 사이트                 ← 오픈소스 생태계
 ```

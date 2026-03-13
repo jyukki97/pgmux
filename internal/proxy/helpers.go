@@ -44,6 +44,23 @@ func (s *Server) sendError(conn net.Conn, msg string) {
 	_ = protocol.WriteMessage(conn, protocol.MsgErrorResponse, payload)
 }
 
+// sendFatalWithCode sends a FATAL ErrorResponse with SQLSTATE code.
+// Used for connection-level rejection (e.g., too_many_connections = 53300).
+func (s *Server) sendFatalWithCode(conn net.Conn, code, msg string) {
+	var payload []byte
+	payload = append(payload, 'S')
+	payload = append(payload, []byte("FATAL")...)
+	payload = append(payload, 0)
+	payload = append(payload, 'C')
+	payload = append(payload, []byte(code)...)
+	payload = append(payload, 0)
+	payload = append(payload, 'M')
+	payload = append(payload, []byte(msg)...)
+	payload = append(payload, 0)
+	payload = append(payload, 0) // terminator
+	_ = protocol.WriteMessage(conn, protocol.MsgErrorResponse, payload)
+}
+
 // cacheKey uses semantic or plain cache key based on config, mixed with dbName for multi-DB isolation.
 func (s *Server) cacheKey(query string, dbName string) uint64 {
 	var key uint64

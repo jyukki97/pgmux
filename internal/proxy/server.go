@@ -41,6 +41,7 @@ type Server struct {
 	wg           sync.WaitGroup
 	cancelMap    sync.Map         // cancelKeyPair → *cancelTarget
 	nextProxyPID atomic.Uint32
+	connTracker  *ConnTracker    // per-user/per-DB connection limits (nil if disabled)
 }
 
 func NewServer(cfg *config.Config) *Server {
@@ -177,6 +178,14 @@ func NewServer(cfg *config.Config) *Server {
 		slog.Info("query digest enabled",
 			"max_patterns", cfg.Digest.MaxPatterns,
 			"samples_per_pattern", cfg.Digest.SamplesPerPattern)
+	}
+
+	// Initialize connection limits tracker
+	if cfg.ConnectionLimits.Enabled {
+		s.connTracker = NewConnTracker(cfg)
+		slog.Info("connection limits enabled",
+			"default_per_user", cfg.ConnectionLimits.DefaultMaxConnectionsPerUser,
+			"default_per_db", cfg.ConnectionLimits.DefaultMaxConnectionsPerDB)
 	}
 
 	slog.Info("server initialized",
@@ -345,11 +354,37 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 		return
 	}
 
-	// 4. Generate proxy cancel key for this session
+	// 4. Check per-user and per-database connection limits
+	username := params["user"]
+	if s.connTracker != nil {
+		ok, reason := s.connTracker.TryAcquire(username, dbName)
+		if !ok {
+			if s.metrics != nil {
+				s.metrics.ConnLimitRejected.WithLabelValues(username, dbName).Inc()
+			}
+			slog.Warn("connection limit exceeded",
+				"user", username, "database", dbName, "reason", reason)
+			s.sendFatalWithCode(clientConn, "53300", reason)
+			return
+		}
+		if s.metrics != nil {
+			s.metrics.ActiveConnsByUser.WithLabelValues(username).Inc()
+			s.metrics.ActiveConnsByDB.WithLabelValues(dbName).Inc()
+		}
+		defer func() {
+			s.connTracker.Release(username, dbName)
+			if s.metrics != nil {
+				s.metrics.ActiveConnsByUser.WithLabelValues(username).Dec()
+				s.metrics.ActiveConnsByDB.WithLabelValues(dbName).Dec()
+			}
+		}()
+	}
+
+	// 5. Generate proxy cancel key for this session
 	ct := s.newCancelTarget()
 	defer s.removeCancelTarget(ct)
 
-	// 5. Authenticate client
+	// 6. Authenticate client
 	cfg := s.getConfig()
 	if cfg.Auth.Enabled {
 		// Front-end auth: proxy authenticates the client directly using MD5.
@@ -386,10 +421,10 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 
 	slog.Info("handshake complete", "remote", rawConn.RemoteAddr())
 
-	// 6. Create per-client session router
+	// 7. Create per-client session router
 	session := router.NewSession(cfg.Routing.ReadAfterWriteDelay, cfg.Routing.CausalConsistency, cfg.Routing.ASTParser)
 
-	// 7. Relay queries with transaction-level pooling
+	// 8. Relay queries with transaction-level pooling
 	s.relayQueries(ctx, clientConn, session, ct, dbg)
 }
 
@@ -431,6 +466,17 @@ func (s *Server) Reload(newCfg *config.Config) error {
 		s.rateLimitPtr.Store(nil)
 	}
 
+	// Update connection limits
+	if newCfg.ConnectionLimits.Enabled {
+		if s.connTracker != nil {
+			s.connTracker.UpdateLimits(newCfg)
+		} else {
+			s.connTracker = NewConnTracker(newCfg)
+		}
+	} else {
+		s.connTracker = nil
+	}
+
 	// Update default DB
 	s.defaultDB = newCfg.DefaultDatabaseName()
 
@@ -439,7 +485,8 @@ func (s *Server) Reload(newCfg *config.Config) error {
 
 	slog.Info("config reloaded",
 		"databases", len(newDBs),
-		"rate_limit", newCfg.RateLimit.Enabled)
+		"rate_limit", newCfg.RateLimit.Enabled,
+		"connection_limits", newCfg.ConnectionLimits.Enabled)
 
 	return nil
 }
@@ -523,6 +570,11 @@ func (s *Server) DefaultDBName() string {
 	name := s.defaultDB
 	s.mu.RUnlock()
 	return name
+}
+
+// ConnTracker returns the connection limit tracker (may be nil if disabled).
+func (s *Server) ConnTracker() *ConnTracker {
+	return s.connTracker
 }
 
 // --- Backward-compatible getters (delegate to default DB group) ---

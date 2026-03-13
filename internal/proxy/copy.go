@@ -6,9 +6,19 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 
 	"github.com/jyukki97/pgmux/internal/protocol"
 )
+
+// wireBufPool recycles wire buffers used by relayUntilReady to avoid
+// per-call allocation (pprof: 11% of allocs were wire buffer growth).
+var wireBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 1024)
+		return &b
+	},
+}
 
 // forwardAndRelay forwards a message to backend and relays the response to client.
 func (s *Server) forwardAndRelay(clientConn, backendConn net.Conn, msg *protocol.Message) error {
@@ -25,7 +35,12 @@ func (s *Server) forwardAndRelay(clientConn, backendConn net.Conn, msg *protocol
 // CopyBothResponse ('W'), it switches to bidirectional passthrough.
 func (s *Server) relayUntilReady(clientConn, backendConn net.Conn) error {
 	var hdr [5]byte
-	var wire []byte // reusable wire buffer — grows as needed, avoids per-message alloc
+	bp := wireBufPool.Get().(*[]byte)
+	wire := (*bp)[:0]
+	defer func() {
+		*bp = wire
+		wireBufPool.Put(bp)
+	}()
 	for {
 		if _, err := io.ReadFull(backendConn, hdr[:]); err != nil {
 			return fmt.Errorf("read backend response header: %w", err)

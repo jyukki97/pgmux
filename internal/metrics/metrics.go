@@ -43,6 +43,9 @@ type Metrics struct {
 	// Query timeout
 	QueryTimeouts *prometheus.CounterVec
 
+	// Client idle timeout
+	ClientIdleTimeouts prometheus.Counter
+
 	// Connection limits
 	ConnLimitRejected *prometheus.CounterVec
 	ActiveConnsByUser *prometheus.GaugeVec
@@ -187,6 +190,13 @@ func New() *Metrics {
 			[]string{"target"},
 		),
 
+		ClientIdleTimeouts: prometheus.NewCounter(
+			prometheus.CounterOpts{
+				Name: "pgmux_client_idle_timeout_total",
+				Help: "Total number of client connections closed due to idle timeout.",
+			},
+		),
+
 		ConnLimitRejected: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "pgmux_connection_limit_rejected_total",
@@ -230,6 +240,7 @@ func New() *Metrics {
 		m.WebhookErrors,
 		m.DigestPatterns,
 		m.QueryTimeouts,
+		m.ClientIdleTimeouts,
 		m.ConnLimitRejected,
 		m.ActiveConnsByUser,
 		m.ActiveConnsByDB,

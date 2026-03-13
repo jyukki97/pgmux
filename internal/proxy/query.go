@@ -62,10 +62,27 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 		default:
 		}
 
+		// Set idle timeout deadline on client read.
+		// Only apply when not in a transaction (boundWriter == nil).
+		if idleTimeout := s.getConfig().Proxy.ClientIdleTimeout; idleTimeout > 0 && boundWriter == nil {
+			_ = clientConn.SetReadDeadline(time.Now().Add(idleTimeout))
+		} else {
+			_ = clientConn.SetReadDeadline(time.Time{}) // clear deadline
+		}
+
 		var msg *protocol.Message
 		var err error
 		msg, readBuf, err = protocol.ReadMessageReuse(clientConn, readBuf)
 		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				slog.Info("client idle timeout", "remote", clientConn.RemoteAddr(),
+					"timeout", s.getConfig().Proxy.ClientIdleTimeout)
+				if s.metrics != nil {
+					s.metrics.ClientIdleTimeouts.Inc()
+				}
+				s.sendFatalWithCode(clientConn, "57P01", "terminating connection due to idle timeout")
+				return
+			}
 			slog.Debug("client disconnected", "error", err)
 			return
 		}

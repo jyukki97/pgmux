@@ -13,6 +13,7 @@ fullnameOverride: ""
 config:
   proxy:
     listen: "0.0.0.0:5432"
+    # client_idle_timeout: "5m"       # 0 = disabled (no idle timeout)
   writer:
     host: "primary.db.internal"
     port: 5432

@@ -63,22 +63,6 @@ func (s *Server) sendFatalWithCode(conn net.Conn, code, msg string) {
 	_ = protocol.WriteMessage(conn, protocol.MsgErrorResponse, payload)
 }
 
-// sendErrorWithCode sends an ErrorResponse with a SQLSTATE code.
-func (s *Server) sendErrorWithCode(conn net.Conn, code, msg string) {
-	var payload []byte
-	payload = append(payload, 'S')
-	payload = append(payload, []byte("ERROR")...)
-	payload = append(payload, 0)
-	payload = append(payload, 'C')
-	payload = append(payload, []byte(code)...)
-	payload = append(payload, 0)
-	payload = append(payload, 'M')
-	payload = append(payload, []byte(msg)...)
-	payload = append(payload, 0)
-	payload = append(payload, 0) // terminator
-	_ = protocol.WriteMessage(conn, protocol.MsgErrorResponse, payload)
-}
-
 // resolveQueryTimeout returns the effective query timeout for a query.
 // Per-query hint overrides the global config. Returns 0 if no timeout applies.
 func (s *Server) resolveQueryTimeout(query string, cfg *config.Config) time.Duration {

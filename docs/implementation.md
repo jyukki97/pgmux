@@ -899,6 +899,7 @@ type patternStats struct {
 proxy:
   listen: "0.0.0.0:5432"
   shutdown_timeout: 30s
+  client_idle_timeout: 0             # 유휴 클라이언트 타임아웃 (0 = 무제한, 예: 5m)
 
 writer:
   host: "primary.db.internal"

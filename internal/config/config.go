@@ -127,8 +127,9 @@ type BackendConfig struct {
 }
 
 type ProxyConfig struct {
-	Listen          string        `yaml:"listen"`
-	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
+	Listen            string        `yaml:"listen"`
+	ShutdownTimeout   time.Duration `yaml:"shutdown_timeout"`
+	ClientIdleTimeout time.Duration `yaml:"client_idle_timeout"` // 0 = disabled (no idle timeout)
 }
 
 type DBConfig struct {

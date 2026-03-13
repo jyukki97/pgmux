@@ -23,7 +23,10 @@ import (
 // handleExtendedRead sends buffered Extended Query messages to a reader, falling back to writer.
 func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, buf []*protocol.Message, syncMsg *protocol.Message, readerAddr string, ct *cancelTarget, dbg *DatabaseGroup, queryTimeout ...time.Duration) error {
 	// Cache lookup — mirror the simple-query read path (query_read.go)
-	if s.queryCache != nil && len(buf) > 0 && buf[0].Type == protocol.MsgParse {
+	// Skip cache entirely for parameterized queries to avoid returning
+	// wrong results when bind parameters differ (issue #207).
+	cacheable := !hasParameterPlaceholders(buf)
+	if cacheable && s.queryCache != nil && len(buf) > 0 && buf[0].Type == protocol.MsgParse {
 		_, query := protocol.ParseParseMessage(buf[0].Payload)
 		key := cache.WithNamespace(s.cacheKey(query, dbg.name), cache.NSExtended)
 		if cached := s.queryCache.Get(key); cached != nil {
@@ -134,8 +137,9 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, bu
 			dbg.balancer.MarkUnhealthy(readerAddr)
 			return fmt.Errorf("relay reader extended response: %w", err)
 		}
-		// Cache the response keyed by the batch (first Parse query), skip if oversize
-		if collected != nil && len(buf) > 0 && buf[0].Type == protocol.MsgParse {
+		// Cache the response keyed by the batch (first Parse query), skip if oversize.
+		// Skip parameterized queries — bind params are not part of the key (#207).
+		if cacheable && collected != nil && len(buf) > 0 && buf[0].Type == protocol.MsgParse {
 			_, query := protocol.ParseParseMessage(buf[0].Payload)
 			key := cache.WithNamespace(s.cacheKey(query, dbg.name), cache.NSExtended)
 			tables := s.extractReadQueryTables(query)
@@ -298,6 +302,23 @@ func (s *Server) handleSynthesizedRead(ctx context.Context, clientConn net.Conn,
 	ct.clear()
 	rPool.Release(rConn)
 	return nil
+}
+
+// hasParameterPlaceholders reports whether the Parse message in buf contains
+// $N parameter placeholders. Queries with placeholders must not be cached
+// because the cache key does not include bind parameter values (#207).
+func hasParameterPlaceholders(buf []*protocol.Message) bool {
+	for _, m := range buf {
+		if m.Type == protocol.MsgParse {
+			_, query := protocol.ParseParseMessage(m.Payload)
+			for i := 0; i < len(query)-1; i++ {
+				if query[i] == '$' && query[i+1] >= '1' && query[i+1] <= '9' {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // handleMultiplexDescribe handles Describe messages in multiplex mode.

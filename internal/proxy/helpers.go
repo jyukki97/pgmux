@@ -8,6 +8,7 @@ import (
 
 	"github.com/jyukki97/pgmux/internal/audit"
 	"github.com/jyukki97/pgmux/internal/cache"
+	"github.com/jyukki97/pgmux/internal/digest"
 	"github.com/jyukki97/pgmux/internal/mirror"
 	"github.com/jyukki97/pgmux/internal/protocol"
 	"github.com/jyukki97/pgmux/internal/router"
@@ -174,6 +175,22 @@ func (s *Server) AuditLogger() *audit.Logger {
 // QueryMirror returns the server's query mirror (may be nil if disabled).
 func (s *Server) QueryMirror() *mirror.Mirror {
 	return s.mirror
+}
+
+// QueryDigest returns the server's query digest (may be nil if disabled).
+func (s *Server) QueryDigest() *digest.Digest {
+	return s.queryDigest
+}
+
+// recordDigest records a query execution in the digest collector.
+func (s *Server) recordDigest(query string, elapsed time.Duration) {
+	if s.queryDigest == nil {
+		return
+	}
+	s.queryDigest.Record(query, elapsed)
+	if s.metrics != nil {
+		s.metrics.DigestPatterns.Set(float64(s.queryDigest.PatternCount()))
+	}
 }
 
 // mirrorQuery sends a query to the mirror target if configured and matching filters.

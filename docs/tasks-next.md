@@ -65,7 +65,7 @@ pgmux는 **캐싱, 방화벽, AST 파서, Audit, Data API, Query Mirroring** 등
 | 기능 | 설명 | 우선순위 |
 |------|------|----------|
 | **Grafana Dashboard 템플릿** | `deploy/grafana/` 디렉토리에 JSON 대시보드 제공. 커넥션 풀, 캐시 히트율, 쿼리 레이턴시, 방화벽 차단 등 한눈에 확인 | **높음** |
-| **Query Digest / Top-N Queries** | 쿼리를 정규화(`$N` 치환)하여 패턴별 실행 횟수, 평균/P99 레이턴시 집계. `GET /admin/queries/top` | 중간 |
+| ~~**Query Digest / Top-N Queries**~~ | ~~쿼리를 정규화(`$N` 치환)하여 패턴별 실행 횟수, 평균/P99 레이턴시 집계. `GET /admin/queries/top`~~ | ✅ **기구현** |
 | **Connection 추적 대시보드** | `GET /admin/connections` — 현재 활성 세션 목록 (클라이언트 IP, 실행 중 쿼리, 지속 시간). `pg_stat_activity`의 프록시 버전 | 중간 |
 | **Structured JSON Logging** | 현재 `slog` 사용 중이지만 출력 포맷 설정 추가 (`log.format: json|text`). 로그 수집기(Loki, ELK)와 연동 용이 | 낮음 |
 
@@ -108,9 +108,10 @@ pgmux는 **캐싱, 방화벽, AST 파서, Audit, Data API, Query Mirroring** 등
 ### 추천 실행 로드맵
 
 ```
-Phase 20: OSS Release Ready          ← GitHub Actions CI + Docker Image + 벤치마크
-Phase 22: Multi-Database Routing     ← 단일 인스턴스 다중 DB (가장 요청 많을 기능)
-Phase 23: Grafana + Query Digest     ← 관측성 강화
+Phase 20: OSS Release Ready          ✅ 완료 — GitHub Actions CI/CD + Docker Image (GHCR)
+Phase 22: Multi-Database Routing     ✅ 완료 — DatabaseGroup 추상화, per-DB 풀/밸런서/CB
+Phase 23: Query Digest               ✅ 완료 — Top-N 쿼리 패턴 통계, Admin API, Prometheus 메트릭
+Phase 24: Grafana Dashboard          ← 관측성 강화
 Phase 24: Auto Failover + DNS SD     ← 고가용성
 Phase 25: pgmuxctl CLI               ← 운영자 UX
 Phase 26: Query Rewriting Rules      ← 무중단 마이그레이션 지원

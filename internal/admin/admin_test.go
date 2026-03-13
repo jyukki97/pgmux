@@ -55,7 +55,7 @@ func testServer() (*Server, *cache.Cache) {
 		func() *pool.Pool { return nil },
 		func() map[string]*pool.Pool { return readerPools },
 		func() *audit.Logger { return nil },
-		nil,
+		nil, nil, nil,
 	)
 	return srv, c
 }
@@ -300,7 +300,7 @@ func TestHandleHealth_ParallelTiming(t *testing.T) {
 		func() *pool.Pool { return nil },
 		func() map[string]*pool.Pool { return nil },
 		func() *audit.Logger { return nil },
-		nil,
+		nil, nil, nil,
 	)
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/health", nil)
@@ -367,7 +367,7 @@ func TestHandleHealth_LiveBackends(t *testing.T) {
 		func() *pool.Pool { return nil },
 		func() map[string]*pool.Pool { return nil },
 		func() *audit.Logger { return nil },
-		nil,
+		nil, nil, nil,
 	)
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/health", nil)
@@ -428,7 +428,7 @@ func TestHandleHealth_NoReaders(t *testing.T) {
 		func() *pool.Pool { return nil },
 		func() map[string]*pool.Pool { return nil },
 		func() *audit.Logger { return nil },
-		nil,
+		nil, nil, nil,
 	)
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/health", nil)

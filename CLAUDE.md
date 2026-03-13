@@ -79,6 +79,7 @@ internal/
   mirror/
     mirror.go                  # Query Mirroring (Shadow DB 비동기 전송, 워커 풀)
     stats.go                   # 패턴별 P50/P99 레이턴시 비교, 순환 버퍼, 회귀 감지
+  digest/digest.go             # Query Digest (Top-N 쿼리 패턴별 실행 통계)
   dataapi/handler.go           # Serverless Data API (HTTP → PG)
   admin/admin.go               # Admin HTTP API
 tests/

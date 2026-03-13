@@ -207,6 +207,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				s.metrics.QueryDuration.WithLabelValues(target).Observe(elapsed.Seconds())
 			}
 			s.emitAuditEvent(clientConn, query, target, elapsed, false)
+			s.recordDigest(query, elapsed)
 			s.mirrorQuery(msg, query, qtype, elapsed, parsedQuery)
 			querySpan.End()
 			continue
@@ -472,6 +473,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				s.metrics.QueryDuration.WithLabelValues(target).Observe(elapsed.Seconds())
 			}
 			s.emitAuditEvent(clientConn, "(extended query)", target, elapsed, false)
+			s.recordDigest("(extended query)", elapsed)
 			extSpan.End()
 
 			// Reset batch state

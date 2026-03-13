@@ -103,6 +103,17 @@ func run() error {
 				"dropped": m.Dropped(),
 				"errors":  m.Errors(),
 			}
+		}, func() any {
+			d := srv.QueryDigest()
+			if d == nil {
+				return nil
+			}
+			return d.TopN(100)
+		}, func() {
+			d := srv.QueryDigest()
+			if d != nil {
+				d.Reset()
+			}
 		})
 		adminSrv.SetReloadFunc(func() error {
 			return reloadConfig(cfgPath, srv)

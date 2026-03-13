@@ -36,6 +36,9 @@ type Metrics struct {
 	SlowQueries    *prometheus.CounterVec
 	WebhookSent    prometheus.Counter
 	WebhookErrors  prometheus.Counter
+
+	// Query Digest
+	DigestPatterns prometheus.Gauge
 }
 
 // New creates and registers all Prometheus metrics.
@@ -160,6 +163,13 @@ func New() *Metrics {
 				Help: "Total number of audit webhook send errors.",
 			},
 		),
+
+		DigestPatterns: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "pgmux_digest_patterns",
+				Help: "Current number of unique query patterns in the digest.",
+			},
+		),
 	}
 
 	prometheus.MustRegister(
@@ -180,6 +190,7 @@ func New() *Metrics {
 		m.SlowQueries,
 		m.WebhookSent,
 		m.WebhookErrors,
+		m.DigestPatterns,
 	)
 
 	return m

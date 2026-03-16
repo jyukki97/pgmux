@@ -50,6 +50,10 @@ type Metrics struct {
 	ConnLimitRejected *prometheus.CounterVec
 	ActiveConnsByUser *prometheus.GaugeVec
 	ActiveConnsByDB   *prometheus.GaugeVec
+
+	// Read-only mode
+	ReadOnlyMode     prometheus.Gauge
+	ReadOnlyRejected prometheus.Counter
 }
 
 // New creates and registers all Prometheus metrics.
@@ -218,6 +222,19 @@ func New() *Metrics {
 			},
 			[]string{"database"},
 		),
+
+		ReadOnlyMode: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "pgmux_readonly_mode",
+				Help: "Whether the proxy is in read-only mode (1 = active, 0 = inactive).",
+			},
+		),
+		ReadOnlyRejected: prometheus.NewCounter(
+			prometheus.CounterOpts{
+				Name: "pgmux_readonly_rejected_total",
+				Help: "Total number of write queries rejected due to read-only mode.",
+			},
+		),
 	}
 
 	prometheus.MustRegister(
@@ -244,6 +261,8 @@ func New() *Metrics {
 		m.ConnLimitRejected,
 		m.ActiveConnsByUser,
 		m.ActiveConnsByDB,
+		m.ReadOnlyMode,
+		m.ReadOnlyRejected,
 	)
 
 	return m

@@ -16,7 +16,7 @@
 | **Admin API Auth / RBAC** | `/admin/config`, `/admin/reload`, `/admin/cache/flush` 등 관리 엔드포인트 보호. API Key 또는 Basic Auth, 읽기/변경 권한 분리, 선택적 IP allowlist 또는 mTLS 지원 | 매우 높음 |
 | ~~Health Check Endpoint (LB용)~~ | ~~`/healthz` (liveness), `/readyz` (readiness) 분리. K8s probe, LB drain, maintenance 연동용 경량 엔드포인트. `/admin/health`와 역할 분리~~ | ~~완료 (#192)~~ |
 | **Online Maintenance Mode** | `POST /admin/maintenance` — 신규 쿼리 거부 + 진행 중 쿼리 drain 대기 + `503 Service Unavailable` 반환. 배포, 마이그레이션, 패치 시 안전한 트래픽 차단 | 높음 |
-| **Read-Only Mode** | `POST /admin/readonly` — 모든 쓰기 쿼리를 프록시에서 즉시 거부. Writer 장애, 긴급 점검, 데이터 보호 상황에서 읽기 서비스 유지 | 높음 |
+| ~~Read-Only Mode~~ | ~~`POST /admin/readonly` — 모든 쓰기 쿼리를 프록시에서 즉시 거부. Writer 장애, 긴급 점검, 데이터 보호 상황에서 읽기 서비스 유지~~ | ~~완료 (#225)~~ |
 | **Session Compatibility Guard / Session Pinning** | Transaction pooling 환경에서 `LISTEN/UNLISTEN`, 세션 단위 `SET`, temp object, cursor 등 세션 의존 기능을 감지. 안전하게 session pinning 하거나 명시적으로 차단/메트릭 노출 | 높음 |
 | **SQL Redaction / Safe Observability** | Audit log, tracing, admin 응답, webhook에서 리터럴/민감정보 마스킹. raw SQL과 normalized SQL 노출 정책 분리 | 높음 |
 

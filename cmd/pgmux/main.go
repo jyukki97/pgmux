@@ -138,6 +138,7 @@ func run() error {
 		adminSrv.SetReloadFunc(func() error {
 			return reloadConfig(cfgPath, srv)
 		})
+		adminSrv.SetMaintenanceFns(srv.MaintenanceState, srv.SetMaintenance)
 		adminSrv.SetReadOnlyFns(srv.ReadOnlyState, srv.SetReadOnly)
 		adminHTTP := adminSrv.HTTPServer()
 

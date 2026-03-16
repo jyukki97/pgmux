@@ -39,11 +39,13 @@ type Server struct {
 	mirror       *mirror.Mirror
 	queryDigest  *digest.Digest
 	wg           sync.WaitGroup
-	cancelMap    sync.Map         // cancelKeyPair → *cancelTarget
-	nextProxyPID atomic.Uint32
-	connTracker  *ConnTracker    // per-user/per-DB connection limits (nil if disabled)
-	readOnlyMode atomic.Bool
-	readOnlyAt   atomic.Int64    // unix timestamp when read-only mode was entered
+	cancelMap       sync.Map         // cancelKeyPair → *cancelTarget
+	nextProxyPID    atomic.Uint32
+	connTracker     *ConnTracker    // per-user/per-DB connection limits (nil if disabled)
+	maintenanceMode atomic.Bool
+	maintenanceAt   atomic.Int64    // unix nano timestamp when maintenance was entered
+	readOnlyMode    atomic.Bool
+	readOnlyAt      atomic.Int64    // unix timestamp when read-only mode was entered
 }
 
 func NewServer(cfg *config.Config) *Server {
@@ -345,6 +347,16 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 	_, _, params := protocol.ParseStartupParams(startup.Payload)
 	slog.Info("client startup", "user", params["user"], "database", params["database"])
 
+	// Reject new connections during maintenance mode
+	if s.InMaintenance() {
+		if s.metrics != nil {
+			s.metrics.MaintenanceRejectedConn.Inc()
+		}
+		slog.Info("connection rejected: maintenance mode", "remote", clientConn.RemoteAddr())
+		s.sendFatalWithCode(clientConn, "57P01", "pgmux is in maintenance mode")
+		return
+	}
+
 	// 3. Resolve database group
 	dbName := params["database"]
 	if dbName == "" {
@@ -577,6 +589,40 @@ func (s *Server) DefaultDBName() string {
 // ConnTracker returns the connection limit tracker (may be nil if disabled).
 func (s *Server) ConnTracker() *ConnTracker {
 	return s.connTracker
+}
+
+// SetMaintenance enables or disables maintenance mode.
+func (s *Server) SetMaintenance(enabled bool) {
+	if enabled {
+		s.maintenanceMode.Store(true)
+		s.maintenanceAt.Store(time.Now().UnixNano())
+		if s.metrics != nil {
+			s.metrics.MaintenanceMode.Set(1)
+		}
+		slog.Info("maintenance mode enabled")
+	} else {
+		s.maintenanceMode.Store(false)
+		s.maintenanceAt.Store(0)
+		if s.metrics != nil {
+			s.metrics.MaintenanceMode.Set(0)
+		}
+		slog.Info("maintenance mode disabled")
+	}
+}
+
+// InMaintenance returns true if maintenance mode is active.
+func (s *Server) InMaintenance() bool {
+	return s.maintenanceMode.Load()
+}
+
+// MaintenanceState returns whether maintenance mode is active and when it was entered.
+func (s *Server) MaintenanceState() (bool, time.Time) {
+	enabled := s.maintenanceMode.Load()
+	if !enabled {
+		return false, time.Time{}
+	}
+	ns := s.maintenanceAt.Load()
+	return true, time.Unix(0, ns)
 }
 
 // --- Backward-compatible getters (delegate to default DB group) ---

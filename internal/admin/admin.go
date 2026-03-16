@@ -18,20 +18,22 @@ import (
 
 // Server is the Admin API HTTP server.
 type Server struct {
-	cfgFn           func() *config.Config
-	cacheFn         func() *cache.Cache
-	invalidatorFn   func() *cache.Invalidator
-	dbGroupsFn      func() map[string]*proxy.DatabaseGroup
-	defaultDBName   string
-	auditLoggerFn   func() *audit.Logger
-	mirrorStatsFn   func() any
-	digestStatsFn   func() any
-	digestResetFn   func()
-	connStatsFn     func() any
-	reloadFunc      func() error
-	readOnlyGetFn   func() (bool, time.Time)
-	readOnlySetFn   func(bool)
-	mu              sync.RWMutex
+	cfgFn              func() *config.Config
+	cacheFn            func() *cache.Cache
+	invalidatorFn      func() *cache.Invalidator
+	dbGroupsFn         func() map[string]*proxy.DatabaseGroup
+	defaultDBName      string
+	auditLoggerFn      func() *audit.Logger
+	mirrorStatsFn      func() any
+	digestStatsFn      func() any
+	digestResetFn      func()
+	connStatsFn        func() any
+	reloadFunc         func() error
+	maintenanceGetFn   func() (bool, time.Time)
+	maintenanceSetFn   func(bool)
+	readOnlyGetFn      func() (bool, time.Time)
+	readOnlySetFn      func(bool)
+	mu                 sync.RWMutex
 }
 
 // SetReloadFunc sets the function to call when reload is requested.
@@ -39,6 +41,14 @@ func (s *Server) SetReloadFunc(fn func() error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.reloadFunc = fn
+}
+
+// SetMaintenanceFns sets the maintenance mode getter and setter functions.
+func (s *Server) SetMaintenanceFns(getFn func() (bool, time.Time), setFn func(bool)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.maintenanceGetFn = getFn
+	s.maintenanceSetFn = setFn
 }
 
 // SetReadOnlyFns sets the getter and setter functions for read-only mode.
@@ -84,6 +94,7 @@ func (s *Server) HTTPServer() *http.Server {
 	mux.HandleFunc("/admin/queries/top", s.withAuth(s.handleQueryDigest, false))
 	mux.HandleFunc("/admin/queries/reset", s.withAuth(s.handleQueryDigestReset, true))
 	mux.HandleFunc("/admin/connections", s.withAuth(s.handleConnections, false))
+	mux.HandleFunc("/admin/maintenance", s.withAuth(s.handleMaintenance, false))
 	mux.HandleFunc("/admin/readonly", s.withAuth(s.handleReadOnly, false))
 	return &http.Server{Handler: mux}
 }
@@ -233,11 +244,28 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleReadyz is a readiness probe. Returns 200 if all Writer backends are reachable,
-// 503 otherwise. No authentication required — intended for LB / K8s readinessProbe.
+// 503 otherwise. Also returns 503 when maintenance mode is active.
+// No authentication required — intended for LB / K8s readinessProbe.
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
+	}
+
+	// Check maintenance mode
+	s.mu.RLock()
+	getFn := s.maintenanceGetFn
+	s.mu.RUnlock()
+	if getFn != nil {
+		if enabled, _ := getFn(); enabled {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"status": "not_ready",
+				"reason": "maintenance mode active",
+			})
+			return
+		}
 	}
 
 	groups := s.dbGroupsFn()
@@ -654,6 +682,93 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, stats)
+}
+
+// handleMaintenance handles GET/POST/DELETE /admin/maintenance.
+// GET: returns current status (viewer role).
+// POST: enters maintenance mode (admin role).
+// DELETE: exits maintenance mode (admin role).
+func (s *Server) handleMaintenance(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	getFn := s.maintenanceGetFn
+	setFn := s.maintenanceSetFn
+	s.mu.RUnlock()
+
+	if getFn == nil || setFn == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "maintenance control not configured")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		enabled, enteredAt := getFn()
+		resp := map[string]any{"enabled": enabled}
+		if enabled {
+			resp["entered_at"] = enteredAt.Format(time.RFC3339)
+		}
+		writeJSON(w, resp)
+
+	case http.MethodPost:
+		// Require admin role for mutating operation
+		cfg := s.cfgFn()
+		if cfg.Admin.Auth.Enabled {
+			token := extractBearerToken(r)
+			role := ""
+			for _, k := range cfg.Admin.Auth.APIKeys {
+				if k.Key == token {
+					role = k.Role
+					break
+				}
+			}
+			if role != "admin" {
+				writeJSONError(w, http.StatusForbidden, "admin role required")
+				return
+			}
+		}
+
+		enabled, _ := getFn()
+		if enabled {
+			writeJSON(w, map[string]string{"status": "already in maintenance mode"})
+			return
+		}
+		setFn(true)
+		_, enteredAt := getFn()
+		slog.Info("admin: maintenance mode entered")
+		writeJSON(w, map[string]any{
+			"status":     "maintenance_entered",
+			"entered_at": enteredAt.Format(time.RFC3339),
+		})
+
+	case http.MethodDelete:
+		// Require admin role for mutating operation
+		cfg := s.cfgFn()
+		if cfg.Admin.Auth.Enabled {
+			token := extractBearerToken(r)
+			role := ""
+			for _, k := range cfg.Admin.Auth.APIKeys {
+				if k.Key == token {
+					role = k.Role
+					break
+				}
+			}
+			if role != "admin" {
+				writeJSONError(w, http.StatusForbidden, "admin role required")
+				return
+			}
+		}
+
+		enabled, _ := getFn()
+		if !enabled {
+			writeJSON(w, map[string]string{"status": "not in maintenance mode"})
+			return
+		}
+		setFn(false)
+		slog.Info("admin: maintenance mode exited")
+		writeJSON(w, map[string]string{"status": "maintenance_exited"})
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 // handleReadOnly manages the read-only mode.

@@ -1186,6 +1186,301 @@ func TestIsIPAllowed(t *testing.T) {
 	}
 }
 
+// --- Maintenance Mode Tests ---
+
+func TestHandleMaintenance_GetStatus_Disabled(t *testing.T) {
+	srv, _ := testServer()
+	enabled := false
+	srv.SetMaintenanceFns(
+		func() (bool, time.Time) { return enabled, time.Time{} },
+		func(b bool) { enabled = b },
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/maintenance", nil)
+	w := httptest.NewRecorder()
+	srv.handleMaintenance(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["enabled"] != false {
+		t.Errorf("enabled = %v, want false", resp["enabled"])
+	}
+	if _, ok := resp["entered_at"]; ok {
+		t.Error("entered_at should not be present when disabled")
+	}
+}
+
+func TestHandleMaintenance_EnterAndExit(t *testing.T) {
+	srv, _ := testServer()
+	enabled := false
+	enteredAt := time.Time{}
+	srv.SetMaintenanceFns(
+		func() (bool, time.Time) { return enabled, enteredAt },
+		func(b bool) {
+			enabled = b
+			if b {
+				enteredAt = time.Now()
+			} else {
+				enteredAt = time.Time{}
+			}
+		},
+	)
+
+	// Enter maintenance mode
+	req := httptest.NewRequest(http.MethodPost, "/admin/maintenance", nil)
+	w := httptest.NewRecorder()
+	srv.handleMaintenance(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("POST status = %d, want 200", w.Code)
+	}
+
+	var enterResp map[string]any
+	json.NewDecoder(w.Body).Decode(&enterResp)
+	if enterResp["status"] != "maintenance_entered" {
+		t.Errorf("status = %q, want maintenance_entered", enterResp["status"])
+	}
+	if _, ok := enterResp["entered_at"]; !ok {
+		t.Error("expected entered_at in response")
+	}
+
+	if !enabled {
+		t.Error("expected maintenance mode to be enabled")
+	}
+
+	// Verify GET returns enabled
+	req2 := httptest.NewRequest(http.MethodGet, "/admin/maintenance", nil)
+	w2 := httptest.NewRecorder()
+	srv.handleMaintenance(w2, req2)
+
+	var getResp map[string]any
+	json.NewDecoder(w2.Body).Decode(&getResp)
+	if getResp["enabled"] != true {
+		t.Errorf("enabled = %v, want true", getResp["enabled"])
+	}
+
+	// Exit maintenance mode
+	req3 := httptest.NewRequest(http.MethodDelete, "/admin/maintenance", nil)
+	w3 := httptest.NewRecorder()
+	srv.handleMaintenance(w3, req3)
+
+	if w3.Code != http.StatusOK {
+		t.Errorf("DELETE status = %d, want 200", w3.Code)
+	}
+
+	var exitResp map[string]string
+	json.NewDecoder(w3.Body).Decode(&exitResp)
+	if exitResp["status"] != "maintenance_exited" {
+		t.Errorf("status = %q, want maintenance_exited", exitResp["status"])
+	}
+
+	if enabled {
+		t.Error("expected maintenance mode to be disabled")
+	}
+}
+
+func TestHandleMaintenance_AlreadyInMaintenance(t *testing.T) {
+	srv, _ := testServer()
+	enabled := true
+	srv.SetMaintenanceFns(
+		func() (bool, time.Time) { return enabled, time.Now() },
+		func(b bool) { enabled = b },
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/maintenance", nil)
+	w := httptest.NewRecorder()
+	srv.handleMaintenance(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+
+	var resp map[string]string
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "already in maintenance mode" {
+		t.Errorf("status = %q, want 'already in maintenance mode'", resp["status"])
+	}
+}
+
+func TestHandleMaintenance_NotInMaintenance(t *testing.T) {
+	srv, _ := testServer()
+	enabled := false
+	srv.SetMaintenanceFns(
+		func() (bool, time.Time) { return enabled, time.Time{} },
+		func(b bool) { enabled = b },
+	)
+
+	req := httptest.NewRequest(http.MethodDelete, "/admin/maintenance", nil)
+	w := httptest.NewRecorder()
+	srv.handleMaintenance(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+
+	var resp map[string]string
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "not in maintenance mode" {
+		t.Errorf("status = %q, want 'not in maintenance mode'", resp["status"])
+	}
+}
+
+func TestHandleMaintenance_MethodNotAllowed(t *testing.T) {
+	srv, _ := testServer()
+	srv.SetMaintenanceFns(
+		func() (bool, time.Time) { return false, time.Time{} },
+		func(b bool) {},
+	)
+
+	req := httptest.NewRequest(http.MethodPut, "/admin/maintenance", nil)
+	w := httptest.NewRecorder()
+	srv.handleMaintenance(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", w.Code)
+	}
+}
+
+func TestHandleMaintenance_NotConfigured(t *testing.T) {
+	srv, _ := testServer()
+	// No maintenance functions set
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/maintenance", nil)
+	w := httptest.NewRecorder()
+	srv.handleMaintenance(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", w.Code)
+	}
+}
+
+func TestHandleMaintenance_AuthRequired_POST(t *testing.T) {
+	cfg := testConfig()
+	cfg.Admin.Auth = config.AdminAuthConfig{
+		Enabled: true,
+		APIKeys: []config.AdminAPIKey{
+			{Key: "viewer-key", Role: "viewer"},
+			{Key: "admin-key", Role: "admin"},
+		},
+	}
+
+	srv := New(
+		func() *config.Config { return cfg },
+		func() *cache.Cache { return nil },
+		func() *cache.Invalidator { return nil },
+		func() map[string]*proxy.DatabaseGroup { return nil },
+		"testdb",
+		func() *audit.Logger { return nil },
+		nil, nil, nil, nil,
+	)
+	enabled := false
+	srv.SetMaintenanceFns(
+		func() (bool, time.Time) { return enabled, time.Time{} },
+		func(b bool) { enabled = b },
+	)
+
+	ts := httptest.NewServer(srv.HTTPServer().Handler)
+	defer ts.Close()
+
+	// Viewer cannot POST (enter maintenance)
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/admin/maintenance", nil)
+	req.Header.Set("Authorization", "Bearer viewer-key")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("viewer POST: status = %d, want 403", resp.StatusCode)
+	}
+
+	// Admin can POST
+	req2, _ := http.NewRequest(http.MethodPost, ts.URL+"/admin/maintenance", nil)
+	req2.Header.Set("Authorization", "Bearer admin-key")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Errorf("admin POST: status = %d, want 200", resp2.StatusCode)
+	}
+
+	// Viewer can GET (read status)
+	req3, _ := http.NewRequest(http.MethodGet, ts.URL+"/admin/maintenance", nil)
+	req3.Header.Set("Authorization", "Bearer viewer-key")
+	resp3, err := http.DefaultClient.Do(req3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusOK {
+		t.Errorf("viewer GET: status = %d, want 200", resp3.StatusCode)
+	}
+}
+
+func TestHandleReadyz_MaintenanceMode(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+
+	port := ln.Addr().(*net.TCPAddr).Port
+	cfg := &config.Config{
+		Writer:  config.DBConfig{Host: "127.0.0.1", Port: port},
+		Backend: config.BackendConfig{Database: "testdb"},
+		Pool:    config.PoolConfig{MaxConnections: 10, IdleTimeout: time.Minute},
+	}
+	srv := testServerWithGroups(cfg)
+
+	// Set maintenance mode ON
+	maintenance := true
+	srv.SetMaintenanceFns(
+		func() (bool, time.Time) { return maintenance, time.Now() },
+		func(b bool) { maintenance = b },
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+
+	srv.handleReadyz(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503 (maintenance mode)", w.Code)
+	}
+
+	var resp map[string]string
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["reason"] != "maintenance mode active" {
+		t.Errorf("reason = %q, want 'maintenance mode active'", resp["reason"])
+	}
+
+	// Disable maintenance → should be ready again
+	maintenance = false
+	req2 := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w2 := httptest.NewRecorder()
+	srv.handleReadyz(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (maintenance off)", w2.Code)
+	}
+}
+
 func TestHandleHealth_NoReaders(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

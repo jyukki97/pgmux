@@ -51,6 +51,10 @@ type Metrics struct {
 	ActiveConnsByUser *prometheus.GaugeVec
 	ActiveConnsByDB   *prometheus.GaugeVec
 
+	// Maintenance mode
+	MaintenanceMode         prometheus.Gauge
+	MaintenanceRejectedConn prometheus.Counter
+
 	// Read-only mode
 	ReadOnlyMode     prometheus.Gauge
 	ReadOnlyRejected prometheus.Counter
@@ -223,6 +227,19 @@ func New() *Metrics {
 			[]string{"database"},
 		),
 
+		MaintenanceMode: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "pgmux_maintenance_mode",
+				Help: "Whether maintenance mode is active (1) or not (0).",
+			},
+		),
+		MaintenanceRejectedConn: prometheus.NewCounter(
+			prometheus.CounterOpts{
+				Name: "pgmux_maintenance_rejected_total",
+				Help: "Total number of connections/queries rejected due to maintenance mode.",
+			},
+		),
+
 		ReadOnlyMode: prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name: "pgmux_readonly_mode",
@@ -261,6 +278,8 @@ func New() *Metrics {
 		m.ConnLimitRejected,
 		m.ActiveConnsByUser,
 		m.ActiveConnsByDB,
+		m.MaintenanceMode,
+		m.MaintenanceRejectedConn,
 		m.ReadOnlyMode,
 		m.ReadOnlyRejected,
 	)

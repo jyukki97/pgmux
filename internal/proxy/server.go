@@ -44,6 +44,8 @@ type Server struct {
 	connTracker     *ConnTracker    // per-user/per-DB connection limits (nil if disabled)
 	maintenanceMode atomic.Bool
 	maintenanceAt   atomic.Int64    // unix nano timestamp when maintenance was entered
+	readOnlyMode    atomic.Bool
+	readOnlyAt      atomic.Int64    // unix timestamp when read-only mode was entered
 }
 
 func NewServer(cfg *config.Config) *Server {
@@ -650,4 +652,38 @@ func (s *Server) Balancer() *router.RoundRobin {
 		return nil
 	}
 	return dbg.balancer
+}
+
+// SetReadOnly enables or disables read-only mode.
+// When enabled, all write queries are rejected at the proxy level.
+func (s *Server) SetReadOnly(enabled bool) {
+	s.readOnlyMode.Store(enabled)
+	if enabled {
+		s.readOnlyAt.Store(time.Now().Unix())
+		if s.metrics != nil {
+			s.metrics.ReadOnlyMode.Set(1)
+		}
+		slog.Info("read-only mode enabled")
+	} else {
+		s.readOnlyAt.Store(0)
+		if s.metrics != nil {
+			s.metrics.ReadOnlyMode.Set(0)
+		}
+		slog.Info("read-only mode disabled")
+	}
+}
+
+// InReadOnly returns true if the server is in read-only mode.
+func (s *Server) InReadOnly() bool {
+	return s.readOnlyMode.Load()
+}
+
+// ReadOnlyState returns the current read-only state and the time it was entered.
+func (s *Server) ReadOnlyState() (bool, time.Time) {
+	enabled := s.readOnlyMode.Load()
+	if !enabled {
+		return false, time.Time{}
+	}
+	ts := s.readOnlyAt.Load()
+	return true, time.Unix(ts, 0)
 }

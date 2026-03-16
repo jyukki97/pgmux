@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jyukki97/pgmux/internal/audit"
 	"github.com/jyukki97/pgmux/internal/cache"
@@ -17,18 +18,20 @@ import (
 
 // Server is the Admin API HTTP server.
 type Server struct {
-	cfgFn         func() *config.Config
-	cacheFn       func() *cache.Cache
-	invalidatorFn func() *cache.Invalidator
-	dbGroupsFn    func() map[string]*proxy.DatabaseGroup
-	defaultDBName string
-	auditLoggerFn func() *audit.Logger
-	mirrorStatsFn func() any
-	digestStatsFn func() any
-	digestResetFn  func()
-	connStatsFn    func() any
-	reloadFunc     func() error
-	mu             sync.RWMutex
+	cfgFn           func() *config.Config
+	cacheFn         func() *cache.Cache
+	invalidatorFn   func() *cache.Invalidator
+	dbGroupsFn      func() map[string]*proxy.DatabaseGroup
+	defaultDBName   string
+	auditLoggerFn   func() *audit.Logger
+	mirrorStatsFn   func() any
+	digestStatsFn   func() any
+	digestResetFn   func()
+	connStatsFn     func() any
+	reloadFunc      func() error
+	readOnlyGetFn   func() (bool, time.Time)
+	readOnlySetFn   func(bool)
+	mu              sync.RWMutex
 }
 
 // SetReloadFunc sets the function to call when reload is requested.
@@ -36,6 +39,14 @@ func (s *Server) SetReloadFunc(fn func() error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.reloadFunc = fn
+}
+
+// SetReadOnlyFns sets the getter and setter functions for read-only mode.
+func (s *Server) SetReadOnlyFns(getFn func() (bool, time.Time), setFn func(bool)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.readOnlyGetFn = getFn
+	s.readOnlySetFn = setFn
 }
 
 // New creates a new Admin server.
@@ -73,6 +84,7 @@ func (s *Server) HTTPServer() *http.Server {
 	mux.HandleFunc("/admin/queries/top", s.withAuth(s.handleQueryDigest, false))
 	mux.HandleFunc("/admin/queries/reset", s.withAuth(s.handleQueryDigestReset, true))
 	mux.HandleFunc("/admin/connections", s.withAuth(s.handleConnections, false))
+	mux.HandleFunc("/admin/readonly", s.withAuth(s.handleReadOnly, false))
 	return &http.Server{Handler: mux}
 }
 
@@ -642,6 +654,70 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, stats)
+}
+
+// handleReadOnly manages the read-only mode.
+// GET: returns current state (viewer role).
+// POST: enters read-only mode (admin role).
+// DELETE: exits read-only mode (admin role).
+func (s *Server) handleReadOnly(w http.ResponseWriter, r *http.Request) {
+	if s.readOnlyGetFn == nil || s.readOnlySetFn == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "read-only mode not configured")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		enabled, since := s.readOnlyGetFn()
+		resp := map[string]any{"readonly": enabled}
+		if enabled {
+			resp["since"] = since.Format(time.RFC3339)
+		}
+		writeJSON(w, resp)
+
+	case http.MethodPost:
+		cfg := s.cfgFn()
+		if cfg.Admin.Auth.Enabled {
+			token := extractBearerToken(r)
+			role := ""
+			for _, k := range cfg.Admin.Auth.APIKeys {
+				if k.Key == token {
+					role = k.Role
+					break
+				}
+			}
+			if role != "admin" {
+				writeJSONError(w, http.StatusForbidden, "admin role required")
+				return
+			}
+		}
+		s.readOnlySetFn(true)
+		slog.Info("admin: read-only mode enabled")
+		writeJSON(w, map[string]string{"status": "readonly enabled"})
+
+	case http.MethodDelete:
+		cfg := s.cfgFn()
+		if cfg.Admin.Auth.Enabled {
+			token := extractBearerToken(r)
+			role := ""
+			for _, k := range cfg.Admin.Auth.APIKeys {
+				if k.Key == token {
+					role = k.Role
+					break
+				}
+			}
+			if role != "admin" {
+				writeJSONError(w, http.StatusForbidden, "admin role required")
+				return
+			}
+		}
+		s.readOnlySetFn(false)
+		slog.Info("admin: read-only mode disabled")
+		writeJSON(w, map[string]string{"status": "readonly disabled"})
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func checkTCP(addr string) bool {

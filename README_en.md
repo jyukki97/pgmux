@@ -27,6 +27,7 @@ A lightweight PostgreSQL proxy written in Go. Sitting between your application a
 - **Query Digest / Top-N Queries** -- Normalizes queries (replacing literals with `$N`) and aggregates per-pattern execution counts, average/P50/P99 latency. View the most frequently executed query patterns via `GET /admin/queries/top`, and reset statistics with `POST /admin/queries/reset`. A proxy-level equivalent of `pg_stat_statements`.
 - **Query Timeout** -- Proxy-level query timeout. Sends a `CancelRequest` to the backend when the configured timeout is exceeded. Set globally via `pool.query_timeout: 30s` or per-query via `/* timeout:5s */ SELECT ...` hint.
 - **Idle Client Timeout** -- Automatically disconnects idle clients. With `proxy.client_idle_timeout: 5m`, clients that send no queries for 5 minutes receive a FATAL error (57P01) and are disconnected. Timeout is not applied during active transactions. Hot-reloadable.
+- **Read-Only Mode** -- `POST /admin/readonly` rejects all write queries at the proxy level. Maintains read service availability while blocking data modifications during writer failures, emergency maintenance, or data protection scenarios. Disable with `DELETE /admin/readonly`.
 - **Per-User / Per-Database Connection Limits** -- Limit the maximum number of connections per user and per database. Prevents a single user from monopolizing the pool in multi-tenant environments. Rejects with PostgreSQL standard error code (53300, `too_many_connections`). Limits can be hot-reloaded and monitored via `GET /admin/connections`.
 - **Multi-Database Routing** -- Proxy multiple PostgreSQL databases from a single proxy instance. Automatically routes to the correct DB group based on the client's `StartupMessage.database` field, maintaining independent Writer/Reader pools, balancers, and Circuit Breakers per database. Existing single-DB configurations remain backward compatible without changes.
 - **OpenTelemetry Distributed Tracing** -- Traces each stage as spans: query parsing, cache lookup, connection pool acquisition, and backend execution. Supports OTLP gRPC or stdout exporters. End-to-end tracing from application to DB is possible through context propagation via the Data API's `traceparent` header.
@@ -347,6 +348,9 @@ curl -H "Authorization: Bearer your-admin-api-key" http://localhost:9091/admin/s
 | `/admin/queries/top` | GET | viewer | Query Digest Top-N (per-pattern execution count, avg/P50/P99 latency) |
 | `/admin/queries/reset` | POST | admin | Reset Query Digest statistics |
 | `/admin/connections` | GET | viewer | Per-user/per-database active connections and limits |
+| `/admin/readonly` | GET | viewer | Read-only mode status |
+| `/admin/readonly` | POST | admin | Enable read-only mode (reject write queries) |
+| `/admin/readonly` | DELETE | admin | Disable read-only mode |
 
 ## Metrics
 
@@ -373,6 +377,8 @@ When `metrics.enabled` is `true`, Prometheus metrics are available at the config
 - `pgmux_connection_limit_rejected_total` -- Connections rejected due to per-user/per-database limits
 - `pgmux_active_connections_by_user` -- Current active connections per user
 - `pgmux_active_connections_by_database` -- Current active connections per database
+- `pgmux_readonly_mode` -- Read-only mode status (1 = active, 0 = inactive)
+- `pgmux_readonly_rejected_total` -- Write queries rejected due to read-only mode
 
 ## Data API (HTTP)
 

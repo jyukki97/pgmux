@@ -50,6 +50,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 	var extBuf []*protocol.Message
 	var extRoute router.Route
 	var extTxStart, extTxEnd bool
+	var extIsWrite bool // true if the current extended query batch contains a write query
 
 	// Multiplexing mode: synthesizer for Prepared Statement → Simple Query conversion
 	multiplexMode := s.getConfig().Pool.PreparedStatementMode == "multiplex"
@@ -198,6 +199,21 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 
 			slog.Debug("query routed", "sql", query, "route", target)
 
+			// Read-only mode check — reject write queries (but allow transaction control)
+			if s.InReadOnly() && qtype == router.QueryWrite {
+				if s.metrics != nil {
+					s.metrics.ReadOnlyRejected.Inc()
+				}
+				slog.Info("write query rejected: read-only mode", "remote", clientConn.RemoteAddr(), "sql", truncateSQL(query))
+				if tracingEnabled {
+					querySpan.SetStatus(codes.Error, "read-only mode")
+					querySpan.End()
+				}
+				s.sendError(clientConn, "cannot execute write query: pgmux is in read-only mode")
+				_ = protocol.WriteMessage(clientConn, protocol.MsgReadyForQuery, []byte{'I'})
+				continue
+			}
+
 			start := time.Now()
 
 			// Resolve query timeout (per-query hint overrides global config)
@@ -305,6 +321,9 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				if strings.HasPrefix(upper, "COMMIT") || strings.HasPrefix(upper, "ROLLBACK") || strings.HasPrefix(upper, "END") {
 					extTxEnd = true
 				}
+				if s.classifyQuery(query) == router.QueryWrite {
+					extIsWrite = true
+				}
 
 				if session.InTransaction() || boundWriter != nil || route == router.RouteWriter {
 					extRoute = router.RouteWriter
@@ -328,6 +347,9 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				}
 				if strings.HasPrefix(upper, "COMMIT") || strings.HasPrefix(upper, "ROLLBACK") || strings.HasPrefix(upper, "END") {
 					extTxEnd = true
+				}
+				if s.classifyQuery(query) == router.QueryWrite {
+					extIsWrite = true
 				}
 
 				if session.InTransaction() || boundWriter != nil || route == router.RouteWriter {
@@ -414,6 +436,24 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 					attribute.String("pgmux.route", target),
 				),
 			)
+
+			// Read-only mode check for extended query — reject write queries
+			if s.InReadOnly() && extIsWrite {
+				if s.metrics != nil {
+					s.metrics.ReadOnlyRejected.Inc()
+				}
+				slog.Info("write query rejected (extended): read-only mode", "remote", clientConn.RemoteAddr())
+				extSpan.SetStatus(codes.Error, "read-only mode")
+				extSpan.End()
+				s.sendError(clientConn, "cannot execute write query: pgmux is in read-only mode")
+				s.sendReadyForQuery(clientConn, session.InTransaction())
+				extBuf = extBuf[:0]
+				extRoute = router.RouteReader
+				extTxStart, extTxEnd = false, false
+				extIsWrite = false
+				muxBindDetail = nil
+				continue
+			}
 
 			if multiplexMode && muxBindDetail != nil {
 				// Multiplex mode: synthesize Simple Query from Parse+Bind
@@ -579,6 +619,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 			extBuf = extBuf[:0]
 			extRoute = router.RouteReader
 			extTxStart, extTxEnd = false, false
+			extIsWrite = false
 			muxBindDetail = nil
 
 		default:

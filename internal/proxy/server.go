@@ -17,7 +17,6 @@ import (
 	"github.com/jyukki97/pgmux/internal/digest"
 	"github.com/jyukki97/pgmux/internal/metrics"
 	"github.com/jyukki97/pgmux/internal/mirror"
-	"github.com/jyukki97/pgmux/internal/pool"
 	"github.com/jyukki97/pgmux/internal/protocol"
 	"github.com/jyukki97/pgmux/internal/resilience"
 	"github.com/jyukki97/pgmux/internal/router"
@@ -625,35 +624,6 @@ func (s *Server) MaintenanceState() (bool, time.Time) {
 	}
 	ns := s.maintenanceAt.Load()
 	return true, time.Unix(0, ns)
-}
-
-// --- Backward-compatible getters (delegate to default DB group) ---
-
-// WriterPool returns the default DB group's writer connection pool.
-func (s *Server) WriterPool() *pool.Pool {
-	dbg := s.resolveDBGroup(s.DefaultDBName())
-	if dbg == nil {
-		return nil
-	}
-	return dbg.writerPool
-}
-
-// ReaderPools returns the default DB group's reader connection pools (thread-safe).
-func (s *Server) ReaderPools() map[string]*pool.Pool {
-	dbg := s.resolveDBGroup(s.DefaultDBName())
-	if dbg == nil {
-		return nil
-	}
-	return dbg.ReaderPools()
-}
-
-// Balancer returns the default DB group's reader load balancer.
-func (s *Server) Balancer() *router.RoundRobin {
-	dbg := s.resolveDBGroup(s.DefaultDBName())
-	if dbg == nil {
-		return nil
-	}
-	return dbg.balancer
 }
 
 // SetReadOnly enables or disables read-only mode.

@@ -58,6 +58,11 @@ type Metrics struct {
 	// Read-only mode
 	ReadOnlyMode     prometheus.Gauge
 	ReadOnlyRejected prometheus.Counter
+
+	// Session compatibility guard
+	SessionDepDetected *prometheus.CounterVec
+	SessionDepBlocked  *prometheus.CounterVec
+	SessionPinned      *prometheus.CounterVec
 }
 
 // New creates and registers all Prometheus metrics.
@@ -252,6 +257,28 @@ func New() *Metrics {
 				Help: "Total number of write queries rejected due to read-only mode.",
 			},
 		),
+
+		SessionDepDetected: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "pgmux_session_dependency_detected_total",
+				Help: "Total number of session-dependent features detected by feature type.",
+			},
+			[]string{"feature"},
+		),
+		SessionDepBlocked: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "pgmux_session_dependency_blocked_total",
+				Help: "Total number of queries blocked due to session-dependent features.",
+			},
+			[]string{"feature"},
+		),
+		SessionPinned: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "pgmux_session_pinned_total",
+				Help: "Total number of sessions pinned to writer due to session-dependent features.",
+			},
+			[]string{"feature"},
+		),
 	}
 
 	prometheus.MustRegister(
@@ -282,6 +309,9 @@ func New() *Metrics {
 		m.MaintenanceRejectedConn,
 		m.ReadOnlyMode,
 		m.ReadOnlyRejected,
+		m.SessionDepDetected,
+		m.SessionDepBlocked,
+		m.SessionPinned,
 	)
 
 	return m

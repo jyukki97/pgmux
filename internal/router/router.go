@@ -24,6 +24,11 @@ type Session struct {
 
 	// Prepared statement routing: statement name → route
 	stmtRoutes map[string]Route
+
+	// Session pinning: when true, all queries are routed to writer
+	// and the backend connection is held for the session lifetime.
+	pinned       bool
+	pinnedReason string
 }
 
 func NewSession(readAfterWriteDelay time.Duration, causalConsistency bool, astParser bool) *Session {
@@ -75,7 +80,7 @@ func (s *Session) routeQueryLocked(query string) Route {
 		// Multi-statement: scan all for transaction control
 		wasTx := s.inTransaction
 		s.updateTransactionState(query)
-		if wasTx || s.inTransaction {
+		if s.pinned || wasTx || s.inTransaction {
 			return RouteWriter
 		}
 		if containsTransactionKeyword(query) {
@@ -83,8 +88,8 @@ func (s *Session) routeQueryLocked(query string) Route {
 		}
 	}
 
-	// Transaction control statements always go to writer
-	if hasTxKeyword || s.inTransaction {
+	// Pinned session or transaction control → always writer
+	if s.pinned || hasTxKeyword || s.inTransaction {
 		return RouteWriter
 	}
 
@@ -409,6 +414,32 @@ func (s *Session) LastWriteLSN() LSN {
 	return s.lastWriteLSN
 }
 
+// Pin marks the session as pinned to the writer backend.
+// Once pinned, all subsequent queries are routed to writer and the backend
+// connection is held for the session lifetime.
+func (s *Session) Pin(reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.pinned {
+		s.pinned = true
+		s.pinnedReason = reason
+	}
+}
+
+// Pinned returns whether the session is pinned to the writer.
+func (s *Session) Pinned() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pinned
+}
+
+// PinnedReason returns the feature that caused the session to be pinned.
+func (s *Session) PinnedReason() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pinnedReason
+}
+
 // CloseStatement removes a prepared statement from the routing map.
 func (s *Session) CloseStatement(name string) {
 	s.mu.Lock()
@@ -425,7 +456,7 @@ func (s *Session) routeLocked(query string) Route {
 		return RouteWriter
 	}
 
-	if s.inTransaction {
+	if s.pinned || s.inTransaction {
 		return RouteWriter
 	}
 

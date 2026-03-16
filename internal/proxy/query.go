@@ -51,6 +51,8 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 	var extRoute router.Route
 	var extTxStart, extTxEnd bool
 	var extIsWrite bool // true if the current extended query batch contains a write query
+	var extSessionBlocked bool
+	var extSessionBlockedFeature string
 
 	// Multiplexing mode: synthesizer for Prepared Statement → Simple Query conversion
 	multiplexMode := s.getConfig().Pool.PreparedStatementMode == "multiplex"
@@ -180,6 +182,47 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				}
 			}
 
+			// Session compatibility guard
+			if queryCfg.SessionCompat.Enabled {
+				var depResult router.SessionDependencyResult
+				if parsedQuery != nil {
+					depResult = router.DetectSessionDependencyAST(parsedQuery, query)
+				} else {
+					depResult = router.DetectSessionDependency(query)
+				}
+				if depResult.Detected {
+					feature := string(depResult.Feature)
+					if s.metrics != nil {
+						s.metrics.SessionDepDetected.WithLabelValues(feature).Inc()
+					}
+					switch queryCfg.SessionCompat.Mode {
+					case "block":
+						slog.Warn("session-dependent feature blocked",
+							"feature", feature, "sql", truncateSQL(query), "remote", clientConn.RemoteAddr())
+						if s.metrics != nil {
+							s.metrics.SessionDepBlocked.WithLabelValues(feature).Inc()
+						}
+						if tracingEnabled {
+							querySpan.SetStatus(codes.Error, "session dependency blocked")
+							querySpan.End()
+						}
+						s.sendError(clientConn, fmt.Sprintf("session-dependent feature blocked: %s", feature))
+						_ = protocol.WriteMessage(clientConn, protocol.MsgReadyForQuery, []byte{'I'})
+						continue
+					case "warn":
+						slog.Warn("session-dependent feature detected",
+							"feature", feature, "sql", truncateSQL(query), "remote", clientConn.RemoteAddr())
+					case "pin":
+						session.Pin(feature)
+						connDirty = true // ensure DISCARD ALL on release
+						slog.Info("session pinned", "reason", feature, "remote", clientConn.RemoteAddr())
+						if s.metrics != nil {
+							s.metrics.SessionPinned.WithLabelValues(feature).Inc()
+						}
+					}
+				}
+			}
+
 			// Route query + get before/after tx state in single lock acquisition
 			route, wasInTx, nowInTx := session.RouteWithTxState(query)
 			target := routeName(route)
@@ -259,26 +302,37 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				}
 
 				// Transaction lifecycle management
+				sessionPinned := session.Pinned()
 				switch {
 				case !wasInTx && nowInTx:
 					// BEGIN — bind writer for transaction duration
-					boundWriter = wConn
-					boundWriterPool = acquiredPool
-				case wasInTx && !nowInTx:
-					// COMMIT/ROLLBACK — unbind and release to the pool that issued Acquire
-					bwp := boundWriterPool
-					boundWriter = nil
-					boundWriterPool = nil
-					if connDirty {
-						s.resetAndReleaseToPool(wConn, bwp)
-					} else {
-						releaseToPool(wConn, bwp)
+					if acquired {
+						boundWriter = wConn
+						boundWriterPool = acquiredPool
 					}
-					connDirty = false
+					// If !acquired (already bound from pin), keep existing boundWriterPool
+				case wasInTx && !nowInTx:
+					// COMMIT/ROLLBACK — unbind and release
+					if sessionPinned {
+						// Keep connection bound — session is pinned
+					} else {
+						bwp := boundWriterPool
+						boundWriter = nil
+						boundWriterPool = nil
+						if connDirty {
+							s.resetAndReleaseToPool(wConn, bwp)
+						} else {
+							releaseToPool(wConn, bwp)
+						}
+						connDirty = false
+					}
 				case acquired:
-					// Single statement outside transaction — release immediately
-					// Skip DISCARD ALL unless session state was modified
-					if connDirty || isSessionModifying(query) {
+					// Single statement outside transaction
+					if sessionPinned {
+						// Bind writer for pinned session lifetime
+						boundWriter = wConn
+						boundWriterPool = acquiredPool
+					} else if connDirty || isSessionModifying(query) {
 						s.resetAndReleaseToPool(wConn, acquiredPool)
 						connDirty = false
 					} else {
@@ -335,6 +389,35 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 					extIsWrite = true
 				}
 
+				// Session compatibility check (extended query)
+				if !extSessionBlocked {
+					if sessCfg := s.getConfig().SessionCompat; sessCfg.Enabled {
+						depResult := router.DetectSessionDependency(query)
+						if depResult.Detected {
+							feature := string(depResult.Feature)
+							if s.metrics != nil {
+								s.metrics.SessionDepDetected.WithLabelValues(feature).Inc()
+							}
+							switch sessCfg.Mode {
+							case "block":
+								extSessionBlocked = true
+								extSessionBlockedFeature = feature
+							case "warn":
+								slog.Warn("session-dependent feature detected (extended)",
+									"feature", feature, "sql", truncateStr(query, 100), "remote", clientConn.RemoteAddr())
+							case "pin":
+								session.Pin(feature)
+								connDirty = true
+								slog.Info("session pinned (extended)", "reason", feature, "remote", clientConn.RemoteAddr())
+								if s.metrics != nil {
+									s.metrics.SessionPinned.WithLabelValues(feature).Inc()
+								}
+								extRoute = router.RouteWriter
+							}
+						}
+					}
+				}
+
 				if session.InTransaction() || boundWriter != nil || route == router.RouteWriter {
 					extRoute = router.RouteWriter
 				} else {
@@ -360,6 +443,35 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				}
 				if s.classifyQuery(query) == router.QueryWrite {
 					extIsWrite = true
+				}
+
+				// Session compatibility check (extended query)
+				if !extSessionBlocked {
+					if sessCfg := s.getConfig().SessionCompat; sessCfg.Enabled {
+						depResult := router.DetectSessionDependency(query)
+						if depResult.Detected {
+							feature := string(depResult.Feature)
+							if s.metrics != nil {
+								s.metrics.SessionDepDetected.WithLabelValues(feature).Inc()
+							}
+							switch sessCfg.Mode {
+							case "block":
+								extSessionBlocked = true
+								extSessionBlockedFeature = feature
+							case "warn":
+								slog.Warn("session-dependent feature detected (extended)",
+									"feature", feature, "sql", truncateStr(query, 100), "remote", clientConn.RemoteAddr())
+							case "pin":
+								session.Pin(feature)
+								connDirty = true
+								slog.Info("session pinned (extended)", "reason", feature, "remote", clientConn.RemoteAddr())
+								if s.metrics != nil {
+									s.metrics.SessionPinned.WithLabelValues(feature).Inc()
+								}
+								extRoute = router.RouteWriter
+							}
+						}
+					}
 				}
 
 				if session.InTransaction() || boundWriter != nil || route == router.RouteWriter {
@@ -446,6 +558,27 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 					attribute.String("pgmux.route", target),
 				),
 			)
+
+			// Session compatibility block check for extended query
+			if extSessionBlocked {
+				if s.metrics != nil {
+					s.metrics.SessionDepBlocked.WithLabelValues(extSessionBlockedFeature).Inc()
+				}
+				slog.Warn("session-dependent feature blocked (extended)",
+					"feature", extSessionBlockedFeature, "remote", clientConn.RemoteAddr())
+				extSpan.SetStatus(codes.Error, "session dependency blocked")
+				extSpan.End()
+				s.sendError(clientConn, fmt.Sprintf("session-dependent feature blocked: %s", extSessionBlockedFeature))
+				s.sendReadyForQuery(clientConn, session.InTransaction())
+				extBuf = extBuf[:0]
+				extRoute = router.RouteReader
+				extTxStart, extTxEnd = false, false
+				extIsWrite = false
+				muxBindDetail = nil
+				extSessionBlocked = false
+				extSessionBlockedFeature = ""
+				continue
+			}
 
 			// Read-only mode check for extended query — reject write queries
 			if s.InReadOnly() && extIsWrite {
@@ -589,25 +722,35 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				}
 
 				// Transaction lifecycle
+				extSessionPinned := session.Pinned()
 				switch {
 				case extTxStart && !extTxEnd:
 					// BEGIN — bind writer
-					boundWriter = wConn
-					boundWriterPool = acquiredPool
-				case extTxEnd:
-					// COMMIT/ROLLBACK — unbind and release to origin pool
-					bwp := boundWriterPool
-					boundWriter = nil
-					boundWriterPool = nil
-					if connDirty {
-						s.resetAndReleaseToPool(wConn, bwp)
-					} else {
-						releaseToPool(wConn, bwp)
+					if acquired {
+						boundWriter = wConn
+						boundWriterPool = acquiredPool
 					}
-					connDirty = false
+				case extTxEnd:
+					// COMMIT/ROLLBACK — unbind and release
+					if extSessionPinned {
+						// Keep connection bound — session is pinned
+					} else {
+						bwp := boundWriterPool
+						boundWriter = nil
+						boundWriterPool = nil
+						if connDirty {
+							s.resetAndReleaseToPool(wConn, bwp)
+						} else {
+							releaseToPool(wConn, bwp)
+						}
+						connDirty = false
+					}
 				case acquired:
-					// Single batch outside transaction — release
-					if connDirty {
+					// Single batch outside transaction
+					if extSessionPinned {
+						boundWriter = wConn
+						boundWriterPool = acquiredPool
+					} else if connDirty {
 						s.resetAndReleaseToPool(wConn, acquiredPool)
 						connDirty = false
 					} else {

@@ -28,6 +28,7 @@ A lightweight PostgreSQL proxy written in Go. Sitting between your application a
 - **Query Timeout** -- Proxy-level query timeout. Sends a `CancelRequest` to the backend when the configured timeout is exceeded. Set globally via `pool.query_timeout: 30s` or per-query via `/* timeout:5s */ SELECT ...` hint.
 - **Idle Client Timeout** -- Automatically disconnects idle clients. With `proxy.client_idle_timeout: 5m`, clients that send no queries for 5 minutes receive a FATAL error (57P01) and are disconnected. Timeout is not applied during active transactions. Hot-reloadable.
 - **Online Maintenance Mode** -- Instantly enable/disable maintenance mode via Admin API. In maintenance mode, new connections and non-transactional queries are rejected while in-progress transactions are allowed to complete (drain). `/readyz` automatically returns 503 so LB/K8s stops routing traffic. Use for safe traffic blocking during deployments, migrations, and patches.
+- **Session Compatibility Guard** -- Detects session-dependent SQL features (LISTEN/UNLISTEN, session SET, DECLARE CURSOR, CREATE TEMP, PREPARE, advisory locks) that are incompatible with transaction pooling. Configurable modes: `block` (reject), `warn` (log + allow), `pin` (bind session to writer for its lifetime), or `allow` (no-op). String-based and AST-based hybrid detection.
 - **Read-Only Mode** -- `POST /admin/readonly` rejects all write queries at the proxy level. Maintains read service availability while blocking data modifications during writer failures, emergency maintenance, or data protection scenarios. Disable with `DELETE /admin/readonly`.
 - **Per-User / Per-Database Connection Limits** -- Limit the maximum number of connections per user and per database. Prevents a single user from monopolizing the pool in multi-tenant environments. Rejects with PostgreSQL standard error code (53300, `too_many_connections`). Limits can be hot-reloaded and monitored via `GET /admin/connections`.
 - **Multi-Database Routing** -- Route multiple PostgreSQL databases simultaneously from a single proxy instance. Automatically routes to the correct DB group based on the client's `StartupMessage.database` field, maintaining independent Writer/Reader pools, balancers, and Circuit Breakers per database.
@@ -151,6 +152,10 @@ firewall:
   block_update_without_where: true
   block_drop_table: false
   block_truncate: false
+
+session_compatibility:
+  enabled: true
+  mode: "warn"                     # "block" | "warn" | "pin" | "allow"
 
 circuit_breaker:
   enabled: false
@@ -306,6 +311,7 @@ internal/
   router/balancer.go              # Round-robin load balancer + LSN-aware routing
   router/lsn.go                   # PostgreSQL LSN type parsing/comparison
   router/firewall.go              # Query firewall (dangerous query blocking)
+  router/session_compat.go        # Session Compatibility Guard (session dependency detection/block/pin)
   audit/audit.go                  # Audit Logging + Slow Query Tracker
   dataapi/handler.go              # Serverless Data API (HTTP to PG)
   cache/cache.go                  # LRU cache + per-table invalidation
@@ -386,6 +392,9 @@ When `metrics.enabled` is `true`, Prometheus metrics are available at the config
 - `pgmux_maintenance_rejected_total` -- Connections/queries rejected due to maintenance mode
 - `pgmux_readonly_mode` -- Read-only mode status (1 = active, 0 = inactive)
 - `pgmux_readonly_rejected_total` -- Write queries rejected due to read-only mode
+- `pgmux_session_dependency_detected_total` -- Session-dependent features detected (per feature)
+- `pgmux_session_dependency_blocked_total` -- Queries blocked due to session-dependent features (per feature)
+- `pgmux_session_pinned_total` -- Sessions pinned to writer (per feature)
 
 ## Data API (HTTP)
 

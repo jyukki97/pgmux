@@ -2,16 +2,6 @@ proxy:
   listen: "0.0.0.0:5432"
   # client_idle_timeout: 5m           # 유휴 클라이언트 타임아웃 (0 = 무제한)
 
-writer:
-  host: "primary.db.internal"
-  port: 5432
-
-readers:
-  - host: "replica-1.db.internal"
-    port: 5432
-  - host: "replica-2.db.internal"
-    port: 5432
-
 pool:
   min_connections: 5
   max_connections: 50
@@ -29,6 +19,21 @@ cache:
   cache_ttl: 10s
   max_cache_entries: 10000
   max_result_size: "1MB"
+
+databases:
+  testdb:
+    writer:
+      host: "primary.db.internal"
+      port: 5432
+    readers:
+      - host: "replica-1.db.internal"
+        port: 5432
+      - host: "replica-2.db.internal"
+        port: 5432
+    backend:
+      user: "postgres"
+      password: "postgres"
+      database: "testdb"
 
 audit:
   enabled: false

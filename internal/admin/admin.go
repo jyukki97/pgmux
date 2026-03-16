@@ -470,8 +470,6 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 	safe := struct {
 		Proxy     config.ProxyConfig   `json:"proxy"`
-		Writer    config.DBConfig      `json:"writer,omitempty"`
-		Readers   []config.DBConfig    `json:"readers,omitempty"`
 		Pool      config.PoolConfig    `json:"pool"`
 		Routing   config.RoutingConfig `json:"routing"`
 		Cache     config.CacheConfig   `json:"cache"`
@@ -490,16 +488,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 				TrustedProxies []string          `json:"trusted_proxies,omitempty"`
 			} `json:"auth"`
 		} `json:"admin"`
-		Backend struct {
-			User     string `json:"user"`
-			Password string `json:"password"`
-			Database string `json:"database"`
-		} `json:"backend"`
-		Databases map[string]safeDBConfig `json:"databases,omitempty"`
+		Databases map[string]safeDBConfig `json:"databases"`
 	}{
 		Proxy:   cfg.Proxy,
-		Writer:  cfg.Writer,
-		Readers: cfg.Readers,
 		Pool:    cfg.Pool,
 		Routing: cfg.Routing,
 		Cache:   cfg.Cache,
@@ -523,22 +514,17 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			Role: k.Role,
 		})
 	}
-	safe.Backend.User = cfg.Backend.User
-	safe.Backend.Password = "********"
-	safe.Backend.Database = cfg.Backend.Database
 
-	if len(cfg.Databases) > 0 {
-		safe.Databases = make(map[string]safeDBConfig)
-		for name, db := range cfg.Databases {
-			sdb := safeDBConfig{
-				Writer:  db.Writer,
-				Readers: db.Readers,
-			}
-			sdb.Backend.User = db.Backend.User
-			sdb.Backend.Password = "********"
-			sdb.Backend.Database = db.Backend.Database
-			safe.Databases[name] = sdb
+	safe.Databases = make(map[string]safeDBConfig)
+	for name, db := range cfg.Databases {
+		sdb := safeDBConfig{
+			Writer:  db.Writer,
+			Readers: db.Readers,
 		}
+		sdb.Backend.User = db.Backend.User
+		sdb.Backend.Password = "********"
+		sdb.Backend.Database = db.Backend.Database
+		safe.Databases[name] = sdb
 	}
 
 	writeJSON(w, safe)

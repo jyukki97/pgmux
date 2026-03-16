@@ -23,8 +23,13 @@ func testServer() *Server {
 			Enabled: true,
 			APIKeys: []string{"test-key-1", "test-key-2"},
 		},
-		Writer:  config.DBConfig{Host: "127.0.0.1", Port: 5432},
 		Backend: config.BackendConfig{Database: "testdb"},
+		Databases: map[string]config.DatabaseConfig{
+			"testdb": {
+				Writer:  config.DBConfig{Host: "127.0.0.1", Port: 5432},
+				Backend: config.BackendConfig{Database: "testdb"},
+			},
+		},
 	}
 	proxySrv := proxy.NewServer(cfg)
 	return New(
@@ -107,8 +112,13 @@ func TestEmptySQL(t *testing.T) {
 	cfg := &config.Config{
 		Pool:    config.PoolConfig{MaxConnections: 1, IdleTimeout: time.Minute, ResetQuery: "DISCARD ALL"},
 		DataAPI: config.DataAPIConfig{Enabled: true},
-		Writer:  config.DBConfig{Host: "127.0.0.1", Port: 5432},
 		Backend: config.BackendConfig{Database: "testdb"},
+		Databases: map[string]config.DatabaseConfig{
+			"testdb": {
+				Writer:  config.DBConfig{Host: "127.0.0.1", Port: 5432},
+				Backend: config.BackendConfig{Database: "testdb"},
+			},
+		},
 	}
 	proxySrv := proxy.NewServer(cfg)
 	srv := New(func() *config.Config { return cfg }, proxySrv.DBGroups, proxySrv.DefaultDBName(), nilCache, nil, nilRateLimiter, nil)
@@ -127,8 +137,13 @@ func TestInvalidBody(t *testing.T) {
 	cfg := &config.Config{
 		Pool:    config.PoolConfig{MaxConnections: 1, IdleTimeout: time.Minute, ResetQuery: "DISCARD ALL"},
 		DataAPI: config.DataAPIConfig{Enabled: true},
-		Writer:  config.DBConfig{Host: "127.0.0.1", Port: 5432},
 		Backend: config.BackendConfig{Database: "testdb"},
+		Databases: map[string]config.DatabaseConfig{
+			"testdb": {
+				Writer:  config.DBConfig{Host: "127.0.0.1", Port: 5432},
+				Backend: config.BackendConfig{Database: "testdb"},
+			},
+		},
 	}
 	proxySrv := proxy.NewServer(cfg)
 	srv := New(func() *config.Config { return cfg }, proxySrv.DBGroups, proxySrv.DefaultDBName(), nilCache, nil, nilRateLimiter, nil)
@@ -152,8 +167,13 @@ func TestFirewallBlock(t *testing.T) {
 		},
 		Routing: config.RoutingConfig{ASTParser: true},
 		DataAPI: config.DataAPIConfig{Enabled: true},
-		Writer:  config.DBConfig{Host: "127.0.0.1", Port: 5432},
 		Backend: config.BackendConfig{Database: "testdb"},
+		Databases: map[string]config.DatabaseConfig{
+			"testdb": {
+				Writer:  config.DBConfig{Host: "127.0.0.1", Port: 5432},
+				Backend: config.BackendConfig{Database: "testdb"},
+			},
+		},
 	}
 	proxySrv := proxy.NewServer(cfg)
 	srv := New(func() *config.Config { return cfg }, proxySrv.DBGroups, proxySrv.DefaultDBName(), nilCache, nil, nilRateLimiter, nil)

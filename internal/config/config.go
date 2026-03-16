@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"log/slog"
 	"net"
 	"os"
 	"time"
@@ -12,8 +11,6 @@ import (
 
 type Config struct {
 	Proxy   ProxyConfig   `yaml:"proxy"`
-	Writer  DBConfig      `yaml:"writer"`
-	Readers []DBConfig    `yaml:"readers"`
 	Pool    PoolConfig    `yaml:"pool"`
 	Routing RoutingConfig `yaml:"routing"`
 	Cache   CacheConfig   `yaml:"cache"`
@@ -231,41 +228,22 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// ResolvedDatabases returns the database configurations.
-// If Databases map is not set, it synthesizes a single entry from top-level config.
-func (c *Config) ResolvedDatabases() map[string]DatabaseConfig {
-	if len(c.Databases) > 0 {
-		return c.Databases
-	}
-	name := c.Backend.Database
-	return map[string]DatabaseConfig{
-		name: {
-			Writer:  c.Writer,
-			Readers: c.Readers,
-			Backend: c.Backend,
-			Pool:    c.Pool,
-		},
-	}
-}
-
 // DefaultDatabaseName returns the default database name for connections
-// that don't specify one.
+// that don't specify one. If backend.database matches a databases key, it is used;
+// otherwise the lexicographically first database is returned.
 func (c *Config) DefaultDatabaseName() string {
-	if len(c.Databases) > 0 {
-		if c.Backend.Database != "" {
-			if _, ok := c.Databases[c.Backend.Database]; ok {
-				return c.Backend.Database
-			}
+	if c.Backend.Database != "" {
+		if _, ok := c.Databases[c.Backend.Database]; ok {
+			return c.Backend.Database
 		}
-		var first string
-		for name := range c.Databases {
-			if first == "" || name < first {
-				first = name
-			}
-		}
-		return first
 	}
-	return c.Backend.Database
+	var first string
+	for name := range c.Databases {
+		if first == "" || name < first {
+			first = name
+		}
+	}
+	return first
 }
 
 func (c *Config) applyDefaults() {
@@ -425,41 +403,22 @@ func (c *Config) applyDefaults() {
 }
 
 func (c *Config) validate() error {
-	if len(c.Databases) > 0 {
-		// Multi-DB validation
-		if c.Writer.Host != "" {
-			slog.Warn("databases config found, top-level writer/readers/backend will be ignored")
+	if len(c.Databases) == 0 {
+		return fmt.Errorf("databases: at least one database must be configured")
+	}
+	for name, db := range c.Databases {
+		if db.Writer.Host == "" {
+			return fmt.Errorf("databases.%s.writer.host is required", name)
 		}
-		for name, db := range c.Databases {
-			if db.Writer.Host == "" {
-				return fmt.Errorf("databases.%s.writer.host is required", name)
-			}
-			if db.Writer.Port <= 0 || db.Writer.Port > 65535 {
-				return fmt.Errorf("databases.%s.writer.port must be between 1 and 65535, got %d", name, db.Writer.Port)
-			}
-			for i, r := range db.Readers {
-				if r.Host == "" {
-					return fmt.Errorf("databases.%s.readers[%d].host is required", name, i)
-				}
-				if r.Port <= 0 || r.Port > 65535 {
-					return fmt.Errorf("databases.%s.readers[%d].port must be between 1 and 65535, got %d", name, i, r.Port)
-				}
-			}
+		if db.Writer.Port <= 0 || db.Writer.Port > 65535 {
+			return fmt.Errorf("databases.%s.writer.port must be between 1 and 65535, got %d", name, db.Writer.Port)
 		}
-	} else {
-		// Single-DB validation
-		if c.Writer.Host == "" {
-			return fmt.Errorf("writer.host is required")
-		}
-		if c.Writer.Port <= 0 || c.Writer.Port > 65535 {
-			return fmt.Errorf("writer.port must be between 1 and 65535, got %d", c.Writer.Port)
-		}
-		for i, r := range c.Readers {
+		for i, r := range db.Readers {
 			if r.Host == "" {
-				return fmt.Errorf("readers[%d].host is required", i)
+				return fmt.Errorf("databases.%s.readers[%d].host is required", name, i)
 			}
 			if r.Port <= 0 || r.Port > 65535 {
-				return fmt.Errorf("readers[%d].port must be between 1 and 65535, got %d", i, r.Port)
+				return fmt.Errorf("databases.%s.readers[%d].port must be between 1 and 65535, got %d", name, i, r.Port)
 			}
 		}
 	}

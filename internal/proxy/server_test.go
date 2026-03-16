@@ -11,11 +11,7 @@ import (
 
 func testConfig(listen string) *config.Config {
 	return &config.Config{
-		Proxy:  config.ProxyConfig{Listen: listen},
-		Writer: config.DBConfig{Host: "127.0.0.1", Port: 5432},
-		Readers: []config.DBConfig{
-			{Host: "127.0.0.1", Port: 5433},
-		},
+		Proxy: config.ProxyConfig{Listen: listen},
 		Pool: config.PoolConfig{
 			MinConnections:    0,
 			MaxConnections:    10,
@@ -36,6 +32,19 @@ func testConfig(listen string) *config.Config {
 			User:     "postgres",
 			Password: "postgres",
 			Database: "testdb",
+		},
+		Databases: map[string]config.DatabaseConfig{
+			"testdb": {
+				Writer: config.DBConfig{Host: "127.0.0.1", Port: 5432},
+				Readers: []config.DBConfig{
+					{Host: "127.0.0.1", Port: 5433},
+				},
+				Backend: config.BackendConfig{
+					User:     "postgres",
+					Password: "postgres",
+					Database: "testdb",
+				},
+			},
 		},
 	}
 }

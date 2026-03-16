@@ -50,7 +50,7 @@ func NewConnTracker(cfg *config.Config) *ConnTracker {
 			ct.userLimits[u.Username] = u.MaxConnections
 		}
 	}
-	for name, db := range cfg.ResolvedDatabases() {
+	for name, db := range cfg.Databases {
 		if db.MaxConnections > 0 {
 			ct.dbLimits[name] = db.MaxConnections
 		}
@@ -116,7 +116,7 @@ func (ct *ConnTracker) UpdateLimits(cfg *config.Config) {
 	}
 
 	ct.dbLimits = make(map[string]int)
-	for name, db := range cfg.ResolvedDatabases() {
+	for name, db := range cfg.Databases {
 		if db.MaxConnections > 0 {
 			ct.dbLimits[name] = db.MaxConnections
 		}

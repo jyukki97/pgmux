@@ -17,7 +17,6 @@ import (
 	"github.com/jyukki97/pgmux/internal/digest"
 	"github.com/jyukki97/pgmux/internal/metrics"
 	"github.com/jyukki97/pgmux/internal/mirror"
-	"github.com/jyukki97/pgmux/internal/pool"
 	"github.com/jyukki97/pgmux/internal/protocol"
 	"github.com/jyukki97/pgmux/internal/resilience"
 	"github.com/jyukki97/pgmux/internal/router"
@@ -93,7 +92,7 @@ func NewServer(cfg *config.Config) *Server {
 	}
 
 	// Create database groups
-	for name, dbCfg := range cfg.ResolvedDatabases() {
+	for name, dbCfg := range cfg.Databases {
 		dbg := newDatabaseGroup(name, dbCfg, cfg.CircuitBreaker)
 		s.dbGroups[name] = dbg
 	}
@@ -139,17 +138,19 @@ func NewServer(cfg *config.Config) *Server {
 	// Initialize Query Mirror
 	if cfg.Mirror.Enabled {
 		mirrorAddr := fmt.Sprintf("%s:%d", cfg.Mirror.Host, cfg.Mirror.Port)
+		// Resolve fallback credentials from the default database group
+		defaultDB := cfg.Databases[cfg.DefaultDatabaseName()]
 		mirrorUser := cfg.Mirror.User
 		if mirrorUser == "" {
-			mirrorUser = cfg.Backend.User
+			mirrorUser = defaultDB.Backend.User
 		}
 		mirrorPass := cfg.Mirror.Password
 		if mirrorPass == "" {
-			mirrorPass = cfg.Backend.Password
+			mirrorPass = defaultDB.Backend.Password
 		}
 		mirrorDB := cfg.Mirror.Database
 		if mirrorDB == "" {
-			mirrorDB = cfg.Backend.Database
+			mirrorDB = defaultDB.Backend.Database
 		}
 
 		m, err := mirror.New(mirror.Config{
@@ -449,7 +450,7 @@ func (s *Server) Reload(newCfg *config.Config) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	newDBs := newCfg.ResolvedDatabases()
+	newDBs := newCfg.Databases
 
 	// Update existing groups and add new ones
 	for name, dbCfg := range newDBs {
@@ -623,35 +624,6 @@ func (s *Server) MaintenanceState() (bool, time.Time) {
 	}
 	ns := s.maintenanceAt.Load()
 	return true, time.Unix(0, ns)
-}
-
-// --- Backward-compatible getters (delegate to default DB group) ---
-
-// WriterPool returns the default DB group's writer connection pool.
-func (s *Server) WriterPool() *pool.Pool {
-	dbg := s.resolveDBGroup(s.DefaultDBName())
-	if dbg == nil {
-		return nil
-	}
-	return dbg.writerPool
-}
-
-// ReaderPools returns the default DB group's reader connection pools (thread-safe).
-func (s *Server) ReaderPools() map[string]*pool.Pool {
-	dbg := s.resolveDBGroup(s.DefaultDBName())
-	if dbg == nil {
-		return nil
-	}
-	return dbg.ReaderPools()
-}
-
-// Balancer returns the default DB group's reader load balancer.
-func (s *Server) Balancer() *router.RoundRobin {
-	dbg := s.resolveDBGroup(s.DefaultDBName())
-	if dbg == nil {
-		return nil
-	}
-	return dbg.balancer
 }
 
 // SetReadOnly enables or disables read-only mode.

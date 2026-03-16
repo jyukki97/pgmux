@@ -30,7 +30,7 @@ A lightweight PostgreSQL proxy written in Go. Sitting between your application a
 - **Online Maintenance Mode** -- Instantly enable/disable maintenance mode via Admin API. In maintenance mode, new connections and non-transactional queries are rejected while in-progress transactions are allowed to complete (drain). `/readyz` automatically returns 503 so LB/K8s stops routing traffic. Use for safe traffic blocking during deployments, migrations, and patches.
 - **Read-Only Mode** -- `POST /admin/readonly` rejects all write queries at the proxy level. Maintains read service availability while blocking data modifications during writer failures, emergency maintenance, or data protection scenarios. Disable with `DELETE /admin/readonly`.
 - **Per-User / Per-Database Connection Limits** -- Limit the maximum number of connections per user and per database. Prevents a single user from monopolizing the pool in multi-tenant environments. Rejects with PostgreSQL standard error code (53300, `too_many_connections`). Limits can be hot-reloaded and monitored via `GET /admin/connections`.
-- **Multi-Database Routing** -- Proxy multiple PostgreSQL databases from a single proxy instance. Automatically routes to the correct DB group based on the client's `StartupMessage.database` field, maintaining independent Writer/Reader pools, balancers, and Circuit Breakers per database. Existing single-DB configurations remain backward compatible without changes.
+- **Multi-Database Routing** -- Route multiple PostgreSQL databases simultaneously from a single proxy instance. Automatically routes to the correct DB group based on the client's `StartupMessage.database` field, maintaining independent Writer/Reader pools, balancers, and Circuit Breakers per database.
 - **OpenTelemetry Distributed Tracing** -- Traces each stage as spans: query parsing, cache lookup, connection pool acquisition, and backend execution. Supports OTLP gRPC or stdout exporters. End-to-end tracing from application to DB is possible through context propagation via the Data API's `traceparent` header.
 - **Direct PostgreSQL Wire Protocol Implementation** -- Handles the PG protocol directly (MD5 & SCRAM-SHA-256 authentication), so any standard PG driver can connect without modification.
 
@@ -130,16 +130,6 @@ proxy:
   shutdown_timeout: 30s              # Graceful shutdown timeout (default: 30s)
   client_idle_timeout: 0             # Idle client timeout (0 = disabled, e.g., 5m)
 
-writer:
-  host: "primary.db.internal"
-  port: 5432
-
-readers:                              # Optional -- omit to route all queries to writer
-  - host: "replica-1.db.internal"
-    port: 5432
-  - host: "replica-2.db.internal"
-    port: 5432
-
 pool:
   min_connections: 5
   max_connections: 50
@@ -161,6 +151,18 @@ firewall:
   block_update_without_where: true
   block_drop_table: false
   block_truncate: false
+
+circuit_breaker:
+  enabled: false
+  error_threshold: 0.5           # Error rate (0.0-1.0) — trips breaker when exceeded
+  open_duration: 10s              # Duration to stay in Open state
+  half_open_max: 3                # Max requests allowed in Half-Open state
+  window_size: 10                 # Rolling window size for error rate calculation
+
+rate_limit:
+  enabled: false
+  rate: 1000                      # Queries per second
+  burst: 100                      # Max burst size
 
 cache:
   enabled: true
@@ -197,33 +199,32 @@ digest:
   max_patterns: 1000               # Maximum number of unique query patterns to track
   samples_per_pattern: 1000        # Samples per pattern for P50/P99 calculation
 
-backend:
+databases:
+  mydb:
+    writer:
+      host: "primary.db.internal"
+      port: 5432
+    readers:
+      - host: "replica-1.db.internal"
+        port: 5432
+      - host: "replica-2.db.internal"
+        port: 5432
+    backend:
+      user: "postgres"
+      password: "postgres"
+      database: "mydb"
+  # otherdb:
+  #   writer:
+  #     host: "primary-2.db.internal"
+  #     port: 5432
+  #   backend:
+  #     user: "admin"
+  #     password: "secret"
+  #     database: "otherdb"
+
+backend:                          # Shared defaults -- used when not specified in databases
   user: "postgres"
   password: "postgres"
-  database: "testdb"
-
-# --- Multi-Database Configuration (Optional) ---
-# When databases is present, the writer/readers/backend above are ignored.
-# databases:
-#   mydb:
-#     writer:
-#       host: "primary-1.db.internal"
-#       port: 5432
-#     readers:
-#       - host: "replica-1a.db.internal"
-#         port: 5432
-#     backend:
-#       user: "postgres"
-#       password: "secret"
-#       database: "mydb"
-#   otherdb:
-#     writer:
-#       host: "primary-2.db.internal"
-#       port: 5432
-#     backend:
-#       user: "admin"
-#       password: "secret"
-#       database: "otherdb"
 
 metrics:
   enabled: true
@@ -455,10 +456,10 @@ make docker-build
 ### Install Helm Chart
 
 ```bash
-# Edit writer/readers addresses in values.yaml to point to your actual DB, then:
+# Edit database addresses in values.yaml to point to your actual DB, then:
 helm install pgmux deploy/helm/pgmux/ \
-  --set config.writer.host=primary.db.internal \
-  --set config.backend.password=mypassword
+  --set config.databases.mydb.writer.host=primary.db.internal \
+  --set config.databases.mydb.backend.password=mypassword
 ```
 
 ### Key Values

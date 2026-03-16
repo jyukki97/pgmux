@@ -16,12 +16,16 @@ func connLimitTestConfig(defaultUser, defaultDB int, users []config.AuthUser, db
 			DefaultMaxConnectionsPerDB:   defaultDB,
 		},
 		Auth: config.AuthConfig{Users: users},
-		// Use Backend for ResolvedDatabases fallback
-		Writer:  config.DBConfig{Host: "localhost", Port: 5432},
-		Backend: config.BackendConfig{User: "postgres", Password: "pass", Database: "testdb"},
 	}
 	if dbs != nil {
 		cfg.Databases = dbs
+	} else {
+		cfg.Databases = map[string]config.DatabaseConfig{
+			"testdb": {
+				Writer:  config.DBConfig{Host: "localhost", Port: 5432},
+				Backend: config.BackendConfig{User: "postgres", Password: "pass", Database: "testdb"},
+			},
+		}
 	}
 	return cfg
 }

@@ -18,11 +18,7 @@ import (
 
 func testConfig() *config.Config {
 	return &config.Config{
-		Proxy:  config.ProxyConfig{Listen: "0.0.0.0:5432"},
-		Writer: config.DBConfig{Host: "127.0.0.1", Port: 5432},
-		Readers: []config.DBConfig{
-			{Host: "127.0.0.1", Port: 5433},
-		},
+		Proxy: config.ProxyConfig{Listen: "0.0.0.0:5432"},
 		Pool: config.PoolConfig{
 			MaxConnections:    10,
 			IdleTimeout:       10 * time.Minute,
@@ -39,6 +35,19 @@ func testConfig() *config.Config {
 			User:     "postgres",
 			Password: "secret123",
 			Database: "testdb",
+		},
+		Databases: map[string]config.DatabaseConfig{
+			"testdb": {
+				Writer: config.DBConfig{Host: "127.0.0.1", Port: 5432},
+				Readers: []config.DBConfig{
+					{Host: "127.0.0.1", Port: 5433},
+				},
+				Backend: config.BackendConfig{
+					User:     "postgres",
+					Password: "secret123",
+					Database: "testdb",
+				},
+			},
 		},
 	}
 }
@@ -78,10 +87,15 @@ func testServerWithGroups(cfg *config.Config) *Server {
 
 func TestHandleHealth(t *testing.T) {
 	cfg := &config.Config{
-		Writer:  config.DBConfig{Host: "127.0.0.1", Port: 5432},
-		Readers: []config.DBConfig{{Host: "127.0.0.1", Port: 5433}},
 		Backend: config.BackendConfig{Database: "testdb"},
 		Pool:    config.PoolConfig{MaxConnections: 10, IdleTimeout: time.Minute},
+		Databases: map[string]config.DatabaseConfig{
+			"testdb": {
+				Writer:  config.DBConfig{Host: "127.0.0.1", Port: 5432},
+				Readers: []config.DBConfig{{Host: "127.0.0.1", Port: 5433}},
+				Backend: config.BackendConfig{Database: "testdb"},
+			},
+		},
 	}
 	srv := testServerWithGroups(cfg)
 	req := httptest.NewRequest(http.MethodGet, "/admin/health", nil)
@@ -140,7 +154,9 @@ func TestHandleConfig_MasksPassword(t *testing.T) {
 	var resp map[string]any
 	json.NewDecoder(w.Body).Decode(&resp)
 
-	backend := resp["backend"].(map[string]any)
+	databases := resp["databases"].(map[string]any)
+	testdb := databases["testdb"].(map[string]any)
+	backend := testdb["backend"].(map[string]any)
 	if backend["password"] != "********" {
 		t.Errorf("password = %q, want masked", backend["password"])
 	}
@@ -362,13 +378,18 @@ func TestHandleHealth_ParallelTiming(t *testing.T) {
 	// to trigger the 2 s dial timeout. With 3 backends checked
 	// sequentially this would take ~6 s; parallel should finish in ~2 s.
 	cfg := &config.Config{
-		Writer: config.DBConfig{Host: "192.0.2.1", Port: 9999},
-		Readers: []config.DBConfig{
-			{Host: "192.0.2.2", Port: 9999},
-			{Host: "192.0.2.3", Port: 9999},
-		},
 		Backend: config.BackendConfig{Database: "testdb"},
 		Pool:    config.PoolConfig{MaxConnections: 10, IdleTimeout: time.Minute},
+		Databases: map[string]config.DatabaseConfig{
+			"testdb": {
+				Writer: config.DBConfig{Host: "192.0.2.1", Port: 9999},
+				Readers: []config.DBConfig{
+					{Host: "192.0.2.2", Port: 9999},
+					{Host: "192.0.2.3", Port: 9999},
+				},
+				Backend: config.BackendConfig{Database: "testdb"},
+			},
+		},
 	}
 	srv := testServerWithGroups(cfg)
 
@@ -440,13 +461,18 @@ func TestHandleHealth_LiveBackends(t *testing.T) {
 	port1 := ln1.Addr().(*net.TCPAddr).Port
 	port2 := ln2.Addr().(*net.TCPAddr).Port
 	cfg := &config.Config{
-		Writer: config.DBConfig{Host: "127.0.0.1", Port: port1},
-		Readers: []config.DBConfig{
-			{Host: "127.0.0.1", Port: port1},
-			{Host: "127.0.0.1", Port: port2},
-		},
 		Backend: config.BackendConfig{Database: "testdb"},
 		Pool:    config.PoolConfig{MaxConnections: 10, IdleTimeout: time.Minute},
+		Databases: map[string]config.DatabaseConfig{
+			"testdb": {
+				Writer: config.DBConfig{Host: "127.0.0.1", Port: port1},
+				Readers: []config.DBConfig{
+					{Host: "127.0.0.1", Port: port1},
+					{Host: "127.0.0.1", Port: port2},
+				},
+				Backend: config.BackendConfig{Database: "testdb"},
+			},
+		},
 	}
 	srv := testServerWithGroups(cfg)
 
@@ -531,9 +557,14 @@ func TestHandleReadyz_AllWritersHealthy(t *testing.T) {
 
 	port := ln.Addr().(*net.TCPAddr).Port
 	cfg := &config.Config{
-		Writer:  config.DBConfig{Host: "127.0.0.1", Port: port},
 		Backend: config.BackendConfig{Database: "testdb"},
 		Pool:    config.PoolConfig{MaxConnections: 10, IdleTimeout: time.Minute},
+		Databases: map[string]config.DatabaseConfig{
+			"testdb": {
+				Writer:  config.DBConfig{Host: "127.0.0.1", Port: port},
+				Backend: config.BackendConfig{Database: "testdb"},
+			},
+		},
 	}
 	srv := testServerWithGroups(cfg)
 
@@ -555,9 +586,14 @@ func TestHandleReadyz_AllWritersHealthy(t *testing.T) {
 
 func TestHandleReadyz_WriterUnreachable(t *testing.T) {
 	cfg := &config.Config{
-		Writer:  config.DBConfig{Host: "127.0.0.1", Port: 1}, // unreachable port
 		Backend: config.BackendConfig{Database: "testdb"},
 		Pool:    config.PoolConfig{MaxConnections: 10, IdleTimeout: time.Minute},
+		Databases: map[string]config.DatabaseConfig{
+			"testdb": {
+				Writer:  config.DBConfig{Host: "127.0.0.1", Port: 1}, // unreachable port
+				Backend: config.BackendConfig{Database: "testdb"},
+			},
+		},
 	}
 	srv := testServerWithGroups(cfg)
 
@@ -1442,9 +1478,14 @@ func TestHandleReadyz_MaintenanceMode(t *testing.T) {
 
 	port := ln.Addr().(*net.TCPAddr).Port
 	cfg := &config.Config{
-		Writer:  config.DBConfig{Host: "127.0.0.1", Port: port},
 		Backend: config.BackendConfig{Database: "testdb"},
 		Pool:    config.PoolConfig{MaxConnections: 10, IdleTimeout: time.Minute},
+		Databases: map[string]config.DatabaseConfig{
+			"testdb": {
+				Writer:  config.DBConfig{Host: "127.0.0.1", Port: port},
+				Backend: config.BackendConfig{Database: "testdb"},
+			},
+		},
 	}
 	srv := testServerWithGroups(cfg)
 
@@ -1500,10 +1541,15 @@ func TestHandleHealth_NoReaders(t *testing.T) {
 
 	lnAddr := ln.Addr().(*net.TCPAddr)
 	cfg := &config.Config{
-		Writer:  config.DBConfig{Host: "127.0.0.1", Port: lnAddr.Port},
-		Readers: nil,
 		Backend: config.BackendConfig{Database: "testdb"},
 		Pool:    config.PoolConfig{MaxConnections: 10, IdleTimeout: time.Minute},
+		Databases: map[string]config.DatabaseConfig{
+			"testdb": {
+				Writer:  config.DBConfig{Host: "127.0.0.1", Port: lnAddr.Port},
+				Readers: nil,
+				Backend: config.BackendConfig{Database: "testdb"},
+			},
+		},
 	}
 	srv := testServerWithGroups(cfg)
 

@@ -152,6 +152,18 @@ firewall:
   block_drop_table: false
   block_truncate: false
 
+circuit_breaker:
+  enabled: false
+  error_threshold: 0.5           # 에러율 (0.0-1.0) — 이 비율 초과 시 차단
+  open_duration: 10s              # Open 상태 유지 시간
+  half_open_max: 3                # Half-Open 상태에서 허용할 최대 요청 수
+  window_size: 10                 # 에러율 계산 윈도우 크기
+
+rate_limit:
+  enabled: false
+  rate: 1000                      # 초당 허용 쿼리 수
+  burst: 100                      # 최대 버스트 크기
+
 cache:
   enabled: true
   cache_ttl: 10s
@@ -487,10 +499,10 @@ make docker-build
 ### Helm Chart 설치
 
 ```bash
-# values.yaml에서 writer/readers 주소를 실제 DB로 수정한 뒤:
+# values.yaml에서 databases 주소를 실제 DB로 수정한 뒤:
 helm install pgmux deploy/helm/pgmux/ \
-  --set config.writer.host=primary.db.internal \
-  --set config.backend.password=mypassword
+  --set config.databases.mydb.writer.host=primary.db.internal \
+  --set config.databases.mydb.backend.password=mypassword
 ```
 
 ### 주요 values

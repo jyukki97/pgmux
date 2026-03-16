@@ -152,6 +152,18 @@ firewall:
   block_drop_table: false
   block_truncate: false
 
+circuit_breaker:
+  enabled: false
+  error_threshold: 0.5           # Error rate (0.0-1.0) — trips breaker when exceeded
+  open_duration: 10s              # Duration to stay in Open state
+  half_open_max: 3                # Max requests allowed in Half-Open state
+  window_size: 10                 # Rolling window size for error rate calculation
+
+rate_limit:
+  enabled: false
+  rate: 1000                      # Queries per second
+  burst: 100                      # Max burst size
+
 cache:
   enabled: true
   cache_ttl: 10s
@@ -444,10 +456,10 @@ make docker-build
 ### Install Helm Chart
 
 ```bash
-# Edit writer/readers addresses in values.yaml to point to your actual DB, then:
+# Edit database addresses in values.yaml to point to your actual DB, then:
 helm install pgmux deploy/helm/pgmux/ \
-  --set config.writer.host=primary.db.internal \
-  --set config.backend.password=mypassword
+  --set config.databases.mydb.writer.host=primary.db.internal \
+  --set config.databases.mydb.backend.password=mypassword
 ```
 
 ### Key Values

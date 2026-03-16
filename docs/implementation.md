@@ -923,15 +923,20 @@ proxy:
   shutdown_timeout: 30s
   client_idle_timeout: 0             # 유휴 클라이언트 타임아웃 (0 = 무제한, 예: 5m)
 
-writer:
-  host: "primary.db.internal"
-  port: 5432
-
-readers:
-  - host: "replica-1.db.internal"
-    port: 5432
-  - host: "replica-2.db.internal"
-    port: 5432
+databases:
+  mydb:
+    writer:
+      host: "primary.db.internal"
+      port: 5432
+    readers:
+      - host: "replica-1.db.internal"
+        port: 5432
+      - host: "replica-2.db.internal"
+        port: 5432
+    backend:
+      user: "postgres"
+      password: "postgres"
+      database: "mydb"
 
 pool:
   min_connections: 5
@@ -984,10 +989,9 @@ mirror:
   workers: 4
   buffer_size: 10000
 
-backend:
+backend:                                # 공유 기본값 — databases에서 미지정 시 사용
   user: "postgres"
   password: "postgres"
-  database: "testdb"
 
 metrics:
   enabled: true

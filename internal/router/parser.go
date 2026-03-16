@@ -57,6 +57,10 @@ func Classify(query string) QueryType {
 		if keyword == "WITH" && containsWriteKeyword(stmt) {
 			return QueryWrite
 		}
+		// Side-effectful SELECT: FOR UPDATE/SHARE, nextval(), set_config(), etc.
+		if keyword == "SELECT" && isSideEffectfulSelect(stmt) {
+			return QueryWrite
+		}
 	}
 	return QueryRead
 }
@@ -102,6 +106,15 @@ func classifyFast(query string) (QueryType, bool) {
 	}
 	if kw == "WITH" {
 		return 0, false // CTE needs full parser
+	}
+	if kw == "SELECT" {
+		// Check for side-effectful patterns that need full analysis
+		upper := strings.ToUpper(query)
+		if strings.Contains(upper, "FOR UPDATE") || strings.Contains(upper, "FOR SHARE") ||
+			strings.Contains(upper, "FOR NO KEY UPDATE") || strings.Contains(upper, "FOR KEY SHARE") ||
+			hasSideEffectFunc(upper) {
+			return 0, false // need full parser
+		}
 	}
 	return QueryRead, true
 }
@@ -580,6 +593,70 @@ func extractIdentifier(s string) string {
 		break
 	}
 	return result.String()
+}
+
+// sideEffectFuncs lists function name prefixes (uppercased) that indicate side effects.
+var sideEffectFuncs = []string{
+	"NEXTVAL(",
+	"SETVAL(",
+	"CURRVAL(",
+	"SET_CONFIG(",
+	"PG_ADVISORY_LOCK(",
+	"PG_ADVISORY_XACT_LOCK(",
+	"PG_ADVISORY_UNLOCK(",
+	"PG_ADVISORY_UNLOCK_ALL(",
+	"PG_TRY_ADVISORY_LOCK(",
+	"PG_TRY_ADVISORY_XACT_LOCK(",
+	"LO_CREATE(",
+	"LO_UNLINK(",
+	"PG_NOTIFY(",
+	"TXID_CURRENT(",
+}
+
+// hasSideEffectFunc checks if an uppercased query contains a known side-effectful function call.
+func hasSideEffectFunc(upperQuery string) bool {
+	for _, fn := range sideEffectFuncs {
+		if strings.Contains(upperQuery, fn) {
+			return true
+		}
+	}
+	return false
+}
+
+// lockingClauses lists locking clause patterns (uppercased) to check at word boundaries.
+var lockingClauses = []string{
+	"FOR UPDATE",
+	"FOR NO KEY UPDATE",
+	"FOR SHARE",
+	"FOR KEY SHARE",
+}
+
+// isSideEffectfulSelect checks if a SELECT statement contains locking clauses or
+// side-effectful function calls. String literals are stripped first to avoid false positives.
+func isSideEffectfulSelect(query string) bool {
+	upper := strings.ToUpper(stripStringLiterals(query))
+
+	// Check for locking clauses
+	for _, clause := range lockingClauses {
+		idx := strings.Index(upper, clause)
+		if idx >= 0 {
+			// Check word boundary before
+			if idx == 0 || upper[idx-1] == ' ' || upper[idx-1] == '\n' || upper[idx-1] == '\t' || upper[idx-1] == ')' {
+				end := idx + len(clause)
+				// Check word boundary after
+				if end >= len(upper) || upper[end] == ' ' || upper[end] == '\n' || upper[end] == '\t' || upper[end] == ';' {
+					return true
+				}
+			}
+		}
+	}
+
+	// Check for side-effectful function calls
+	if hasSideEffectFunc(upper) {
+		return true
+	}
+
+	return false
 }
 
 // stripQuotes removes surrounding double quotes from a quoted identifier.

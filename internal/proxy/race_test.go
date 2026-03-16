@@ -13,12 +13,18 @@ import (
 // With the RWMutex fix, this test must pass with `go test -race`.
 func TestServerReload_DataRace(t *testing.T) {
 	cfg := &config.Config{
-		Proxy:  config.ProxyConfig{Listen: "127.0.0.1:0"},
-		Writer: config.DBConfig{Host: "127.0.0.1", Port: 5432},
-		Readers: []config.DBConfig{
-			{Host: "127.0.0.1", Port: 5433},
+		Proxy: config.ProxyConfig{Listen: "127.0.0.1:0"},
+		Pool:  config.PoolConfig{MaxConnections: 10, IdleTimeout: time.Minute},
+		Databases: map[string]config.DatabaseConfig{
+			"testdb": {
+				Writer: config.DBConfig{Host: "127.0.0.1", Port: 5432},
+				Readers: []config.DBConfig{
+					{Host: "127.0.0.1", Port: 5433},
+				},
+				Backend: config.BackendConfig{User: "postgres", Password: "postgres", Database: "testdb"},
+				Pool:    config.PoolConfig{MaxConnections: 10, IdleTimeout: time.Minute},
+			},
 		},
-		Pool: config.PoolConfig{MaxConnections: 10, IdleTimeout: time.Minute},
 	}
 
 	srv := NewServer(cfg)
@@ -52,13 +58,19 @@ func TestServerReload_DataRace(t *testing.T) {
 		defer wg.Done()
 		for i := 0; i < 100; i++ {
 			newCfg := &config.Config{
-				Proxy:  config.ProxyConfig{Listen: "127.0.0.1:0"},
-				Writer: config.DBConfig{Host: "127.0.0.1", Port: 5432},
-				Readers: []config.DBConfig{
-					{Host: "127.0.0.1", Port: 5433},
-					{Host: "127.0.0.1", Port: 5434},
+				Proxy: config.ProxyConfig{Listen: "127.0.0.1:0"},
+				Pool:  config.PoolConfig{MaxConnections: i, IdleTimeout: time.Minute},
+				Databases: map[string]config.DatabaseConfig{
+					"testdb": {
+						Writer: config.DBConfig{Host: "127.0.0.1", Port: 5432},
+						Readers: []config.DBConfig{
+							{Host: "127.0.0.1", Port: 5433},
+							{Host: "127.0.0.1", Port: 5434},
+						},
+						Backend: config.BackendConfig{User: "postgres", Password: "postgres", Database: "testdb"},
+						Pool:    config.PoolConfig{MaxConnections: i, IdleTimeout: time.Minute},
+					},
 				},
-				Pool: config.PoolConfig{MaxConnections: i, IdleTimeout: time.Minute},
 			}
 			_ = srv.Reload(newCfg)
 			time.Sleep(time.Millisecond)

@@ -10,14 +10,6 @@ func TestLoad(t *testing.T) {
 	content := `
 proxy:
   listen: "0.0.0.0:5432"
-writer:
-  host: "primary.db.internal"
-  port: 5432
-readers:
-  - host: "replica-1.db.internal"
-    port: 5432
-  - host: "replica-2.db.internal"
-    port: 5432
 pool:
   min_connections: 5
   max_connections: 50
@@ -31,6 +23,20 @@ cache:
   cache_ttl: 10s
   max_cache_entries: 10000
   max_result_size: "1MB"
+databases:
+  testdb:
+    writer:
+      host: "primary.db.internal"
+      port: 5432
+    readers:
+      - host: "replica-1.db.internal"
+        port: 5432
+      - host: "replica-2.db.internal"
+        port: 5432
+    backend:
+      user: "postgres"
+      password: "postgres"
+      database: "testdb"
 `
 
 	tmpFile, err := os.CreateTemp("", "config-*.yaml")
@@ -54,20 +60,22 @@ cache:
 		t.Errorf("Proxy.Listen = %q, want %q", cfg.Proxy.Listen, "0.0.0.0:5432")
 	}
 
-	// Writer
-	if cfg.Writer.Host != "primary.db.internal" {
-		t.Errorf("Writer.Host = %q, want %q", cfg.Writer.Host, "primary.db.internal")
+	// Databases
+	db, ok := cfg.Databases["testdb"]
+	if !ok {
+		t.Fatal("databases[testdb] not found")
 	}
-	if cfg.Writer.Port != 5432 {
-		t.Errorf("Writer.Port = %d, want %d", cfg.Writer.Port, 5432)
+	if db.Writer.Host != "primary.db.internal" {
+		t.Errorf("Writer.Host = %q, want %q", db.Writer.Host, "primary.db.internal")
 	}
-
-	// Readers
-	if len(cfg.Readers) != 2 {
-		t.Fatalf("len(Readers) = %d, want 2", len(cfg.Readers))
+	if db.Writer.Port != 5432 {
+		t.Errorf("Writer.Port = %d, want %d", db.Writer.Port, 5432)
 	}
-	if cfg.Readers[0].Host != "replica-1.db.internal" {
-		t.Errorf("Readers[0].Host = %q, want %q", cfg.Readers[0].Host, "replica-1.db.internal")
+	if len(db.Readers) != 2 {
+		t.Fatalf("len(Readers) = %d, want 2", len(db.Readers))
+	}
+	if db.Readers[0].Host != "replica-1.db.internal" {
+		t.Errorf("Readers[0].Host = %q, want %q", db.Readers[0].Host, "replica-1.db.internal")
 	}
 
 	// Pool
@@ -134,12 +142,14 @@ func TestLoad_InvalidYAML(t *testing.T) {
 
 func TestLoad_Defaults(t *testing.T) {
 	content := `
-writer:
-  host: "primary.db.internal"
-  port: 5432
-readers:
-  - host: "replica-1.db.internal"
-    port: 5432
+databases:
+  testdb:
+    writer:
+      host: "primary.db.internal"
+      port: 5432
+    readers:
+      - host: "replica-1.db.internal"
+        port: 5432
 `
 	cfg := loadFromString(t, content)
 
@@ -160,11 +170,25 @@ readers:
 	}
 }
 
+func TestLoad_Validation_NoDatabases(t *testing.T) {
+	content := `
+pool:
+  min_connections: 5
+  max_connections: 50
+`
+	_, err := loadFromStringRaw(t, content)
+	if err == nil {
+		t.Error("expected error for missing databases")
+	}
+}
+
 func TestLoad_Validation_MissingWriter(t *testing.T) {
 	content := `
-readers:
-  - host: "replica-1.db.internal"
-    port: 5432
+databases:
+  testdb:
+    readers:
+      - host: "replica-1.db.internal"
+        port: 5432
 `
 	_, err := loadFromStringRaw(t, content)
 	if err == nil {
@@ -174,27 +198,28 @@ readers:
 
 func TestLoad_Validation_NoReaders(t *testing.T) {
 	content := `
-writer:
-  host: "primary.db.internal"
-  port: 5432
+databases:
+  testdb:
+    writer:
+      host: "primary.db.internal"
+      port: 5432
 `
 	cfg, err := loadFromStringRaw(t, content)
 	if err != nil {
 		t.Fatalf("unexpected error for no readers: %v", err)
 	}
-	if len(cfg.Readers) != 0 {
-		t.Errorf("expected empty readers, got %d", len(cfg.Readers))
+	if len(cfg.Databases["testdb"].Readers) != 0 {
+		t.Errorf("expected empty readers, got %d", len(cfg.Databases["testdb"].Readers))
 	}
 }
 
 func TestLoad_Validation_MinGreaterThanMax(t *testing.T) {
 	content := `
-writer:
-  host: "primary.db.internal"
-  port: 5432
-readers:
-  - host: "replica-1.db.internal"
-    port: 5432
+databases:
+  testdb:
+    writer:
+      host: "primary.db.internal"
+      port: 5432
 pool:
   min_connections: 100
   max_connections: 10
@@ -207,12 +232,11 @@ pool:
 
 func TestLoad_Validation_InvalidPort(t *testing.T) {
 	content := `
-writer:
-  host: "primary.db.internal"
-  port: 99999
-readers:
-  - host: "replica-1.db.internal"
-    port: 5432
+databases:
+  testdb:
+    writer:
+      host: "primary.db.internal"
+      port: 99999
 `
 	_, err := loadFromStringRaw(t, content)
 	if err == nil {
@@ -222,12 +246,11 @@ readers:
 
 func TestLoad_Auth_Disabled(t *testing.T) {
 	content := `
-writer:
-  host: "primary.db.internal"
-  port: 5432
-readers:
-  - host: "replica-1.db.internal"
-    port: 5432
+databases:
+  testdb:
+    writer:
+      host: "primary.db.internal"
+      port: 5432
 `
 	cfg := loadFromString(t, content)
 	if cfg.Auth.Enabled {
@@ -237,12 +260,11 @@ readers:
 
 func TestLoad_Auth_Enabled(t *testing.T) {
 	content := `
-writer:
-  host: "primary.db.internal"
-  port: 5432
-readers:
-  - host: "replica-1.db.internal"
-    port: 5432
+databases:
+  testdb:
+    writer:
+      host: "primary.db.internal"
+      port: 5432
 auth:
   enabled: true
   users:
@@ -265,12 +287,11 @@ auth:
 
 func TestLoad_Auth_EnabledNoUsers(t *testing.T) {
 	content := `
-writer:
-  host: "primary.db.internal"
-  port: 5432
-readers:
-  - host: "replica-1.db.internal"
-    port: 5432
+databases:
+  testdb:
+    writer:
+      host: "primary.db.internal"
+      port: 5432
 auth:
   enabled: true
 `
@@ -282,12 +303,11 @@ auth:
 
 func TestLoad_TLS_Disabled(t *testing.T) {
 	content := `
-writer:
-  host: "primary.db.internal"
-  port: 5432
-readers:
-  - host: "replica-1.db.internal"
-    port: 5432
+databases:
+  testdb:
+    writer:
+      host: "primary.db.internal"
+      port: 5432
 `
 	cfg := loadFromString(t, content)
 	if cfg.TLS.Enabled {
@@ -297,12 +317,11 @@ readers:
 
 func TestLoad_TLS_MissingCertFile(t *testing.T) {
 	content := `
-writer:
-  host: "primary.db.internal"
-  port: 5432
-readers:
-  - host: "replica-1.db.internal"
-    port: 5432
+databases:
+  testdb:
+    writer:
+      host: "primary.db.internal"
+      port: 5432
 tls:
   enabled: true
   key_file: "/tmp/nonexistent.key"
@@ -315,12 +334,11 @@ tls:
 
 func TestLoad_TLS_MissingKeyFile(t *testing.T) {
 	content := `
-writer:
-  host: "primary.db.internal"
-  port: 5432
-readers:
-  - host: "replica-1.db.internal"
-    port: 5432
+databases:
+  testdb:
+    writer:
+      host: "primary.db.internal"
+      port: 5432
 tls:
   enabled: true
   cert_file: "/tmp/nonexistent.crt"
@@ -333,12 +351,11 @@ tls:
 
 func TestLoad_TLS_FileNotFound(t *testing.T) {
 	content := `
-writer:
-  host: "primary.db.internal"
-  port: 5432
-readers:
-  - host: "replica-1.db.internal"
-    port: 5432
+databases:
+  testdb:
+    writer:
+      host: "primary.db.internal"
+      port: 5432
 tls:
   enabled: true
   cert_file: "/tmp/nonexistent.crt"
@@ -347,6 +364,59 @@ tls:
 	_, err := loadFromStringRaw(t, content)
 	if err == nil {
 		t.Error("expected error for nonexistent TLS files")
+	}
+}
+
+func TestLoad_DatabasesInheritDefaults(t *testing.T) {
+	content := `
+backend:
+  user: "shared_user"
+  password: "shared_pass"
+pool:
+  max_connections: 100
+  idle_timeout: 15m
+databases:
+  mydb:
+    writer:
+      host: "primary.db.internal"
+      port: 5432
+`
+	cfg := loadFromString(t, content)
+
+	db := cfg.Databases["mydb"]
+	if db.Backend.User != "shared_user" {
+		t.Errorf("db.Backend.User = %q, want %q", db.Backend.User, "shared_user")
+	}
+	if db.Backend.Password != "shared_pass" {
+		t.Errorf("db.Backend.Password = %q, want %q", db.Backend.Password, "shared_pass")
+	}
+	if db.Backend.Database != "mydb" {
+		t.Errorf("db.Backend.Database = %q, want %q (should default to key name)", db.Backend.Database, "mydb")
+	}
+	if db.Pool.MaxConnections != 100 {
+		t.Errorf("db.Pool.MaxConnections = %d, want 100 (inherited)", db.Pool.MaxConnections)
+	}
+	if db.Pool.IdleTimeout != 15*time.Minute {
+		t.Errorf("db.Pool.IdleTimeout = %v, want 15m (inherited)", db.Pool.IdleTimeout)
+	}
+}
+
+func TestDefaultDatabaseName(t *testing.T) {
+	cfg := &Config{
+		Backend: BackendConfig{Database: "mydb"},
+		Databases: map[string]DatabaseConfig{
+			"mydb":  {Writer: DBConfig{Host: "h", Port: 5432}},
+			"other": {Writer: DBConfig{Host: "h", Port: 5432}},
+		},
+	}
+	if got := cfg.DefaultDatabaseName(); got != "mydb" {
+		t.Errorf("DefaultDatabaseName() = %q, want %q", got, "mydb")
+	}
+
+	// When backend.database doesn't match, return lexicographic first
+	cfg.Backend.Database = "nonexistent"
+	if got := cfg.DefaultDatabaseName(); got != "mydb" {
+		t.Errorf("DefaultDatabaseName() = %q, want %q (lex first)", got, "mydb")
 	}
 }
 

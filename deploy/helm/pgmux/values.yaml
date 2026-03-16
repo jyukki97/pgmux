@@ -14,12 +14,6 @@ config:
   proxy:
     listen: "0.0.0.0:5432"
     # client_idle_timeout: "5m"       # 0 = disabled (no idle timeout)
-  writer:
-    host: "primary.db.internal"
-    port: 5432
-  readers:
-    - host: "replica-1.db.internal"
-      port: 5432
   pool:
     min_connections: 5
     max_connections: 50
@@ -47,10 +41,18 @@ config:
     enabled: false
     slow_query_threshold: "500ms"
     log_all_queries: false
-  backend:
-    user: "postgres"
-    password: "postgres"
-    database: "testdb"
+  databases:
+    testdb:
+      writer:
+        host: "primary.db.internal"
+        port: 5432
+      readers:
+        - host: "replica-1.db.internal"
+          port: 5432
+      backend:
+        user: "postgres"
+        password: "postgres"
+        database: "testdb"
   metrics:
     enabled: true
     listen: "0.0.0.0:9090"

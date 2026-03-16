@@ -50,6 +50,10 @@ type Metrics struct {
 	ConnLimitRejected *prometheus.CounterVec
 	ActiveConnsByUser *prometheus.GaugeVec
 	ActiveConnsByDB   *prometheus.GaugeVec
+
+	// Maintenance mode
+	MaintenanceMode         prometheus.Gauge
+	MaintenanceRejectedConn prometheus.Counter
 }
 
 // New creates and registers all Prometheus metrics.
@@ -218,6 +222,19 @@ func New() *Metrics {
 			},
 			[]string{"database"},
 		),
+
+		MaintenanceMode: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "pgmux_maintenance_mode",
+				Help: "Whether maintenance mode is active (1) or not (0).",
+			},
+		),
+		MaintenanceRejectedConn: prometheus.NewCounter(
+			prometheus.CounterOpts{
+				Name: "pgmux_maintenance_rejected_total",
+				Help: "Total number of connections/queries rejected due to maintenance mode.",
+			},
+		),
 	}
 
 	prometheus.MustRegister(
@@ -244,6 +261,8 @@ func New() *Metrics {
 		m.ConnLimitRejected,
 		m.ActiveConnsByUser,
 		m.ActiveConnsByDB,
+		m.MaintenanceMode,
+		m.MaintenanceRejectedConn,
 	)
 
 	return m

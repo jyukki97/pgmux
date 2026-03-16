@@ -100,6 +100,51 @@ func TestServer_GracefulShutdown(t *testing.T) {
 	}
 }
 
+func TestServer_MaintenanceMode(t *testing.T) {
+	srv := NewServer(testConfig("127.0.0.1:0"))
+
+	// Initially disabled
+	if srv.InMaintenance() {
+		t.Error("expected maintenance mode to be disabled initially")
+	}
+	enabled, at := srv.MaintenanceState()
+	if enabled {
+		t.Error("expected MaintenanceState.enabled = false")
+	}
+	if !at.IsZero() {
+		t.Error("expected MaintenanceState.at to be zero")
+	}
+
+	// Enable maintenance
+	srv.SetMaintenance(true)
+	if !srv.InMaintenance() {
+		t.Error("expected maintenance mode to be enabled")
+	}
+	enabled, at = srv.MaintenanceState()
+	if !enabled {
+		t.Error("expected MaintenanceState.enabled = true")
+	}
+	if at.IsZero() {
+		t.Error("expected MaintenanceState.at to be non-zero")
+	}
+	if time.Since(at) > time.Second {
+		t.Error("entered_at should be recent")
+	}
+
+	// Disable maintenance
+	srv.SetMaintenance(false)
+	if srv.InMaintenance() {
+		t.Error("expected maintenance mode to be disabled")
+	}
+	enabled, at = srv.MaintenanceState()
+	if enabled {
+		t.Error("expected MaintenanceState.enabled = false after disable")
+	}
+	if !at.IsZero() {
+		t.Error("expected MaintenanceState.at to be zero after disable")
+	}
+}
+
 func TestParseSize(t *testing.T) {
 	tests := []struct {
 		input string

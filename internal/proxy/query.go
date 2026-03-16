@@ -96,6 +96,16 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 			return
 		}
 
+		// Maintenance mode check — reject new queries but allow in-progress transactions to complete
+		if s.InMaintenance() && boundWriter == nil {
+			if s.metrics != nil {
+				s.metrics.MaintenanceRejectedConn.Inc()
+			}
+			slog.Info("query rejected: maintenance mode", "remote", clientConn.RemoteAddr())
+			s.sendFatalWithCode(clientConn, "57P01", "pgmux is in maintenance mode")
+			return
+		}
+
 		// Rate limit check
 		if rl := s.getRateLimiter(); rl != nil && !rl.Allow() {
 			slog.Warn("rate limited", "remote", clientConn.RemoteAddr())

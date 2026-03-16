@@ -5,6 +5,7 @@
 *.so
 *.dylib
 bin/
+pgmux
 
 # Test
 *.test

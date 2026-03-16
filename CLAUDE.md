@@ -23,7 +23,7 @@ internal/
             synthesizer.go, cancel.go, connlimit.go, dbgroup.go
   pool/     pool.go
   router/   router.go, parser.go, parser_ast.go, ast.go, parsed_query.go,
-            balancer.go, lsn.go, firewall.go
+            balancer.go, lsn.go, firewall.go, session_compat.go
   cache/    cache.go, invalidator.go, normalize.go
   protocol/ message.go, literal.go
   resilience/ ratelimit.go, breaker.go

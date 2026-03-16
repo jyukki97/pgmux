@@ -30,6 +30,12 @@ type Config struct {
 	Digest           DigestConfig                  `yaml:"digest"`
 	Databases        map[string]DatabaseConfig     `yaml:"databases"`
 	ConnectionLimits ConnectionLimitsConfig        `yaml:"connection_limits"`
+	SessionCompat    SessionCompatConfig           `yaml:"session_compatibility"`
+}
+
+type SessionCompatConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Mode    string `yaml:"mode"` // "block" | "warn" | "pin" | "allow"
 }
 
 type ConnectionLimitsConfig struct {
@@ -362,6 +368,9 @@ func (c *Config) applyDefaults() {
 	if c.Digest.SamplesPerPattern <= 0 {
 		c.Digest.SamplesPerPattern = 1000
 	}
+	if c.SessionCompat.Mode == "" {
+		c.SessionCompat.Mode = "warn"
+	}
 
 	// Apply defaults to each database config
 	for name, db := range c.Databases {
@@ -479,6 +488,14 @@ func (c *Config) validate() error {
 	}
 	if c.Pool.PreparedStatementMode != "proxy" && c.Pool.PreparedStatementMode != "multiplex" {
 		return fmt.Errorf("pool.prepared_statement_mode must be \"proxy\" or \"multiplex\", got %q", c.Pool.PreparedStatementMode)
+	}
+	if c.SessionCompat.Enabled {
+		switch c.SessionCompat.Mode {
+		case "block", "warn", "pin", "allow":
+			// valid
+		default:
+			return fmt.Errorf("session_compatibility.mode must be \"block\", \"warn\", \"pin\", or \"allow\", got %q", c.SessionCompat.Mode)
+		}
 	}
 	return nil
 }

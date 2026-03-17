@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/jyukki97/pgmux/internal/protocol"
 )
@@ -146,7 +147,8 @@ func (s *Server) relayCopyOut(clientConn, backendConn net.Conn) error {
 // relayCopyBoth handles CopyBothResponse (streaming replication) by relaying
 // bidirectionally until one side sends CopyDone or CopyFail.
 // Both goroutines are drained before returning to prevent data races on the
-// underlying connections.
+// underlying connections. A 30-second deadline prevents indefinite hangs if
+// one side becomes unresponsive after the other finishes.
 func (s *Server) relayCopyBoth(clientConn, backendConn net.Conn) error {
 	errCh := make(chan error, 2)
 
@@ -188,11 +190,21 @@ func (s *Server) relayCopyBoth(clientConn, backendConn net.Conn) error {
 		}
 	}()
 
-	// Wait for BOTH goroutines to finish to prevent data races on connections.
-	// The first error (if any) is returned; the second goroutine will unblock
-	// when the caller closes or resets the connection.
+	// Wait for the first goroutine to finish.
 	err1 := <-errCh
+
+	// Set a deadline on both connections so the remaining goroutine won't
+	// block indefinitely on network I/O if the peer is unresponsive.
+	const drainTimeout = 30 * time.Second
+	_ = clientConn.SetReadDeadline(time.Now().Add(drainTimeout))
+	_ = backendConn.SetReadDeadline(time.Now().Add(drainTimeout))
+
 	err2 := <-errCh
+
+	// Clear deadlines for subsequent use of these connections.
+	_ = clientConn.SetReadDeadline(time.Time{})
+	_ = backendConn.SetReadDeadline(time.Time{})
+
 	if err1 != nil {
 		return err1
 	}

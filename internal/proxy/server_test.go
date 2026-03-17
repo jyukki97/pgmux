@@ -53,7 +53,7 @@ func TestServer_AcceptsConnection(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	srv := NewServer(testConfig("127.0.0.1:0"))
+	srv, _ := NewServer(testConfig("127.0.0.1:0"))
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -89,7 +89,7 @@ func TestServer_AcceptsConnection(t *testing.T) {
 func TestServer_GracefulShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	srv := NewServer(testConfig("127.0.0.1:0"))
+	srv, _ := NewServer(testConfig("127.0.0.1:0"))
 
 	done := make(chan error, 1)
 	go func() {
@@ -110,7 +110,7 @@ func TestServer_GracefulShutdown(t *testing.T) {
 }
 
 func TestServer_MaintenanceMode(t *testing.T) {
-	srv := NewServer(testConfig("127.0.0.1:0"))
+	srv, _ := NewServer(testConfig("127.0.0.1:0"))
 
 	// Initially disabled
 	if srv.InMaintenance() {

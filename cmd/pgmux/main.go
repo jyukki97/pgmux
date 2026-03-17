@@ -102,7 +102,10 @@ func run() error {
 		}()
 	}
 
-	srv := proxy.NewServer(cfg)
+	srv, err := proxy.NewServer(cfg)
+	if err != nil {
+		return fmt.Errorf("create server: %w", err)
+	}
 
 	// Start Admin API server
 	if cfg.Admin.Enabled {

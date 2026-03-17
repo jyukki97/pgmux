@@ -13,7 +13,8 @@ func newTestServer() *Server {
 	cfg := &config.Config{
 		Cache: config.CacheConfig{MaxResultSize: "1MB"},
 	}
-	return NewServer(cfg)
+	srv, _ := NewServer(cfg)
+	return srv
 }
 
 // TestRelayCopyIn tests that relayCopyIn correctly relays CopyData and CopyDone

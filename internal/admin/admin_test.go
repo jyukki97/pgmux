@@ -73,7 +73,7 @@ func testServer() (*Server, *cache.Cache) {
 }
 
 func testServerWithGroups(cfg *config.Config) *Server {
-	proxySrv := proxy.NewServer(cfg)
+	proxySrv, _ := proxy.NewServer(cfg)
 	return New(
 		func() *config.Config { return cfg },
 		func() *cache.Cache { return nil },

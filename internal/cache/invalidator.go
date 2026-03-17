@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -21,8 +22,9 @@ func NewInvalidator(redisAddr, channel string, cache *Cache) (*Invalidator, erro
 		Addr: redisAddr,
 	})
 
-	// Verify connection
-	ctx := context.Background()
+	// Verify connection (with timeout to prevent startup hang)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		rdb.Close()
 		return nil, err

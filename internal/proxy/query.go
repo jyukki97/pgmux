@@ -395,6 +395,18 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 		}
 
 		// --- Extended Query Protocol ---
+
+		// Guard against clients accumulating unbounded extended-query messages
+		// without ever sending Sync. 10 000 messages per batch is far above any
+		// legitimate driver behaviour (typical batch: Parse+Bind+Describe+Execute = 4).
+		const maxExtBufMessages = 10000
+		if len(extBuf) >= maxExtBufMessages {
+			slog.Warn("extended query buffer limit reached, closing connection",
+				"remote", clientConn.RemoteAddr(), "buffered", len(extBuf))
+			s.sendError(clientConn, "too many pending extended query messages")
+			return
+		}
+
 		switch msg.Type {
 		case protocol.MsgParse:
 			if multiplexMode {

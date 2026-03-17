@@ -27,7 +27,7 @@ func TestServerReload_DataRace(t *testing.T) {
 		},
 	}
 
-	srv := NewServer(cfg)
+	srv, _ := NewServer(cfg)
 
 	var wg sync.WaitGroup
 	ctx, cancel := context.WithCancel(context.Background())

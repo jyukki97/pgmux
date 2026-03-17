@@ -19,7 +19,7 @@ import (
 )
 
 // Version is the pgmux version embedded in trace resources.
-const Version = "0.1.0"
+const Version = "1.0.0"
 
 // Init initializes the OpenTelemetry TracerProvider based on the given config.
 // When telemetry is disabled, a noop tracer is used and shutdown is a no-op.

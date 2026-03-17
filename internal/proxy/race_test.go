@@ -43,7 +43,7 @@ func TestServerReload_DataRace(t *testing.T) {
 				return
 			default:
 				// Thread-safe map read via DatabaseGroup
-				if dg := srv.DBGroup(srv.DefaultDBName()); dg != nil {
+				if dg := srv.DBGroups()[srv.DefaultDBName()]; dg != nil {
 					_, _ = dg.ReaderPool("127.0.0.1:5433")
 				}
 				// Thread-safe config read

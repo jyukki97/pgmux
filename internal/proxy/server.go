@@ -569,11 +569,6 @@ func (s *Server) RateLimiter() *resilience.RateLimiter {
 	return s.getRateLimiter()
 }
 
-// DBGroup returns a specific database group by name (thread-safe).
-func (s *Server) DBGroup(name string) *DatabaseGroup {
-	return s.resolveDBGroup(name)
-}
-
 // DBGroups returns all database groups (thread-safe).
 func (s *Server) DBGroups() map[string]*DatabaseGroup {
 	return s.getDBGroups()

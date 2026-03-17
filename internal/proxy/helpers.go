@@ -27,13 +27,6 @@ func (s *Server) sendReadyForQuery(conn net.Conn, inTransaction bool) {
 	_ = protocol.WriteMessage(conn, protocol.MsgReadyForQuery, []byte{status})
 }
 
-// truncateStr truncates a string to maxLen characters.
-func truncateStr(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
-}
 
 func (s *Server) sendError(conn net.Conn, msg string) {
 	var payload []byte
@@ -180,13 +173,6 @@ func (s *Server) extractQueryTablesParsed(query string, pq *router.ParsedQuery) 
 	return s.extractQueryTables(query)
 }
 
-// truncateSQL returns the first 100 characters of a SQL statement for span attributes.
-func truncateSQL(sql string) string {
-	if len(sql) > 100 {
-		return sql[:100]
-	}
-	return sql
-}
 
 // redactPolicy returns the current SQL redaction policy from config.
 func (s *Server) redactPolicy() redact.Policy {

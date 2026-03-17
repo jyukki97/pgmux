@@ -101,9 +101,6 @@ func TestSQL_SameStructureSameFingerprint(t *testing.T) {
 }
 
 func TestSQL_EmptyQuery(t *testing.T) {
-	got := SQL("", PolicyLiterals)
 	// Empty query should not panic
-	if got == "" {
-		// Acceptable — empty in, empty out (or fallback result)
-	}
+	_ = SQL("", PolicyLiterals)
 }

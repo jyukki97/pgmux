@@ -35,7 +35,7 @@ func testServer() *Server {
 	return New(
 		func() *config.Config { return cfg },
 		proxySrv.DBGroups,
-		proxySrv.DefaultDBName(),
+		func() string { return proxySrv.DefaultDBName() },
 		nilCache,
 		nil,
 		nilRateLimiter,
@@ -121,7 +121,7 @@ func TestEmptySQL(t *testing.T) {
 		},
 	}
 	proxySrv := proxy.NewServer(cfg)
-	srv := New(func() *config.Config { return cfg }, proxySrv.DBGroups, proxySrv.DefaultDBName(), nilCache, nil, nilRateLimiter, nil)
+	srv := New(func() *config.Config { return cfg }, proxySrv.DBGroups, func() string { return proxySrv.DefaultDBName() }, nilCache, nil, nilRateLimiter, nil)
 
 	body := `{"sql": ""}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/query", bytes.NewBufferString(body))
@@ -146,7 +146,7 @@ func TestInvalidBody(t *testing.T) {
 		},
 	}
 	proxySrv := proxy.NewServer(cfg)
-	srv := New(func() *config.Config { return cfg }, proxySrv.DBGroups, proxySrv.DefaultDBName(), nilCache, nil, nilRateLimiter, nil)
+	srv := New(func() *config.Config { return cfg }, proxySrv.DBGroups, func() string { return proxySrv.DefaultDBName() }, nilCache, nil, nilRateLimiter, nil)
 
 	body := `not json`
 	req := httptest.NewRequest(http.MethodPost, "/v1/query", bytes.NewBufferString(body))
@@ -176,7 +176,7 @@ func TestFirewallBlock(t *testing.T) {
 		},
 	}
 	proxySrv := proxy.NewServer(cfg)
-	srv := New(func() *config.Config { return cfg }, proxySrv.DBGroups, proxySrv.DefaultDBName(), nilCache, nil, nilRateLimiter, nil)
+	srv := New(func() *config.Config { return cfg }, proxySrv.DBGroups, func() string { return proxySrv.DefaultDBName() }, nilCache, nil, nilRateLimiter, nil)
 
 	body := `{"sql": "DELETE FROM users"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/query", bytes.NewBufferString(body))

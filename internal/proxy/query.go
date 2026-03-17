@@ -414,13 +414,12 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 								if s.metrics != nil {
 									s.metrics.SessionPinned.WithLabelValues(feature).Inc()
 								}
-								extRoute = router.RouteWriter
 							}
 						}
 					}
 				}
 
-				if session.InTransaction() || boundWriter != nil || route == router.RouteWriter {
+				if session.InTransaction() || boundWriter != nil || route == router.RouteWriter || session.Pinned() {
 					extRoute = router.RouteWriter
 				} else {
 					extRoute = route
@@ -471,13 +470,12 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 								if s.metrics != nil {
 									s.metrics.SessionPinned.WithLabelValues(feature).Inc()
 								}
-								extRoute = router.RouteWriter
 							}
 						}
 					}
 				}
 
-				if session.InTransaction() || boundWriter != nil || route == router.RouteWriter {
+				if session.InTransaction() || boundWriter != nil || route == router.RouteWriter || session.Pinned() {
 					extRoute = router.RouteWriter
 				} else {
 					extRoute = route

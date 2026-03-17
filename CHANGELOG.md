@@ -53,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Grafana Dashboard** — Pre-built dashboard template with Helm sidecar support
 - **Kubernetes Helm Chart** — Multi-platform Docker image (amd64/arm64), HPA, PDB, ServiceMonitor
 - **GitHub Actions CI/CD** — Lint, test (race), build, benchmark, Docker image auto-publish
+- **SQL Redaction / Safe Observability** — `observability.sql_redaction` config (`none`/`literals`/`full`) to mask SQL literals in audit logs, OpenTelemetry spans, slog, and webhooks
 
 ### Fixed (Pre-release QA)
 

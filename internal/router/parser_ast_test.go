@@ -121,6 +121,42 @@ func TestClassifyAST_NestedComments(t *testing.T) {
 	}
 }
 
+// === QA6: Missing write classification (#244) ===
+
+func TestClassifyAST_MissingWriteKeywords(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  QueryType
+	}{
+		// MERGE
+		{"merge", "MERGE INTO target USING source ON target.id = source.id WHEN MATCHED THEN UPDATE SET val = source.val WHEN NOT MATCHED THEN INSERT (id, val) VALUES (source.id, source.val)", QueryWrite},
+		// COPY FROM (write)
+		{"copy from stdin", "COPY users FROM STDIN", QueryWrite},
+		{"copy from file", "COPY users FROM '/tmp/data.csv' CSV", QueryWrite},
+		// COPY TO (read)
+		{"copy to stdout", "COPY users TO STDOUT", QueryRead},
+		{"copy query to stdout", "COPY (SELECT * FROM users) TO STDOUT", QueryRead},
+		// CALL
+		{"call procedure", "CALL my_procedure(1, 'test')", QueryWrite},
+		// EXPLAIN ANALYZE with write
+		{"explain analyze insert", "EXPLAIN ANALYZE INSERT INTO users VALUES (1)", QueryWrite},
+		{"explain analyze update", "EXPLAIN ANALYZE UPDATE users SET name = 'x'", QueryWrite},
+		// EXPLAIN without ANALYZE — read-only
+		{"explain insert", "EXPLAIN INSERT INTO users VALUES (1)", QueryRead},
+		// EXPLAIN ANALYZE with read — still read
+		{"explain analyze select", "EXPLAIN ANALYZE SELECT * FROM users", QueryRead},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ClassifyAST(tt.query)
+			if got != tt.want {
+				t.Errorf("ClassifyAST(%q) = %d, want %d", tt.query, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestExtractTablesAST(t *testing.T) {
 	tests := []struct {
 		query string

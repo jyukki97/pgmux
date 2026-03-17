@@ -23,6 +23,9 @@ var writeKeywords = map[string]bool{
 	"TRUNCATE": true,
 	"GRANT":    true,
 	"REVOKE":   true,
+	"MERGE":    true,
+	"COPY":     true,
+	"CALL":     true,
 }
 
 var hintRegex = regexp.MustCompile(`/\*\s*route:(writer|reader)\s*\*/`)

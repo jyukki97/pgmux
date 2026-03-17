@@ -120,6 +120,24 @@ func isWriteNode(node *pg_query.Node) bool {
 		return true
 	case *pg_query.Node_CommentStmt:
 		return true
+	case *pg_query.Node_MergeStmt:
+		return true
+	case *pg_query.Node_CopyStmt:
+		// COPY ... FROM is a write; COPY ... TO / COPY (query) TO is a read
+		return n.CopyStmt.GetIsFrom()
+	case *pg_query.Node_CallStmt:
+		// Stored procedures may have side effects — route to writer
+		return true
+	case *pg_query.Node_ExplainStmt:
+		// EXPLAIN ANALYZE actually executes the query
+		for _, opt := range n.ExplainStmt.GetOptions() {
+			if de := opt.GetDefElem(); de != nil && strings.ToLower(de.GetDefname()) == "analyze" {
+				if n.ExplainStmt.GetQuery() != nil {
+					return isWriteNode(n.ExplainStmt.GetQuery())
+				}
+			}
+		}
+		return false
 	case *pg_query.Node_SelectStmt:
 		s := n.SelectStmt
 		// CTE with write operations: WITH ... AS (INSERT/UPDATE/DELETE ...)

@@ -32,7 +32,7 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, bu
 		_, query := protocol.ParseParseMessage(buf[0].Payload)
 		key := cache.WithNamespace(s.cacheKey(query, dbg.name), cache.NSExtended)
 		if cached := s.queryCache.Get(key); cached != nil {
-			slog.Debug("extended cache hit", "sql", query)
+			slog.Debug("extended cache hit", "sql", s.redactSQLForLog(query))
 			if s.metrics != nil {
 				s.metrics.CacheHits.Inc()
 			}

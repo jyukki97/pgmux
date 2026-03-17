@@ -18,7 +18,7 @@
 | ~~Online Maintenance Mode~~ | ~~`POST /admin/maintenance` — 신규 쿼리 거부 + 진행 중 쿼리 drain 대기 + `503 Service Unavailable` 반환. 배포, 마이그레이션, 패치 시 안전한 트래픽 차단~~ | ~~완료 (#223)~~ |
 | ~~Read-Only Mode~~ | ~~`POST /admin/readonly` — 모든 쓰기 쿼리를 프록시에서 즉시 거부. Writer 장애, 긴급 점검, 데이터 보호 상황에서 읽기 서비스 유지~~ | ~~완료 (#225)~~ |
 | ~~Session Compatibility Guard / Session Pinning~~ | ~~Transaction pooling 환경에서 `LISTEN/UNLISTEN`, 세션 단위 `SET`, temp object, cursor 등 세션 의존 기능을 감지. 안전하게 session pinning 하거나 명시적으로 차단/메트릭 노출~~ | ~~완료 (#229)~~ |
-| **SQL Redaction / Safe Observability** | Audit log, tracing, admin 응답, webhook에서 리터럴/민감정보 마스킹. raw SQL과 normalized SQL 노출 정책 분리 | 높음 |
+| ~~SQL Redaction / Safe Observability~~ | ~~Audit log, tracing, admin 응답, webhook에서 리터럴/민감정보 마스킹. raw SQL과 normalized SQL 노출 정책 분리~~ | ~~완료 (#260)~~ |
 
 ---
 
@@ -58,7 +58,7 @@
 ```
 Phase 29: Idle Client Timeout (완료) + Admin API Auth (완료)
 Phase 30: Healthz/Readyz (완료) + Maintenance + Read-Only Mode
-Phase 31: Session Compatibility Guard + SQL Redaction
+Phase 31: Session Compatibility Guard (완료) + SQL Redaction (완료)
 Phase 32: Active Session Dashboard
 Phase 33: Per-User Rate Limiting + Connection Warming
 Phase 34: Replica Freshness Policy + Config Validation CLI

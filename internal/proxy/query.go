@@ -136,7 +136,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				queryCtx, querySpan = telemetry.Tracer().Start(ctx, "pgmux.query",
 					trace.WithAttributes(
 						attribute.String("db.system", "postgresql"),
-						attribute.String("db.statement", truncateSQL(query)),
+						attribute.String("db.statement", s.redactSQLForSpan(query)),
 					),
 				)
 			} else {
@@ -167,7 +167,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 					fwResult = router.CheckFirewall(query, fwCfg)
 				}
 				if fwResult.Blocked {
-					slog.Warn("firewall blocked query", "rule", fwResult.Rule, "sql", query)
+					slog.Warn("firewall blocked query", "rule", fwResult.Rule, "sql", s.redactSQLForLog(query))
 					if s.metrics != nil {
 						s.metrics.FirewallBlocked.WithLabelValues(string(fwResult.Rule)).Inc()
 					}
@@ -198,7 +198,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 					switch queryCfg.SessionCompat.Mode {
 					case "block":
 						slog.Warn("session-dependent feature blocked",
-							"feature", feature, "sql", truncateSQL(query), "remote", clientConn.RemoteAddr())
+							"feature", feature, "sql", s.redactSQLForLog(query), "remote", clientConn.RemoteAddr())
 						if s.metrics != nil {
 							s.metrics.SessionDepBlocked.WithLabelValues(feature).Inc()
 						}
@@ -211,7 +211,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 						continue
 					case "warn":
 						slog.Warn("session-dependent feature detected",
-							"feature", feature, "sql", truncateSQL(query), "remote", clientConn.RemoteAddr())
+							"feature", feature, "sql", s.redactSQLForLog(query), "remote", clientConn.RemoteAddr())
 					case "pin":
 						session.Pin(feature)
 						connDirty = true // ensure DISCARD ALL on release
@@ -250,14 +250,14 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				)
 			}
 
-			slog.Debug("query routed", "sql", query, "route", target)
+			slog.Debug("query routed", "sql", s.redactSQLForLog(query), "route", target)
 
 			// Read-only mode check — reject write queries (but allow transaction control)
 			if s.InReadOnly() && qtype == router.QueryWrite {
 				if s.metrics != nil {
 					s.metrics.ReadOnlyRejected.Inc()
 				}
-				slog.Info("write query rejected: read-only mode", "remote", clientConn.RemoteAddr(), "sql", truncateSQL(query))
+				slog.Info("write query rejected: read-only mode", "remote", clientConn.RemoteAddr(), "sql", s.redactSQLForLog(query))
 				if tracingEnabled {
 					querySpan.SetStatus(codes.Error, "read-only mode")
 					querySpan.End()
@@ -392,7 +392,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				}
 				extQueryText = query
 				route := session.RegisterStatement(stmtName, query)
-				slog.Debug("parse registered (multiplex)", "stmt", stmtName, "sql", query, "route", routeName(route))
+				slog.Debug("parse registered (multiplex)", "stmt", stmtName, "sql", s.redactSQLForLog(query), "route", routeName(route))
 				synth.RegisterStatement(stmtName, query, paramOIDs)
 
 				if txStart, txEnd := router.IsTxControl(query); txStart {
@@ -419,7 +419,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 								extSessionBlockedFeature = feature
 							case "warn":
 								slog.Warn("session-dependent feature detected (extended)",
-									"feature", feature, "sql", truncateStr(query, 100), "remote", clientConn.RemoteAddr())
+									"feature", feature, "sql", s.redactSQLForLog(query), "remote", clientConn.RemoteAddr())
 							case "pin":
 								session.Pin(feature)
 								connDirty = true
@@ -447,7 +447,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				stmtName, query := protocol.ParseParseMessage(msg.Payload)
 				extQueryText = query
 				route := session.RegisterStatement(stmtName, query)
-				slog.Debug("parse registered", "stmt", stmtName, "sql", query, "route", routeName(route))
+				slog.Debug("parse registered", "stmt", stmtName, "sql", s.redactSQLForLog(query), "route", routeName(route))
 
 				if txStart, txEnd := router.IsTxControl(query); txStart {
 					extTxStart = true
@@ -473,7 +473,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 								extSessionBlockedFeature = feature
 							case "warn":
 								slog.Warn("session-dependent feature detected (extended)",
-									"feature", feature, "sql", truncateStr(query, 100), "remote", clientConn.RemoteAddr())
+									"feature", feature, "sql", s.redactSQLForLog(query), "remote", clientConn.RemoteAddr())
 							case "pin":
 								session.Pin(feature)
 								connDirty = true
@@ -637,8 +637,8 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 					continue
 				}
 
-				slog.Debug("synthesized query", "sql", synthesized, "route", target)
-				extSpan.SetAttributes(attribute.String("db.statement", truncateStr(synthesized, 100)))
+				slog.Debug("synthesized query", "sql", s.redactSQLForLog(synthesized), "route", target)
+				extSpan.SetAttributes(attribute.String("db.statement", s.redactSQLForSpan(synthesized)))
 
 				if err := s.executeSynthesizedQuery(extCtx, clientConn, synthesized, extRoute, session, &boundWriter, &boundWriterPool, extTxStart, extTxEnd, ct, dbg, extQueryTimeout); err != nil {
 					extSpan.SetStatus(codes.Error, err.Error())

@@ -31,6 +31,11 @@ type Config struct {
 	Databases        map[string]DatabaseConfig     `yaml:"databases"`
 	ConnectionLimits ConnectionLimitsConfig        `yaml:"connection_limits"`
 	SessionCompat    SessionCompatConfig           `yaml:"session_compatibility"`
+	Observability    ObservabilityConfig           `yaml:"observability"`
+}
+
+type ObservabilityConfig struct {
+	SQLRedaction string `yaml:"sql_redaction"` // "none" | "literals" | "full"
 }
 
 type SessionCompatConfig struct {
@@ -371,6 +376,9 @@ func (c *Config) applyDefaults() {
 	if c.SessionCompat.Mode == "" {
 		c.SessionCompat.Mode = "warn"
 	}
+	if c.Observability.SQLRedaction == "" {
+		c.Observability.SQLRedaction = "literals"
+	}
 
 	// Apply defaults to each database config
 	for name, db := range c.Databases {
@@ -530,6 +538,12 @@ func (c *Config) validate() error {
 		default:
 			return fmt.Errorf("session_compatibility.mode must be \"block\", \"warn\", \"pin\", or \"allow\", got %q", c.SessionCompat.Mode)
 		}
+	}
+	switch c.Observability.SQLRedaction {
+	case "none", "literals", "full":
+		// valid
+	default:
+		return fmt.Errorf("observability.sql_redaction must be \"none\", \"literals\", or \"full\", got %q", c.Observability.SQLRedaction)
 	}
 	return nil
 }

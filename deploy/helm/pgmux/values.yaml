@@ -37,6 +37,8 @@ config:
     block_update_without_where: true
     block_drop_table: false
     block_truncate: false
+  observability:
+    sql_redaction: "literals"
   audit:
     enabled: false
     slow_query_threshold: "500ms"

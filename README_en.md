@@ -23,6 +23,7 @@ A lightweight PostgreSQL proxy written in Go. Sitting between your application a
 - **Admin API** -- Provides runtime statistics, health checks, and cache flush operations via HTTP. Supports Bearer API Key authentication with RBAC (admin/viewer role separation) and optional IP allowlist. Settings are hot-reloadable.
 - **Serverless Data API** -- Execute SQL via HTTP with `POST /v1/query` and receive JSON responses. Reuse pooled connections from Lambda/Edge functions without TCP connection overhead. API Key authentication, firewall, and caching are applied transparently. `COPY` statements are not supported due to the streaming nature of HTTP.
 - **Audit Logging & Slow Query Tracker** -- Records structured audit logs for all queries or only slow queries. Sends alerts via Webhook (e.g., Slack) when thresholds are exceeded, with automatic deduplication of alerts for the same query.
+- **SQL Redaction / Safe Observability** -- Automatically masks SQL literals across all external-facing surfaces: audit logs, OpenTelemetry spans, slog, and webhooks. Configure `observability.sql_redaction` with three policies: `none` (pass-through), `literals` (replace literals with `$1`, `$2`, default), or `full` (expose only query fingerprint hash). Uses `pg_query` parser for accurate literal removal with regex fallback on parse failure. Internal routing and caching use raw SQL, so functionality is unaffected.
 - **Query Mirroring** -- Asynchronously mirrors production queries to a Shadow DB for latency comparison. Supports per-pattern P50/P99 latency comparison, automatic performance regression detection, table filtering, and read_only/all modes. Validate the performance impact of DB migrations and index changes without affecting production traffic.
 - **Query Digest / Top-N Queries** -- Normalizes queries (replacing literals with `$N`) and aggregates per-pattern execution counts, average/P50/P99 latency. View the most frequently executed query patterns via `GET /admin/queries/top`, and reset statistics with `POST /admin/queries/reset`. A proxy-level equivalent of `pg_stat_statements`.
 - **Query Timeout** -- Proxy-level query timeout. Sends a `CancelRequest` to the backend when the configured timeout is exceeded. Set globally via `pool.query_timeout: 30s` or per-query via `/* timeout:5s */ SELECT ...` hint.
@@ -156,6 +157,9 @@ firewall:
 session_compatibility:
   enabled: true
   mode: "warn"                     # "block" | "warn" | "pin" | "allow"
+
+observability:
+  sql_redaction: "literals"        # "none" | "literals" | "full"
 
 circuit_breaker:
   enabled: false
@@ -320,6 +324,7 @@ internal/
   router/lsn.go                   # PostgreSQL LSN type parsing/comparison
   router/firewall.go              # Query firewall (dangerous query blocking)
   router/session_compat.go        # Session Compatibility Guard (session dependency detection/block/pin)
+  redact/redact.go                # SQL Redaction (literal masking, fingerprint)
   audit/audit.go                  # Audit Logging + Slow Query Tracker
   dataapi/handler.go              # Serverless Data API (HTTP to PG)
   cache/cache.go                  # LRU cache + per-table invalidation

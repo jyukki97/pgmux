@@ -14,6 +14,7 @@ import (
 	"github.com/jyukki97/pgmux/internal/digest"
 	"github.com/jyukki97/pgmux/internal/mirror"
 	"github.com/jyukki97/pgmux/internal/protocol"
+	"github.com/jyukki97/pgmux/internal/redact"
 	"github.com/jyukki97/pgmux/internal/router"
 )
 
@@ -187,6 +188,26 @@ func truncateSQL(sql string) string {
 	return sql
 }
 
+// redactPolicy returns the current SQL redaction policy from config.
+func (s *Server) redactPolicy() redact.Policy {
+	return redact.Policy(s.getConfig().Observability.SQLRedaction)
+}
+
+// redactSQL applies the configured SQL redaction policy.
+func (s *Server) redactSQL(query string) string {
+	return redact.SQL(query, s.redactPolicy())
+}
+
+// redactSQLForLog returns a redacted, truncated SQL for slog attributes.
+func (s *Server) redactSQLForLog(query string) string {
+	return redact.ForLog(query, s.redactPolicy())
+}
+
+// redactSQLForSpan returns a redacted, truncated SQL for OpenTelemetry span attributes.
+func (s *Server) redactSQLForSpan(query string) string {
+	return redact.SQLTruncated(query, s.redactPolicy(), 100)
+}
+
 func routeName(r router.Route) string {
 	if r == router.RouteWriter {
 		return "writer"
@@ -247,7 +268,7 @@ func (s *Server) emitAuditEvent(clientConn net.Conn, query, target string, elaps
 		Timestamp:  time.Now(),
 		User:       auditCfg.Backend.User,
 		SourceIP:   sourceIP,
-		Query:      query,
+		Query:      s.redactSQL(query),
 		DurationMS: durationMS,
 		Target:     target,
 		Cached:     cached,

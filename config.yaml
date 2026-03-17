@@ -35,6 +35,9 @@ databases:
       password: "postgres"
       database: "testdb"
 
+observability:
+  sql_redaction: "literals"        # "none" | "literals" | "full"
+
 audit:
   enabled: false
   slow_query_threshold: 500ms

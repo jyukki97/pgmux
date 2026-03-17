@@ -24,6 +24,7 @@ import (
 	"github.com/jyukki97/pgmux/internal/pool"
 	"github.com/jyukki97/pgmux/internal/protocol"
 	"github.com/jyukki97/pgmux/internal/proxy"
+	"github.com/jyukki97/pgmux/internal/redact"
 	"github.com/jyukki97/pgmux/internal/resilience"
 	"github.com/jyukki97/pgmux/internal/router"
 	"github.com/jyukki97/pgmux/internal/telemetry"
@@ -144,7 +145,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	ctx, querySpan := telemetry.Tracer().Start(ctx, "pgmux.dataapi.query",
 		trace.WithAttributes(
 			attribute.String("db.system", "postgresql"),
-			attribute.String("db.statement", truncateSQL(req.SQL)),
+			attribute.String("db.statement", s.redactSQLForSpan(req.SQL)),
 			attribute.String("db.name", dbName),
 		),
 	)
@@ -236,7 +237,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		querySpan.SetStatus(codes.Error, err.Error())
-		slog.Error("data api query error", "sql", req.SQL, "error", err)
+		slog.Error("data api query error", "sql", s.redactSQLForLog(req.SQL), "error", err)
 		writeError(w, http.StatusInternalServerError, "query execution failed")
 		return
 	}
@@ -368,7 +369,7 @@ func (s *Server) executeOnPool(ctx context.Context, sql string, p *pool.Pool) (*
 			cancelled.Store(true)
 			_ = conn.SetDeadline(time.Now()) // unblock blocking reads
 			slog.Debug("dataapi: context cancelled, forced connection deadline",
-				"sql", truncateSQL(sql))
+				"sql", redact.SQLTruncated(sql, s.redactPolicy(), 100))
 		case <-stopCh:
 			// Normal completion — caller signalled us to exit.
 		}
@@ -747,6 +748,21 @@ func (s *Server) extractReadTablesParsed(sql string, pq *router.ParsedQuery) []s
 		return router.ExtractReadTablesASTWithTree(pq)
 	}
 	return s.extractReadTables(sql)
+}
+
+// redactPolicy returns the current SQL redaction policy from config.
+func (s *Server) redactPolicy() redact.Policy {
+	return redact.Policy(s.cfgFn().Observability.SQLRedaction)
+}
+
+// redactSQLForSpan returns a redacted, truncated SQL for OpenTelemetry span attributes.
+func (s *Server) redactSQLForSpan(sql string) string {
+	return redact.SQLTruncated(sql, s.redactPolicy(), 100)
+}
+
+// redactSQLForLog returns a redacted, truncated SQL for slog attributes.
+func (s *Server) redactSQLForLog(sql string) string {
+	return redact.ForLog(sql, s.redactPolicy())
 }
 
 // truncateSQL returns the first 100 characters of a SQL statement for span attributes.

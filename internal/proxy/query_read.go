@@ -27,7 +27,7 @@ func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, client
 	if s.queryCache != nil {
 		key := s.cacheKeyParsed(query, pq, dbg.name)
 		if cached := s.queryCache.Get(key); cached != nil {
-			slog.Debug("cache hit", "sql", query)
+			slog.Debug("cache hit", "sql", s.redactSQLForLog(query))
 			if s.metrics != nil {
 				s.metrics.CacheHits.Inc()
 			}
@@ -147,7 +147,7 @@ func (s *Server) handleReadQueryTraced(traceCtx, poolCtx context.Context, client
 			if s.metrics != nil {
 				s.metrics.CacheEntries.Set(float64(s.queryCache.Len()))
 			}
-			slog.Debug("cache set", "sql", query, "size", len(collected))
+			slog.Debug("cache set", "sql", s.redactSQLForLog(query), "size", len(collected))
 		}
 	} else {
 		if err := s.relayUntilReady(clientConn, rConn); err != nil {

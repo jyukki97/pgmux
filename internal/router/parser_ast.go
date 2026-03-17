@@ -121,8 +121,8 @@ func isWriteNode(node *pg_query.Node) bool {
 	case *pg_query.Node_CommentStmt:
 		return true
 	case *pg_query.Node_SelectStmt:
-		// CTE with write operations: WITH ... AS (INSERT/UPDATE/DELETE ...)
 		s := n.SelectStmt
+		// CTE with write operations: WITH ... AS (INSERT/UPDATE/DELETE ...)
 		if s.GetWithClause() != nil {
 			for _, cte := range s.GetWithClause().GetCtes() {
 				if ce := cte.GetCommonTableExpr(); ce != nil {
@@ -132,10 +132,59 @@ func isWriteNode(node *pg_query.Node) bool {
 				}
 			}
 		}
+		// Locking clause: FOR UPDATE, FOR SHARE, FOR NO KEY UPDATE, FOR KEY SHARE
+		if len(s.GetLockingClause()) > 0 {
+			return true
+		}
+		// Side-effectful function calls: nextval(), setval(), set_config(), pg_advisory_lock(), etc.
+		if hasSideEffectFuncCalls(node) {
+			return true
+		}
 		return false
 	default:
 		return false
 	}
+}
+
+// sideEffectFuncNames lists function names (lowercased) that indicate side effects in SELECT.
+var sideEffectFuncNames = map[string]bool{
+	"nextval":                    true,
+	"setval":                     true,
+	"currval":                    true,
+	"set_config":                 true,
+	"pg_advisory_lock":           true,
+	"pg_advisory_xact_lock":      true,
+	"pg_advisory_unlock":         true,
+	"pg_advisory_unlock_all":     true,
+	"pg_try_advisory_lock":       true,
+	"pg_try_advisory_xact_lock":  true,
+	"lo_create":                  true,
+	"lo_unlink":                  true,
+	"pg_notify":                  true,
+	"txid_current":               true,
+}
+
+// hasSideEffectFuncCalls walks the AST node tree looking for FuncCall nodes
+// whose function names match known side-effectful functions.
+func hasSideEffectFuncCalls(node *pg_query.Node) bool {
+	found := false
+	walkNode(node, func(n *pg_query.Node) bool {
+		if found {
+			return false
+		}
+		if fc := n.GetFuncCall(); fc != nil {
+			for _, nameNode := range fc.GetFuncname() {
+				if s := nameNode.GetString_(); s != nil {
+					if sideEffectFuncNames[strings.ToLower(s.GetSval())] {
+						found = true
+						return false
+					}
+				}
+			}
+		}
+		return true
+	})
+	return found
 }
 
 // ExtractTablesAST extracts table names from write queries using AST parsing.

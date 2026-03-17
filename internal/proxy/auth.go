@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -105,7 +106,7 @@ func (s *Server) frontendAuth(clientConn net.Conn, username string, proxyPID, pr
 	clientHash := strings.TrimRight(string(msg.Payload), "\x00")
 	expectedHash := pgMD5Password(username, password, salt)
 
-	if clientHash != expectedHash {
+	if subtle.ConstantTimeCompare([]byte(clientHash), []byte(expectedHash)) != 1 {
 		s.sendError(clientConn, "password authentication failed for user \""+username+"\"")
 		return fmt.Errorf("MD5 password mismatch for user %q", username)
 	}

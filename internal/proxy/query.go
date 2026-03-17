@@ -633,6 +633,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 					extBuf = extBuf[:0]
 					extRoute = router.RouteReader
 					extTxStart, extTxEnd = false, false
+					extIsWrite = false
 					muxBindDetail = nil
 					continue
 				}

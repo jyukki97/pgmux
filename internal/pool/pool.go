@@ -305,9 +305,9 @@ func (p *Pool) StartHealthCheck(ctx context.Context, interval time.Duration) {
 
 func (p *Pool) healthCheck() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	if p.closed {
+		p.mu.Unlock()
 		return
 	}
 
@@ -323,14 +323,27 @@ func (p *Pool) healthCheck() {
 	}
 	p.idle = alive
 
-	// Replenish to min connections
+	// Replenish to min connections — unlock during dial to avoid
+	// blocking all pool operations behind network I/O.
 	for p.numOpen < p.cfg.MinConnections {
+		p.numOpen++ // reserve slot
+		p.mu.Unlock()
+
 		conn, err := p.newConn()
+
+		p.mu.Lock()
 		if err != nil {
+			p.numOpen-- // release reserved slot
 			slog.Error("healthcheck: replenish connection", "error", err)
 			break
 		}
+		if p.closed {
+			p.numOpen--
+			p.mu.Unlock()
+			conn.Close()
+			return
+		}
 		p.idle = append(p.idle, conn)
-		p.numOpen++
 	}
+	p.mu.Unlock()
 }

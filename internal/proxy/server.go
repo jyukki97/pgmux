@@ -41,7 +41,7 @@ type Server struct {
 	wg           sync.WaitGroup
 	cancelMap       sync.Map         // cancelKeyPair → *cancelTarget
 	nextProxyPID    atomic.Uint32
-	connTracker     *ConnTracker    // per-user/per-DB connection limits (nil if disabled)
+	connTrackerPtr  atomic.Pointer[ConnTracker] // per-user/per-DB connection limits (nil if disabled)
 	maintenanceMode atomic.Bool
 	maintenanceAt   atomic.Int64    // unix nano timestamp when maintenance was entered
 	readOnlyMode    atomic.Bool
@@ -187,7 +187,7 @@ func NewServer(cfg *config.Config) (*Server, error) {
 
 	// Initialize connection limits tracker
 	if cfg.ConnectionLimits.Enabled {
-		s.connTracker = NewConnTracker(cfg)
+		s.connTrackerPtr.Store(NewConnTracker(cfg))
 		slog.Info("connection limits enabled",
 			"default_per_user", cfg.ConnectionLimits.DefaultMaxConnectionsPerUser,
 			"default_per_db", cfg.ConnectionLimits.DefaultMaxConnectionsPerDB)
@@ -371,8 +371,8 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 
 	// 4. Check per-user and per-database connection limits
 	username := params["user"]
-	if s.connTracker != nil {
-		ok, reason := s.connTracker.TryAcquire(username, dbName)
+	if ct := s.connTrackerPtr.Load(); ct != nil {
+		ok, reason := ct.TryAcquire(username, dbName)
 		if !ok {
 			if s.metrics != nil {
 				s.metrics.ConnLimitRejected.WithLabelValues(username, dbName).Inc()
@@ -387,7 +387,9 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 			s.metrics.ActiveConnsByDB.WithLabelValues(dbName).Inc()
 		}
 		defer func() {
-			s.connTracker.Release(username, dbName)
+			if ct := s.connTrackerPtr.Load(); ct != nil {
+				ct.Release(username, dbName)
+			}
 			if s.metrics != nil {
 				s.metrics.ActiveConnsByUser.WithLabelValues(username).Dec()
 				s.metrics.ActiveConnsByDB.WithLabelValues(dbName).Dec()
@@ -481,15 +483,15 @@ func (s *Server) Reload(newCfg *config.Config) error {
 		s.rateLimitPtr.Store(nil)
 	}
 
-	// Update connection limits
+	// Update connection limits (atomic — no lock needed for readers)
 	if newCfg.ConnectionLimits.Enabled {
-		if s.connTracker != nil {
-			s.connTracker.UpdateLimits(newCfg)
+		if ct := s.connTrackerPtr.Load(); ct != nil {
+			ct.UpdateLimits(newCfg)
 		} else {
-			s.connTracker = NewConnTracker(newCfg)
+			s.connTrackerPtr.Store(NewConnTracker(newCfg))
 		}
 	} else {
-		s.connTracker = nil
+		s.connTrackerPtr.Store(nil)
 	}
 
 	// Update default DB
@@ -582,9 +584,9 @@ func (s *Server) DefaultDBName() string {
 	return name
 }
 
-// ConnTracker returns the connection limit tracker (may be nil if disabled).
+// ConnTracker returns the connection limit tracker (may be nil if disabled, lock-free via atomic.Pointer).
 func (s *Server) ConnTracker() *ConnTracker {
-	return s.connTracker
+	return s.connTrackerPtr.Load()
 }
 
 // SetMaintenance enables or disables maintenance mode.

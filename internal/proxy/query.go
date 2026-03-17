@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -380,11 +379,9 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				slog.Debug("parse registered (multiplex)", "stmt", stmtName, "sql", query, "route", routeName(route))
 				synth.RegisterStatement(stmtName, query, paramOIDs)
 
-				upper := strings.ToUpper(strings.TrimSpace(query))
-				if strings.HasPrefix(upper, "BEGIN") || strings.HasPrefix(upper, "START TRANSACTION") {
+				if txStart, txEnd := router.IsTxControl(query); txStart {
 					extTxStart = true
-				}
-				if strings.HasPrefix(upper, "COMMIT") || strings.HasPrefix(upper, "ROLLBACK") || strings.HasPrefix(upper, "END") {
+				} else if txEnd {
 					extTxEnd = true
 				}
 				if s.classifyQuery(query) == router.QueryWrite {
@@ -436,11 +433,9 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				route := session.RegisterStatement(stmtName, query)
 				slog.Debug("parse registered", "stmt", stmtName, "sql", query, "route", routeName(route))
 
-				upper := strings.ToUpper(strings.TrimSpace(query))
-				if strings.HasPrefix(upper, "BEGIN") || strings.HasPrefix(upper, "START TRANSACTION") {
+				if txStart, txEnd := router.IsTxControl(query); txStart {
 					extTxStart = true
-				}
-				if strings.HasPrefix(upper, "COMMIT") || strings.HasPrefix(upper, "ROLLBACK") || strings.HasPrefix(upper, "END") {
+				} else if txEnd {
 					extTxEnd = true
 				}
 				if s.classifyQuery(query) == router.QueryWrite {

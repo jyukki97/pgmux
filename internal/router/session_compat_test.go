@@ -169,6 +169,39 @@ func TestContainsSessionAdvisoryLock(t *testing.T) {
 	}
 }
 
+// === QA6: Leading comments bypass session detection (#243) ===
+
+func TestDetectSessionDependency_LeadingComment(t *testing.T) {
+	tests := []struct {
+		name    string
+		query   string
+		want    bool
+		feature SessionFeature
+	}{
+		{"comment SET", "/*x*/ SET search_path TO public", true, FeatureSessionSet},
+		{"comment LISTEN", "/*x*/ LISTEN foo", true, FeatureListen},
+		{"comment UNLISTEN", "/*x*/ UNLISTEN *", true, FeatureUnlisten},
+		{"comment PREPARE", "/*x*/ PREPARE s AS SELECT 1", true, FeaturePrepare},
+		{"comment DECLARE", "/*x*/ DECLARE c CURSOR FOR SELECT 1", true, FeatureDeclare},
+		{"comment CREATE TEMP", "/*x*/ CREATE TEMP TABLE t (id int)", true, FeatureCreateTemp},
+		{"line comment SET", "-- c\nSET search_path TO public", true, FeatureSessionSet},
+		{"nested comment LISTEN", "/* /* n */ */ LISTEN foo", true, FeatureListen},
+		// SET LOCAL with comment — still safe
+		{"comment SET LOCAL", "/*x*/ SET LOCAL search_path TO public", false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := DetectSessionDependency(tt.query)
+			if result.Detected != tt.want {
+				t.Errorf("DetectSessionDependency(%q).Detected = %v, want %v", tt.query, result.Detected, tt.want)
+			}
+			if tt.want && result.Feature != tt.feature {
+				t.Errorf("DetectSessionDependency(%q).Feature = %q, want %q", tt.query, result.Feature, tt.feature)
+			}
+		})
+	}
+}
+
 func TestSessionPin(t *testing.T) {
 	s := NewSession(0, false, false)
 

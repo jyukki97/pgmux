@@ -80,11 +80,8 @@ func DetectSessionDependencyAST(pq *ParsedQuery, query string) SessionDependency
 
 // detectSingleStmtDependency checks a single statement for session-dependent features.
 func detectSingleStmtDependency(query string) SessionDependencyResult {
-	// Skip leading whitespace
-	i := 0
-	for i < len(query) && (query[i] == ' ' || query[i] == '\t' || query[i] == '\n' || query[i] == '\r') {
-		i++
-	}
+	// Skip leading whitespace and comments
+	i := SkipLeadingNoise(query)
 	if i >= len(query) {
 		return SessionDependencyResult{}
 	}

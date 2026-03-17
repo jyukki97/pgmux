@@ -132,7 +132,7 @@ func (s *Session) routeQueryLocked(query string) Route {
 func (s *Session) updateTransactionState(query string) {
 	stmts := splitStatements(query)
 	for _, stmt := range stmts {
-		upper := strings.ToUpper(strings.TrimSpace(stmt))
+		upper := strings.ToUpper(strings.TrimSpace(stripComments(stmt)))
 		if strings.HasPrefix(upper, "BEGIN") || strings.HasPrefix(upper, "START TRANSACTION") {
 			s.inTransaction = true
 		}
@@ -147,7 +147,7 @@ func (s *Session) updateTransactionState(query string) {
 func containsTransactionKeyword(query string) bool {
 	stmts := splitStatements(query)
 	for _, stmt := range stmts {
-		upper := strings.ToUpper(strings.TrimSpace(stmt))
+		upper := strings.ToUpper(strings.TrimSpace(stripComments(stmt)))
 		if strings.HasPrefix(upper, "BEGIN") || strings.HasPrefix(upper, "START TRANSACTION") ||
 			strings.HasPrefix(upper, "COMMIT") || strings.HasPrefix(upper, "ROLLBACK") ||
 			strings.HasPrefix(upper, "END") {
@@ -270,11 +270,8 @@ func splitStatements(query string) []string {
 // 2 for COMMIT/ROLLBACK/END. Zero-allocation: uses byte-level comparison
 // instead of strings.ToUpper.
 func hasTxPrefix(query string) int {
-	// Skip leading whitespace
-	i := 0
-	for i < len(query) && (query[i] == ' ' || query[i] == '\t' || query[i] == '\n' || query[i] == '\r') {
-		i++
-	}
+	// Skip leading whitespace and comments
+	i := SkipLeadingNoise(query)
 	if i >= len(query) {
 		return 0
 	}
@@ -350,6 +347,58 @@ func eqFoldN(s string, target string) bool {
 
 func isSpace(b byte) bool {
 	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
+}
+
+// SkipLeadingNoise returns the index past any leading whitespace,
+// block comments (/* ... */ with nesting), and line comments (-- ...\n).
+// Exported for use by the proxy package.
+func SkipLeadingNoise(query string) int {
+	i := 0
+	for i < len(query) {
+		ch := query[i]
+		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+			i++
+			continue
+		}
+		if i+1 < len(query) && ch == '/' && query[i+1] == '*' {
+			depth := 1
+			i += 2
+			for i < len(query) && depth > 0 {
+				if i+1 < len(query) && query[i] == '/' && query[i+1] == '*' {
+					depth++
+					i += 2
+				} else if i+1 < len(query) && query[i] == '*' && query[i+1] == '/' {
+					depth--
+					i += 2
+				} else {
+					i++
+				}
+			}
+			continue
+		}
+		if i+1 < len(query) && ch == '-' && query[i+1] == '-' {
+			i += 2
+			for i < len(query) && query[i] != '\n' {
+				i++
+			}
+			if i < len(query) {
+				i++
+			}
+			continue
+		}
+		break
+	}
+	return i
+}
+
+// IsTxControl checks if a query starts with a transaction control keyword,
+// skipping leading whitespace and comments.
+// Returns (true, false) for BEGIN/START TRANSACTION,
+// (false, true) for COMMIT/ROLLBACK/END,
+// (false, false) otherwise.
+func IsTxControl(query string) (start, end bool) {
+	tx := hasTxPrefix(query)
+	return tx == 1, tx == 2
 }
 
 // isSingleStatement returns true if the query contains at most one statement.
@@ -476,7 +525,7 @@ func (s *Session) CloseStatement(name string) {
 
 // routeLocked determines the route without locking (caller must hold mu).
 func (s *Session) routeLocked(query string) Route {
-	upper := strings.ToUpper(strings.TrimSpace(query))
+	upper := strings.ToUpper(strings.TrimSpace(stripComments(query)))
 
 	if strings.HasPrefix(upper, "BEGIN") || strings.HasPrefix(upper, "START TRANSACTION") ||
 		strings.HasPrefix(upper, "COMMIT") || strings.HasPrefix(upper, "ROLLBACK") {

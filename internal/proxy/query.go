@@ -494,6 +494,9 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				if route == router.RouteWriter {
 					extRoute = router.RouteWriter
 				}
+				if session.StatementIsWrite(detail.StatementName) {
+					extIsWrite = true
+				}
 				muxBindDetail = detail
 				// Send BindComplete to client
 				if err := protocol.WriteMessage(clientConn, '2', nil); err != nil {
@@ -505,6 +508,9 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				route := session.StatementRoute(stmtName)
 				if route == router.RouteWriter {
 					extRoute = router.RouteWriter
+				}
+				if session.StatementIsWrite(stmtName) {
+					extIsWrite = true
 				}
 				extBuf = append(extBuf, protocol.CopyMessage(msg))
 			}

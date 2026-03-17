@@ -25,6 +25,9 @@ type Session struct {
 	// Prepared statement routing: statement name → route
 	stmtRoutes map[string]Route
 
+	// Prepared statement write tracking: statement name → is write query
+	stmtWrite map[string]bool
+
 	// Session pinning: when true, all queries are routed to writer
 	// and the backend connection is held for the session lifetime.
 	pinned       bool
@@ -37,6 +40,7 @@ func NewSession(readAfterWriteDelay time.Duration, causalConsistency bool, astPa
 		causalConsistency:   causalConsistency,
 		astParser:           astParser,
 		stmtRoutes:          make(map[string]Route),
+		stmtWrite:           make(map[string]bool),
 	}
 }
 
@@ -385,6 +389,16 @@ func (s *Session) RegisterStatement(name, query string) Route {
 
 	route := s.routeLocked(query)
 	s.stmtRoutes[name] = route
+
+	// Track write classification for read-only mode enforcement
+	var qtype QueryType
+	if s.astParser {
+		qtype = ClassifyAST(query)
+	} else {
+		qtype = Classify(query)
+	}
+	s.stmtWrite[name] = (qtype == QueryWrite)
+
 	return route
 }
 
@@ -398,6 +412,18 @@ func (s *Session) StatementRoute(name string) Route {
 		return route
 	}
 	return RouteWriter
+}
+
+// StatementIsWrite returns whether a previously registered prepared statement
+// is a write query. Returns true for unknown statements (safe default).
+func (s *Session) StatementIsWrite(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if isWrite, ok := s.stmtWrite[name]; ok {
+		return isWrite
+	}
+	return true // safe default: treat unknown as write
 }
 
 // SetLastWriteLSN records the WAL LSN after a write query.
@@ -445,6 +471,7 @@ func (s *Session) CloseStatement(name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.stmtRoutes, name)
+	delete(s.stmtWrite, name)
 }
 
 // routeLocked determines the route without locking (caller must hold mu).

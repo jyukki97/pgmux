@@ -101,6 +101,9 @@ func TestDetectSessionDependencyAST(t *testing.T) {
 		// SET
 		{"ast set", "SET search_path TO public", true, FeatureSessionSet},
 		{"ast set local", "SET LOCAL search_path TO public", false, ""},
+		{"ast set transaction", "SET TRANSACTION ISOLATION LEVEL READ COMMITTED", false, ""},
+		{"ast set transaction read only", "SET TRANSACTION READ ONLY", false, ""},
+		{"ast set constraints", "SET CONSTRAINTS ALL DEFERRED", false, ""},
 
 		// DECLARE
 		{"ast declare", "DECLARE c CURSOR FOR SELECT 1", true, FeatureDeclare},

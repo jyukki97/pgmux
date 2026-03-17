@@ -676,6 +676,18 @@ func isSideEffectfulSelect(query string) bool {
 	return false
 }
 
+// ContainsCopyStatement checks if the query contains a COPY statement.
+// Handles leading comments, multi-statement queries, and other SQL formatting.
+func ContainsCopyStatement(query string) bool {
+	stmts := splitStatements(query)
+	for _, stmt := range stmts {
+		if firstKeyword(stmt) == "COPY" {
+			return true
+		}
+	}
+	return false
+}
+
 // extractCopyTable extracts the table name from COPY ... FROM statements.
 func extractCopyTable(q, upper string) []string {
 	// COPY tablename FROM ... — extract tablename

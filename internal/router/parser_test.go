@@ -31,10 +31,39 @@ func TestClassify(t *testing.T) {
 		// Regular comments should be stripped
 		{"-- comment\nSELECT 1", QueryRead},
 		{"/* normal comment */ SELECT 1", QueryRead},
+		// QA6: Comment false positives (#245)
+		{"/* FOR UPDATE */ SELECT 1", QueryRead},
+		{"/* nextval() */ SELECT 1", QueryRead},
+		{"/* FOR SHARE */ SELECT * FROM users", QueryRead},
+		{"WITH x AS (SELECT 1) /* UPDATE */ SELECT * FROM x", QueryRead},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.query, func(t *testing.T) {
+			got := Classify(tt.query)
+			if got != tt.want {
+				t.Errorf("Classify(%q) = %d, want %d", tt.query, got, tt.want)
+			}
+		})
+	}
+}
+
+// === QA6: Missing write classification (#244) — string parser ===
+
+func TestClassify_MissingWriteKeywords(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  QueryType
+	}{
+		{"merge", "MERGE INTO target USING source ON target.id = source.id WHEN MATCHED THEN UPDATE SET val = source.val", QueryWrite},
+		{"copy from stdin", "COPY users FROM STDIN", QueryWrite},
+		{"copy from file", "COPY users FROM '/tmp/data.csv'", QueryWrite},
+		{"copy to stdout", "COPY users TO STDOUT", QueryWrite}, // string parser treats all COPY as write (safe default)
+		{"call procedure", "CALL my_procedure(1)", QueryWrite},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			got := Classify(tt.query)
 			if got != tt.want {
 				t.Errorf("Classify(%q) = %d, want %d", tt.query, got, tt.want)

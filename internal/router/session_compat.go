@@ -80,11 +80,8 @@ func DetectSessionDependencyAST(pq *ParsedQuery, query string) SessionDependency
 
 // detectSingleStmtDependency checks a single statement for session-dependent features.
 func detectSingleStmtDependency(query string) SessionDependencyResult {
-	// Skip leading whitespace
-	i := 0
-	for i < len(query) && (query[i] == ' ' || query[i] == '\t' || query[i] == '\n' || query[i] == '\r') {
-		i++
-	}
+	// Skip leading whitespace and comments
+	i := SkipLeadingNoise(query)
 	if i >= len(query) {
 		return SessionDependencyResult{}
 	}
@@ -147,7 +144,13 @@ func detectSingleStmtDependency(query string) SessionDependencyResult {
 // This makes a simple Contains check sufficient to distinguish session vs. transaction-scoped.
 func containsSessionAdvisoryLock(query string) bool {
 	lower := strings.ToLower(query)
-	return strings.Contains(lower, "advisory_lock") || strings.Contains(lower, "advisory_unlock")
+	// Fast path: if raw query doesn't contain "advisory", skip expensive stripping
+	if !strings.Contains(lower, "advisory") {
+		return false
+	}
+	// Strip comments and string literals to avoid false positives
+	cleaned := strings.ToLower(stripComments(stripStringLiterals(query)))
+	return strings.Contains(cleaned, "advisory_lock") || strings.Contains(cleaned, "advisory_unlock")
 }
 
 // detectNodeDependency checks a single AST node for session-dependent features.

@@ -287,6 +287,127 @@ func TestSession_ASTParser_PreparedStatement(t *testing.T) {
 	}
 }
 
+// === QA6: Leading comments bypass (#243) ===
+
+func TestSession_LeadingCommentBypassTx(t *testing.T) {
+	tests := []struct {
+		name    string
+		query   string
+		wantTx  bool
+		wantEnd bool
+	}{
+		{"block comment BEGIN", "/*x*/ BEGIN", true, false},
+		{"line comment BEGIN", "-- comment\nBEGIN", true, false},
+		{"nested comment BEGIN", "/* /* nested */ */ BEGIN", true, false},
+		{"block comment COMMIT", "/*x*/ COMMIT", false, true},
+		{"block comment ROLLBACK", "/*x*/ ROLLBACK", false, true},
+		{"block comment END", "/*x*/ END", false, true},
+		{"block comment START TX", "/*x*/ START TRANSACTION", true, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewSession(0, false, false)
+			if tt.wantTx {
+				route := s.Route(tt.query)
+				if route != RouteWriter {
+					t.Errorf("Route(%q) = %d, want RouteWriter", tt.query, route)
+				}
+				if !s.InTransaction() {
+					t.Errorf("after %q: InTransaction() = false, want true", tt.query)
+				}
+			}
+			if tt.wantEnd {
+				// First enter a transaction, then exit
+				s.Route("BEGIN")
+				route := s.Route(tt.query)
+				if route != RouteWriter {
+					t.Errorf("Route(%q) = %d, want RouteWriter", tt.query, route)
+				}
+				if s.InTransaction() {
+					t.Errorf("after %q: InTransaction() = true, want false", tt.query)
+				}
+			}
+		})
+	}
+}
+
+func TestSession_LeadingCommentBypassTx_Multi(t *testing.T) {
+	s := NewSession(0, false, false)
+	// Multi-statement with commented BEGIN
+	s.Route("SELECT 1; /*x*/ BEGIN;")
+	if !s.InTransaction() {
+		t.Error("after 'SELECT 1; /*x*/ BEGIN;': InTransaction() = false, want true")
+	}
+
+	// Multi-statement with commented COMMIT
+	s.Route("SELECT 1; /*x*/ COMMIT;")
+	if s.InTransaction() {
+		t.Error("after 'SELECT 1; /*x*/ COMMIT;': InTransaction() = true, want false")
+	}
+}
+
+func TestSession_LeadingCommentBypassTx_Extended(t *testing.T) {
+	// routeLocked (used by RegisterStatement) should also handle comments
+	s := NewSession(0, false, false)
+	route := s.RegisterStatement("s1", "/*x*/ BEGIN")
+	if route != RouteWriter {
+		t.Errorf("RegisterStatement(/*x*/ BEGIN) = %d, want RouteWriter", route)
+	}
+}
+
+func TestIsTxControl(t *testing.T) {
+	tests := []struct {
+		query     string
+		wantStart bool
+		wantEnd   bool
+	}{
+		{"BEGIN", true, false},
+		{"/*x*/ BEGIN", true, false},
+		{"-- c\nBEGIN", true, false},
+		{"COMMIT", false, true},
+		{"/*x*/ COMMIT", false, true},
+		{"ROLLBACK", false, true},
+		{"/*x*/ ROLLBACK", false, true},
+		{"SELECT 1", false, false},
+		{"/*x*/ SELECT 1", false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			s, e := IsTxControl(tt.query)
+			if s != tt.wantStart || e != tt.wantEnd {
+				t.Errorf("IsTxControl(%q) = (%v, %v), want (%v, %v)", tt.query, s, e, tt.wantStart, tt.wantEnd)
+			}
+		})
+	}
+}
+
+func TestSkipLeadingNoise(t *testing.T) {
+	tests := []struct {
+		query string
+		want  string // expected remaining string after skipping noise
+	}{
+		{"SELECT 1", "SELECT 1"},
+		{"  SELECT 1", "SELECT 1"},
+		{"/*x*/ SELECT 1", "SELECT 1"},
+		{"/* a */ /* b */ SELECT 1", "SELECT 1"},
+		{"-- comment\nSELECT 1", "SELECT 1"},
+		{"/* /* nested */ */ SELECT 1", "SELECT 1"},
+		{" /* a */ -- b\n SELECT 1", "SELECT 1"},
+		{"", ""},
+		{"/* unterminated", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			i := SkipLeadingNoise(tt.query)
+			got := tt.query[i:]
+			if got != tt.want {
+				t.Errorf("SkipLeadingNoise(%q) → %q, want %q", tt.query, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSplitStatements(t *testing.T) {
 	tests := []struct {
 		name  string

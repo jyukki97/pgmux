@@ -160,11 +160,8 @@ func (s *Server) handleWriteQuery(clientConn net.Conn, writerConn net.Conn, msg 
 // (SET, PREPARE, LISTEN, CREATE TEMP, etc.) that requires DISCARD ALL to clean up.
 // SET LOCAL and SET TRANSACTION are transaction-scoped and don't require reset.
 func isSessionModifying(query string) bool {
-	// Skip leading whitespace
-	i := 0
-	for i < len(query) && (query[i] == ' ' || query[i] == '\t' || query[i] == '\n' || query[i] == '\r') {
-		i++
-	}
+	// Skip leading whitespace and comments
+	i := router.SkipLeadingNoise(query)
 	if i >= len(query) {
 		return false
 	}

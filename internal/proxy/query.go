@@ -701,7 +701,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 						extSpan.End()
 						slog.Error("forward ext batch to bound reader", "error", err)
 						boundReaderPool.Discard(boundReader)
-						boundReader, boundReaderPool, boundReaderAddr = nil, nil, ""
+						boundReader, boundReaderPool = nil, nil
 						return
 					}
 					if err := s.relayUntilReady(clientConn, boundReader); err != nil {
@@ -715,7 +715,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 						extSpan.End()
 						slog.Error("relay bound reader response", "error", err)
 						boundReaderPool.Discard(boundReader)
-						boundReader, boundReaderPool, boundReaderAddr = nil, nil, ""
+						boundReader, boundReaderPool = nil, nil
 						return
 					}
 					if stopTimer != nil {

@@ -160,6 +160,15 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 
 	cfg := s.cfgFn()
 
+	// Reject COPY statements — Data API uses Simple Query Protocol which
+	// cannot handle the CopyIn/CopyOut sub-protocol. COPY would hang or
+	// produce incomplete results.
+	sqlUpper := strings.ToUpper(strings.TrimSpace(req.SQL))
+	if strings.HasPrefix(sqlUpper, "COPY ") || strings.HasPrefix(sqlUpper, "COPY\t") {
+		writeError(w, http.StatusBadRequest, "COPY is not supported via Data API")
+		return
+	}
+
 	// Pre-parse AST once when AST mode is enabled
 	var parsedQuery *router.ParsedQuery
 	if cfg.Routing.ASTParser {
@@ -236,7 +245,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		querySpan.SetStatus(codes.Error, err.Error())
 		slog.Error("data api query error", "sql", req.SQL, "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, "query execution failed")
 		return
 	}
 

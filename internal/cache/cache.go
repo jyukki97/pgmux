@@ -107,6 +107,8 @@ func (c *Cache) Set(key uint64, result []byte, tables []string) {
 	if elem, ok := c.items[key]; ok {
 		c.evictList.MoveToFront(elem)
 		e := elem.Value.(*entry)
+		// Remove stale table references before updating
+		c.removeTableIndex(key, e.tables)
 		e.result = result
 		e.tables = tables
 		e.expiresAt = time.Now().Add(c.ttl)
@@ -195,5 +197,17 @@ func (c *Cache) updateTableIndex(key uint64, tables []string) {
 			c.tableIndex[table] = make(map[uint64]struct{})
 		}
 		c.tableIndex[table][key] = struct{}{}
+	}
+}
+
+// removeTableIndex removes a key from the table index for the given tables.
+func (c *Cache) removeTableIndex(key uint64, tables []string) {
+	for _, table := range tables {
+		if keys, ok := c.tableIndex[table]; ok {
+			delete(keys, key)
+			if len(keys) == 0 {
+				delete(c.tableIndex, table)
+			}
+		}
 	}
 }

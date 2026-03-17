@@ -550,3 +550,37 @@ func (s *Server) handleMultiplexDescribe(ctx context.Context, clientConn net.Con
 		}
 	}
 }
+
+// acquireReaderForBind acquires a reader connection for a Parse-only extended
+// query batch, with fallback to the writer pool. Returns the connection, pool,
+// and the address used. The caller is responsible for releasing or discarding.
+func (s *Server) acquireReaderForBind(ctx context.Context, readerAddr string, dbg *DatabaseGroup) (*pool.Conn, *pool.Pool, string, error) {
+	if readerAddr != "" {
+		if cb, ok := dbg.ReaderCB(readerAddr); ok {
+			if cb.Allow() != nil {
+				readerAddr = "" // circuit breaker open
+			}
+		}
+	}
+	if readerAddr != "" {
+		if rPool, ok := dbg.ReaderPool(readerAddr); ok {
+			if rConn, err := rPool.Acquire(ctx); err == nil {
+				return rConn, rPool, readerAddr, nil
+			}
+			if cb, ok := dbg.ReaderCB(readerAddr); ok {
+				cb.RecordFailure()
+			}
+			dbg.balancer.MarkUnhealthy(readerAddr)
+		}
+	}
+	// Fallback to writer
+	wPool := dbg.writerPool
+	wConn, err := wPool.Acquire(ctx)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("acquire reader (with writer fallback): %w", err)
+	}
+	if s.metrics != nil {
+		s.metrics.ReaderFallback.Inc()
+	}
+	return wConn, wPool, dbg.writerAddr, nil
+}

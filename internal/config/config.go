@@ -430,6 +430,28 @@ func (c *Config) validate() error {
 				return fmt.Errorf("databases.%s.readers[%d].port must be between 1 and 65535, got %d", name, i, r.Port)
 			}
 		}
+		// Validate per-database pool settings
+		if db.Pool.MaxConnections < 1 {
+			return fmt.Errorf("databases.%s.pool.max_connections must be >= 1, got %d", name, db.Pool.MaxConnections)
+		}
+		if db.Pool.MinConnections < 0 {
+			return fmt.Errorf("databases.%s.pool.min_connections must be >= 0, got %d", name, db.Pool.MinConnections)
+		}
+		if db.Pool.MinConnections > db.Pool.MaxConnections {
+			return fmt.Errorf("databases.%s.pool.min_connections (%d) must be <= pool.max_connections (%d)", name, db.Pool.MinConnections, db.Pool.MaxConnections)
+		}
+		if db.Pool.IdleTimeout < 0 {
+			return fmt.Errorf("databases.%s.pool.idle_timeout must be >= 0, got %v", name, db.Pool.IdleTimeout)
+		}
+		if db.Pool.MaxLifetime < 0 {
+			return fmt.Errorf("databases.%s.pool.max_lifetime must be >= 0, got %v", name, db.Pool.MaxLifetime)
+		}
+		if db.Pool.ConnectionTimeout < 0 {
+			return fmt.Errorf("databases.%s.pool.connection_timeout must be >= 0, got %v", name, db.Pool.ConnectionTimeout)
+		}
+		if db.Pool.QueryTimeout < 0 {
+			return fmt.Errorf("databases.%s.pool.query_timeout must be >= 0, got %v", name, db.Pool.QueryTimeout)
+		}
 	}
 	if c.TLS.Enabled {
 		if c.TLS.CertFile == "" {
@@ -485,6 +507,18 @@ func (c *Config) validate() error {
 	}
 	if c.Pool.MinConnections > c.Pool.MaxConnections {
 		return fmt.Errorf("pool.min_connections (%d) must be <= pool.max_connections (%d)", c.Pool.MinConnections, c.Pool.MaxConnections)
+	}
+	if c.Pool.IdleTimeout < 0 {
+		return fmt.Errorf("pool.idle_timeout must be >= 0, got %v", c.Pool.IdleTimeout)
+	}
+	if c.Pool.MaxLifetime < 0 {
+		return fmt.Errorf("pool.max_lifetime must be >= 0, got %v", c.Pool.MaxLifetime)
+	}
+	if c.Pool.ConnectionTimeout < 0 {
+		return fmt.Errorf("pool.connection_timeout must be >= 0, got %v", c.Pool.ConnectionTimeout)
+	}
+	if c.Pool.QueryTimeout < 0 {
+		return fmt.Errorf("pool.query_timeout must be >= 0, got %v", c.Pool.QueryTimeout)
 	}
 	if c.Pool.PreparedStatementMode != "proxy" && c.Pool.PreparedStatementMode != "multiplex" {
 		return fmt.Errorf("pool.prepared_statement_mode must be \"proxy\" or \"multiplex\", got %q", c.Pool.PreparedStatementMode)

@@ -7,6 +7,7 @@ import (
 )
 
 const maxSamples = 1000
+const maxPatterns = 10000 // upper bound on unique query patterns to prevent OOM
 
 // QueryStats holds aggregated latency comparison for a normalized query pattern.
 type QueryStats struct {
@@ -107,6 +108,10 @@ func (sc *statsCollector) record(normalized string, primaryDur, mirrorDur time.D
 		sc.mu.Lock()
 		ps, ok = sc.patterns[normalized]
 		if !ok {
+			if len(sc.patterns) >= maxPatterns {
+				sc.mu.Unlock()
+				return // drop to prevent unbounded memory growth
+			}
 			ps = &patternStats{}
 			sc.patterns[normalized] = ps
 		}

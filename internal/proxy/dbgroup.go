@@ -241,22 +241,42 @@ func (g *DatabaseGroup) Reload(dbCfg config.DatabaseConfig, cbCfg config.Circuit
 	}
 }
 
-// --- Exported getters (for admin/dataapi packages) ---
+// --- Exported getters (for admin/dataapi packages, thread-safe via RLock) ---
 
-// Name returns the database group name.
+// Name returns the database group name (immutable, no lock needed).
 func (g *DatabaseGroup) Name() string { return g.name }
 
-// WriterAddr returns the writer backend address.
-func (g *DatabaseGroup) WriterAddr() string { return g.writerAddr }
+// WriterAddr returns the writer backend address (thread-safe).
+func (g *DatabaseGroup) WriterAddr() string {
+	g.mu.RLock()
+	addr := g.writerAddr
+	g.mu.RUnlock()
+	return addr
+}
 
-// WriterPool returns the writer connection pool.
-func (g *DatabaseGroup) WriterPool() *pool.Pool { return g.writerPool }
+// WriterPool returns the writer connection pool (thread-safe).
+func (g *DatabaseGroup) WriterPool() *pool.Pool {
+	g.mu.RLock()
+	p := g.writerPool
+	g.mu.RUnlock()
+	return p
+}
 
-// Balancer returns the reader load balancer.
-func (g *DatabaseGroup) Balancer() *router.RoundRobin { return g.balancer }
+// Balancer returns the reader load balancer (thread-safe).
+func (g *DatabaseGroup) Balancer() *router.RoundRobin {
+	g.mu.RLock()
+	b := g.balancer
+	g.mu.RUnlock()
+	return b
+}
 
-// BackendCfg returns the backend configuration.
-func (g *DatabaseGroup) BackendCfg() config.BackendConfig { return g.backendCfg }
+// BackendCfg returns the backend configuration (thread-safe).
+func (g *DatabaseGroup) BackendCfg() config.BackendConfig {
+	g.mu.RLock()
+	cfg := g.backendCfg
+	g.mu.RUnlock()
+	return cfg
+}
 
 // ReaderPools returns all reader pools (thread-safe).
 func (g *DatabaseGroup) ReaderPools() map[string]*pool.Pool {

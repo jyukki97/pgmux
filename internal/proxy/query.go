@@ -31,6 +31,15 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 	// (SET, PREPARE, LISTEN, CREATE TEMP, etc.) that require DISCARD ALL on release.
 	var connDirty bool
 
+	// boundReader is non-nil when a proxy-mode extended query batch containing
+	// Parse (but not Execute) was forwarded to a reader. The connection stays
+	// bound until the next Sync that includes Execute, ensuring that the
+	// prepared statement created by Parse is available for Bind/Execute.
+	// This fixes the two-round protocol issue with lib/pq (#266).
+	var boundReader *pool.Conn
+	var boundReaderPool *pool.Pool
+	var boundReaderAddr string
+
 	defer func() {
 		if boundWriter != nil {
 			if connDirty {
@@ -38,6 +47,9 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 			} else {
 				releaseToPool(boundWriter, boundWriterPool)
 			}
+		}
+		if boundReader != nil {
+			s.resetAndReleaseToPool(boundReader, boundReaderPool)
 		}
 	}()
 
@@ -49,7 +61,8 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 	var extBuf []*protocol.Message
 	var extRoute router.Route
 	var extTxStart, extTxEnd bool
-	var extIsWrite bool // true if the current extended query batch contains a write query
+	var extIsWrite bool    // true if the current extended query batch contains a write query
+	var extHasExecute bool // true if the current batch contains an Execute message (proxy mode)
 	var extSessionBlocked bool
 	var extSessionBlockedFeature string
 	var extQueryText string
@@ -561,6 +574,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				// In multiplex mode, Execute is handled in Sync
 				// (the synthesized query already replaces Parse+Bind+Execute)
 			} else {
+				extHasExecute = true
 				extBuf = append(extBuf, protocol.CopyMessage(msg))
 			}
 
@@ -577,6 +591,12 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				),
 			)
 
+			// Release stale bound reader if route changed to writer
+			if boundReader != nil && (extRoute == router.RouteWriter || session.InTransaction() || boundWriter != nil) {
+				s.resetAndReleaseToPool(boundReader, boundReaderPool)
+				boundReader, boundReaderPool, boundReaderAddr = nil, nil, ""
+			}
+
 			// Session compatibility block check for extended query
 			if extSessionBlocked {
 				if s.metrics != nil {
@@ -588,10 +608,15 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				extSpan.End()
 				s.sendError(clientConn, fmt.Sprintf("session-dependent feature blocked: %s", extSessionBlockedFeature))
 				s.sendReadyForQuery(clientConn, session.InTransaction())
+				if boundReader != nil {
+					s.resetAndReleaseToPool(boundReader, boundReaderPool)
+					boundReader, boundReaderPool, boundReaderAddr = nil, nil, ""
+				}
 				extBuf = extBuf[:0]
 				extRoute = router.RouteReader
 				extTxStart, extTxEnd = false, false
 				extIsWrite = false
+				extHasExecute = false
 				muxBindDetail = nil
 				extSessionBlocked = false
 				extSessionBlockedFeature = ""
@@ -608,10 +633,15 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				extSpan.End()
 				s.sendError(clientConn, "cannot execute write query: pgmux is in read-only mode")
 				s.sendReadyForQuery(clientConn, session.InTransaction())
+				if boundReader != nil {
+					s.resetAndReleaseToPool(boundReader, boundReaderPool)
+					boundReader, boundReaderPool, boundReaderAddr = nil, nil, ""
+				}
 				extBuf = extBuf[:0]
 				extRoute = router.RouteReader
 				extTxStart, extTxEnd = false, false
 				extIsWrite = false
+				extHasExecute = false
 				muxBindDetail = nil
 				continue
 			}
@@ -653,12 +683,102 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				s.sendReadyForQuery(clientConn, session.InTransaction())
 			} else if extRoute == router.RouteReader && !session.InTransaction() && boundWriter == nil {
 				// Reader path (proxy mode)
-				readerAddr := dbg.balancer.Next()
-				if err := s.handleExtendedRead(extCtx, clientConn, extBuf, msg, readerAddr, ct, dbg, extQueryTimeout); err != nil {
-					extSpan.SetStatus(codes.Error, err.Error())
-					extSpan.End()
-					slog.Error("extended read query", "error", err)
-					return
+				if boundReader != nil {
+					// Reuse reader bound from a previous Parse-only batch
+					_, execSpan := telemetry.Tracer().Start(extCtx, "pgmux.backend.exec",
+						trace.WithAttributes(attribute.String("pgmux.route", "reader")),
+					)
+					ct.setFromConn(boundReaderAddr, boundReader)
+					stopTimer := s.startQueryTimer(extQueryTimeout, ct, "reader")
+					if err := s.forwardExtBatch(boundReader, extBuf, msg); err != nil {
+						if stopTimer != nil {
+							stopTimer()
+						}
+						ct.clear()
+						execSpan.SetStatus(codes.Error, err.Error())
+						execSpan.End()
+						extSpan.SetStatus(codes.Error, "forward ext batch to bound reader failed")
+						extSpan.End()
+						slog.Error("forward ext batch to bound reader", "error", err)
+						boundReaderPool.Discard(boundReader)
+						boundReader, boundReaderPool, boundReaderAddr = nil, nil, ""
+						return
+					}
+					if err := s.relayUntilReady(clientConn, boundReader); err != nil {
+						if stopTimer != nil {
+							stopTimer()
+						}
+						ct.clear()
+						execSpan.SetStatus(codes.Error, err.Error())
+						execSpan.End()
+						extSpan.SetStatus(codes.Error, "relay bound reader response failed")
+						extSpan.End()
+						slog.Error("relay bound reader response", "error", err)
+						boundReaderPool.Discard(boundReader)
+						boundReader, boundReaderPool, boundReaderAddr = nil, nil, ""
+						return
+					}
+					if stopTimer != nil {
+						stopTimer()
+					}
+					ct.clear()
+					execSpan.End()
+					// Release bound reader after Execute completes
+					if extHasExecute {
+						boundReaderPool.Release(boundReader)
+						boundReader, boundReaderPool, boundReaderAddr = nil, nil, ""
+					}
+				} else if !extHasExecute && len(extBuf) > 0 {
+					// Parse-only batch (no Execute): acquire reader and keep connection
+					// bound for the subsequent Bind+Execute batch (lib/pq two-round protocol).
+					readerAddr := dbg.balancer.Next()
+					rConn, rPool, usedAddr, err := s.acquireReaderForBind(ctx, readerAddr, dbg)
+					if err != nil {
+						extSpan.SetStatus(codes.Error, err.Error())
+						extSpan.End()
+						slog.Error("acquire reader for parse-only batch", "error", err)
+						s.sendError(clientConn, "cannot acquire backend connection")
+						return
+					}
+					ct.setFromConn(usedAddr, rConn)
+					stopTimer := s.startQueryTimer(extQueryTimeout, ct, "reader")
+					if err := s.forwardExtBatch(rConn, extBuf, msg); err != nil {
+						if stopTimer != nil {
+							stopTimer()
+						}
+						ct.clear()
+						extSpan.End()
+						slog.Error("forward parse-only batch to reader", "error", err)
+						rPool.Discard(rConn)
+						return
+					}
+					if err := s.relayUntilReady(clientConn, rConn); err != nil {
+						if stopTimer != nil {
+							stopTimer()
+						}
+						ct.clear()
+						extSpan.End()
+						slog.Error("relay parse-only reader response", "error", err)
+						rPool.Discard(rConn)
+						return
+					}
+					if stopTimer != nil {
+						stopTimer()
+					}
+					ct.clear()
+					// Keep reader bound for next batch
+					boundReader = rConn
+					boundReaderPool = rPool
+					boundReaderAddr = usedAddr
+				} else {
+					// Normal reader path with Execute
+					readerAddr := dbg.balancer.Next()
+					if err := s.handleExtendedRead(extCtx, clientConn, extBuf, msg, readerAddr, ct, dbg, extQueryTimeout); err != nil {
+						extSpan.SetStatus(codes.Error, err.Error())
+						extSpan.End()
+						slog.Error("extended read query", "error", err)
+						return
+					}
 				}
 			} else {
 				// Writer path (proxy mode) — acquire from pool or use bound connection
@@ -764,8 +884,14 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 						}
 						connDirty = false
 					}
+				case acquired && !extHasExecute:
+					// Parse-only batch: keep connection bound for subsequent Execute.
+					// lib/pq sends Parse+Describe+Sync then Bind+Execute+Sync in
+					// two rounds — the backend must be the same for both.
+					boundWriter = wConn
+					boundWriterPool = acquiredPool
 				case acquired:
-					// Single batch outside transaction
+					// Single batch outside transaction (includes Execute)
 					if extSessionPinned {
 						boundWriter = wConn
 						boundWriterPool = acquiredPool
@@ -774,6 +900,20 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 						connDirty = false
 					} else {
 						releaseToPool(wConn, acquiredPool)
+					}
+				case !acquired && extHasExecute:
+					// Reusing bound writer from Parse-only batch, Execute completed.
+					// Release unless session is pinned or still in transaction.
+					if !extSessionPinned && !session.InTransaction() {
+						bwp := boundWriterPool
+						boundWriter = nil
+						boundWriterPool = nil
+						if connDirty {
+							s.resetAndReleaseToPool(wConn, bwp)
+						} else {
+							releaseToPool(wConn, bwp)
+						}
+						connDirty = false
 					}
 				}
 			}
@@ -792,6 +932,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 			extRoute = router.RouteReader
 			extTxStart, extTxEnd = false, false
 			extIsWrite = false
+			extHasExecute = false
 			extQueryText = ""
 			muxBindDetail = nil
 

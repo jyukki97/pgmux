@@ -34,8 +34,7 @@ func TestFileWatcher_Modification(t *testing.T) {
 		}
 	}()
 
-	// Allow watcher to initialize.
-	time.Sleep(100 * time.Millisecond)
+	<-fw.Ready()
 
 	// Modify the file.
 	if err := os.WriteFile(cfgFile, []byte("modified"), 0644); err != nil {
@@ -77,8 +76,7 @@ func TestFileWatcher_Debounce(t *testing.T) {
 		}
 	}()
 
-	// Allow watcher to initialize.
-	time.Sleep(100 * time.Millisecond)
+	<-fw.Ready()
 
 	// Rapid modifications within the debounce window.
 	for i := range 5 {
@@ -146,8 +144,7 @@ func TestFileWatcher_SymlinkSwap(t *testing.T) {
 		}
 	}()
 
-	// Allow watcher to initialize.
-	time.Sleep(100 * time.Millisecond)
+	<-fw.Ready()
 
 	// Simulate K8s ConfigMap swap: atomically replace ..data symlink.
 	tmpLink := filepath.Join(dir, "..data_tmp")
@@ -195,8 +192,7 @@ func TestFileWatcher_Stop(t *testing.T) {
 		}
 	}()
 
-	// Allow watcher to initialize.
-	time.Sleep(100 * time.Millisecond)
+	<-fw.Ready()
 
 	// Stop should cause Start to return.
 	fw.Stop()

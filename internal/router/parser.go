@@ -125,7 +125,7 @@ func classifyFast(query string) (QueryType, bool) {
 // containsWriteKeyword checks if a WITH/CTE query contains write operations.
 // String literals are stripped first to avoid false positives from keywords inside quotes.
 func containsWriteKeyword(query string) bool {
-	upper := strings.ToUpper(stripStringLiterals(query))
+	upper := strings.ToUpper(stripComments(stripStringLiterals(query)))
 	for kw := range writeKeywords {
 		// Look for write keywords that aren't just substrings of table/column names
 		idx := strings.Index(upper, kw)
@@ -637,7 +637,7 @@ var lockingClauses = []string{
 // isSideEffectfulSelect checks if a SELECT statement contains locking clauses or
 // side-effectful function calls. String literals are stripped first to avoid false positives.
 func isSideEffectfulSelect(query string) bool {
-	upper := strings.ToUpper(stripStringLiterals(query))
+	upper := strings.ToUpper(stripComments(stripStringLiterals(query)))
 
 	// Check for locking clauses
 	for _, clause := range lockingClauses {

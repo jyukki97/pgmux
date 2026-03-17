@@ -157,6 +157,13 @@ func TestContainsSessionAdvisoryLock(t *testing.T) {
 		// No advisory lock
 		{"SELECT 1", false},
 		{"INSERT INTO t VALUES (1)", false},
+
+		// QA6: False positives from comments/literals (#245)
+		{"SELECT 'pg_advisory_lock'", false},
+		{"SELECT 'pg_advisory_unlock'", false},
+		{"/* advisory_lock */ SELECT 1", false},
+		{"/* advisory_unlock */ SELECT 1", false},
+		{"SELECT $$ pg_advisory_lock $$ FROM t", false},
 	}
 
 	for _, tt := range tests {

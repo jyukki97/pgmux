@@ -31,6 +31,11 @@ func TestClassify(t *testing.T) {
 		// Regular comments should be stripped
 		{"-- comment\nSELECT 1", QueryRead},
 		{"/* normal comment */ SELECT 1", QueryRead},
+		// QA6: Comment false positives (#245)
+		{"/* FOR UPDATE */ SELECT 1", QueryRead},
+		{"/* nextval() */ SELECT 1", QueryRead},
+		{"/* FOR SHARE */ SELECT * FROM users", QueryRead},
+		{"WITH x AS (SELECT 1) /* UPDATE */ SELECT * FROM x", QueryRead},
 	}
 
 	for _, tt := range tests {

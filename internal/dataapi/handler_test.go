@@ -31,7 +31,7 @@ func testServer() *Server {
 			},
 		},
 	}
-	proxySrv := proxy.NewServer(cfg)
+	proxySrv, _ := proxy.NewServer(cfg)
 	return New(
 		func() *config.Config { return cfg },
 		proxySrv.DBGroups,
@@ -120,7 +120,7 @@ func TestEmptySQL(t *testing.T) {
 			},
 		},
 	}
-	proxySrv := proxy.NewServer(cfg)
+	proxySrv, _ := proxy.NewServer(cfg)
 	srv := New(func() *config.Config { return cfg }, proxySrv.DBGroups, func() string { return proxySrv.DefaultDBName() }, nilCache, nil, nilRateLimiter, nil)
 
 	body := `{"sql": ""}`
@@ -145,7 +145,7 @@ func TestInvalidBody(t *testing.T) {
 			},
 		},
 	}
-	proxySrv := proxy.NewServer(cfg)
+	proxySrv, _ := proxy.NewServer(cfg)
 	srv := New(func() *config.Config { return cfg }, proxySrv.DBGroups, func() string { return proxySrv.DefaultDBName() }, nilCache, nil, nilRateLimiter, nil)
 
 	body := `not json`
@@ -175,7 +175,7 @@ func TestFirewallBlock(t *testing.T) {
 			},
 		},
 	}
-	proxySrv := proxy.NewServer(cfg)
+	proxySrv, _ := proxy.NewServer(cfg)
 	srv := New(func() *config.Config { return cfg }, proxySrv.DBGroups, func() string { return proxySrv.DefaultDBName() }, nilCache, nil, nilRateLimiter, nil)
 
 	body := `{"sql": "DELETE FROM users"}`

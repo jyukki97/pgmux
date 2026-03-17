@@ -1,3 +1,4 @@
+// Package config handles loading and validating pgmux YAML configuration files.
 package config
 
 import (

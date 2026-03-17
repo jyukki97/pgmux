@@ -1,3 +1,4 @@
+// Package proxy implements the PostgreSQL proxy server that handles client connections, routes queries, and manages connection pooling.
 package proxy
 
 import (
@@ -47,7 +48,7 @@ type Server struct {
 	readOnlyAt      atomic.Int64    // unix timestamp when read-only mode was entered
 }
 
-func NewServer(cfg *config.Config) *Server {
+func NewServer(cfg *config.Config) (*Server, error) {
 	s := &Server{
 		listenAddr: cfg.Proxy.Listen,
 		dbGroups:   make(map[string]*DatabaseGroup),
@@ -104,17 +105,16 @@ func NewServer(cfg *config.Config) *Server {
 		slog.Info("rate limiter enabled", "rate", cfg.RateLimit.Rate, "burst", cfg.RateLimit.Burst)
 	}
 
-	// Load TLS certificate if enabled
+	// Load TLS certificate if enabled (fail-fast: misconfigured TLS must not silently degrade)
 	if cfg.TLS.Enabled {
 		cert, err := tls.LoadX509KeyPair(cfg.TLS.CertFile, cfg.TLS.KeyFile)
 		if err != nil {
-			slog.Error("load TLS certificate", "error", err)
-		} else {
-			s.tlsConfig = &tls.Config{
-				Certificates: []tls.Certificate{cert},
-			}
-			slog.Info("TLS enabled", "cert", cfg.TLS.CertFile)
+			return nil, fmt.Errorf("load TLS certificate: %w", err)
 		}
+		s.tlsConfig = &tls.Config{
+			Certificates: []tls.Certificate{cert},
+		}
+		slog.Info("TLS enabled", "cert", cfg.TLS.CertFile)
 	}
 
 	// Initialize Audit Logger
@@ -201,7 +201,7 @@ func NewServer(cfg *config.Config) *Server {
 		"audit", cfg.Audit.Enabled,
 		"pooling", "transaction")
 
-	return s
+	return s, nil
 }
 
 func (s *Server) Start(ctx context.Context) error {

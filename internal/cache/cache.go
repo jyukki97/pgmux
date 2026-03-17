@@ -1,3 +1,4 @@
+// Package cache implements an in-memory LRU cache with TTL and table-level invalidation for query results.
 package cache
 
 import (

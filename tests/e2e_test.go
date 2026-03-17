@@ -22,7 +22,7 @@ import (
 // TestE2E_ProxyIntegration tests the full proxy with real PostgreSQL backends.
 // Requires: docker-compose up && go run ./cmd/pgmux config.test.yaml
 func TestE2E_ProxyIntegration(t *testing.T) {
-	proxyDSN := "postgres://postgres:postgres@127.0.0.1:15440/testdb?sslmode=disable"
+	proxyDSN := e2eGetProxyDSN()
 
 	// Check if proxy is reachable
 	db, err := sql.Open("postgres", proxyDSN)
@@ -136,7 +136,7 @@ func TestE2E_ProxyIntegration(t *testing.T) {
 // TestE2E_TransactionPooling tests transaction-level connection pooling behavior.
 // Requires: docker-compose up && go run ./cmd/pgmux config.test.yaml
 func TestE2E_TransactionPooling(t *testing.T) {
-	proxyDSN := "postgres://postgres:postgres@127.0.0.1:15440/testdb?sslmode=disable"
+	proxyDSN := e2eGetProxyDSN()
 
 	db, err := sql.Open("postgres", proxyDSN)
 	if err != nil {
@@ -467,7 +467,7 @@ func TestE2E_TransactionPooling(t *testing.T) {
 // TestE2E_CausalConsistency tests that write-then-read sees fresh data.
 // Requires: docker-compose up && go run ./cmd/pgmux config.test.yaml (with causal_consistency: true)
 func TestE2E_CausalConsistency(t *testing.T) {
-	proxyDSN := "postgres://postgres:postgres@127.0.0.1:15440/testdb?sslmode=disable"
+	proxyDSN := e2eGetProxyDSN()
 
 	db, err := sql.Open("postgres", proxyDSN)
 	if err != nil {
@@ -557,20 +557,53 @@ func TestE2E_ProxyStartStop(t *testing.T) {
 // New E2E tests
 // ---------------------------------------------------------------------------
 
-const (
-	e2eProxyDSN    = "postgres://postgres:postgres@127.0.0.1:15440/testdb?sslmode=disable"
-	e2eAdminURL    = "http://127.0.0.1:19091"
-	e2eMetricURL   = "http://127.0.0.1:19090/metrics"
-	e2eDataAPIURL  = "http://127.0.0.1:18080"
-	e2eDataAPIKey  = "test-api-key-12345"
-	e2eLimitedDSN  = "postgres://limited:limited@127.0.0.1:15440/testdb?sslmode=disable"
-)
+func e2eGetProxyDSN() string {
+	if v := os.Getenv("PGMUX_TEST_PROXY_DSN"); v != "" {
+		return v
+	}
+	return "postgres://postgres:postgres@127.0.0.1:15440/testdb?sslmode=disable"
+}
+
+func e2eGetAdminURL() string {
+	if v := os.Getenv("PGMUX_TEST_ADMIN_URL"); v != "" {
+		return v
+	}
+	return "http://127.0.0.1:19091"
+}
+
+func e2eGetMetricURL() string {
+	if v := os.Getenv("PGMUX_TEST_METRIC_URL"); v != "" {
+		return v
+	}
+	return "http://127.0.0.1:19090/metrics"
+}
+
+func e2eGetDataAPIURL() string {
+	if v := os.Getenv("PGMUX_TEST_DATAAPI_URL"); v != "" {
+		return v
+	}
+	return "http://127.0.0.1:18080"
+}
+
+func e2eGetDataAPIKey() string {
+	if v := os.Getenv("PGMUX_TEST_DATAAPI_KEY"); v != "" {
+		return v
+	}
+	return "test-api-key-12345"
+}
+
+func e2eGetLimitedDSN() string {
+	if v := os.Getenv("PGMUX_TEST_LIMITED_DSN"); v != "" {
+		return v
+	}
+	return "postgres://limited:limited@127.0.0.1:15440/testdb?sslmode=disable"
+}
 
 // e2eCheckProxy opens a connection and pings the proxy. Returns the *sql.DB
 // on success or calls t.Skipf and returns nil if the proxy is unreachable.
 func e2eCheckProxy(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("postgres", e2eProxyDSN)
+	db, err := sql.Open("postgres", e2eGetProxyDSN())
 	if err != nil {
 		t.Skipf("cannot open proxy connection: %v", err)
 		return nil
@@ -826,7 +859,7 @@ func TestE2E_AdminAPI(t *testing.T) {
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	t.Run("Healthz", func(t *testing.T) {
-		resp, err := client.Get(e2eAdminURL + "/healthz")
+		resp, err := client.Get(e2eGetAdminURL() + "/healthz")
 		if err != nil {
 			t.Fatalf("GET /healthz: %v", err)
 		}
@@ -847,7 +880,7 @@ func TestE2E_AdminAPI(t *testing.T) {
 	})
 
 	t.Run("Readyz", func(t *testing.T) {
-		resp, err := client.Get(e2eAdminURL + "/readyz")
+		resp, err := client.Get(e2eGetAdminURL() + "/readyz")
 		if err != nil {
 			t.Fatalf("GET /readyz: %v", err)
 		}
@@ -868,7 +901,7 @@ func TestE2E_AdminAPI(t *testing.T) {
 	})
 
 	t.Run("AdminHealth", func(t *testing.T) {
-		resp, err := client.Get(e2eAdminURL + "/admin/health")
+		resp, err := client.Get(e2eGetAdminURL() + "/admin/health")
 		if err != nil {
 			t.Fatalf("GET /admin/health: %v", err)
 		}
@@ -917,7 +950,7 @@ func TestE2E_AdminAPI(t *testing.T) {
 	})
 
 	t.Run("AdminStats", func(t *testing.T) {
-		resp, err := client.Get(e2eAdminURL + "/admin/stats")
+		resp, err := client.Get(e2eGetAdminURL() + "/admin/stats")
 		if err != nil {
 			t.Fatalf("GET /admin/stats: %v", err)
 		}
@@ -947,7 +980,7 @@ func TestE2E_AdminAPI(t *testing.T) {
 	})
 
 	t.Run("AdminConfig", func(t *testing.T) {
-		resp, err := client.Get(e2eAdminURL + "/admin/config")
+		resp, err := client.Get(e2eGetAdminURL() + "/admin/config")
 		if err != nil {
 			t.Fatalf("GET /admin/config: %v", err)
 		}
@@ -979,7 +1012,7 @@ func TestE2E_AdminAPI(t *testing.T) {
 	})
 
 	t.Run("AdminCacheFlush", func(t *testing.T) {
-		resp, err := client.Post(e2eAdminURL+"/admin/cache/flush", "application/json", nil)
+		resp, err := client.Post(e2eGetAdminURL()+"/admin/cache/flush", "application/json", nil)
 		if err != nil {
 			t.Fatalf("POST /admin/cache/flush: %v", err)
 		}
@@ -1000,7 +1033,7 @@ func TestE2E_AdminAPI(t *testing.T) {
 	})
 
 	t.Run("AdminConnections", func(t *testing.T) {
-		resp, err := client.Get(e2eAdminURL + "/admin/connections")
+		resp, err := client.Get(e2eGetAdminURL() + "/admin/connections")
 		if err != nil {
 			t.Fatalf("GET /admin/connections: %v", err)
 		}
@@ -1013,7 +1046,7 @@ func TestE2E_AdminAPI(t *testing.T) {
 	})
 
 	t.Run("AdminQueriesTop", func(t *testing.T) {
-		resp, err := client.Get(e2eAdminURL + "/admin/queries/top")
+		resp, err := client.Get(e2eGetAdminURL() + "/admin/queries/top")
 		if err != nil {
 			t.Fatalf("GET /admin/queries/top: %v", err)
 		}
@@ -1035,7 +1068,7 @@ func TestE2E_MetricsEndpoint(t *testing.T) {
 	db.Close()
 
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(e2eMetricURL)
+	resp, err := client.Get(e2eGetMetricURL())
 	if err != nil {
 		t.Fatalf("GET /metrics: %v", err)
 	}
@@ -1079,7 +1112,7 @@ func TestE2E_ReadOnlyMode(t *testing.T) {
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	// Ensure we start in non-read-only mode
-	req, _ := http.NewRequest(http.MethodDelete, e2eAdminURL+"/admin/readonly", nil)
+	req, _ := http.NewRequest(http.MethodDelete, e2eGetAdminURL()+"/admin/readonly", nil)
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("DELETE /admin/readonly: %v", err)
@@ -1096,7 +1129,7 @@ func TestE2E_ReadOnlyMode(t *testing.T) {
 	}
 	defer func() {
 		// Make sure read-only is disabled before cleanup
-		req, _ := http.NewRequest(http.MethodDelete, e2eAdminURL+"/admin/readonly", nil)
+		req, _ := http.NewRequest(http.MethodDelete, e2eGetAdminURL()+"/admin/readonly", nil)
 		client.Do(req)
 		time.Sleep(100 * time.Millisecond)
 		db.ExecContext(context.Background(), "DROP TABLE IF EXISTS readonly_test")
@@ -1104,7 +1137,7 @@ func TestE2E_ReadOnlyMode(t *testing.T) {
 
 	t.Run("EnableReadOnly", func(t *testing.T) {
 		// Enable read-only mode
-		resp, err := client.Post(e2eAdminURL+"/admin/readonly", "application/json", nil)
+		resp, err := client.Post(e2eGetAdminURL()+"/admin/readonly", "application/json", nil)
 		if err != nil {
 			t.Fatalf("POST /admin/readonly: %v", err)
 		}
@@ -1139,7 +1172,7 @@ func TestE2E_ReadOnlyMode(t *testing.T) {
 
 	t.Run("DisableReadOnly", func(t *testing.T) {
 		// Disable read-only mode
-		req, _ := http.NewRequest(http.MethodDelete, e2eAdminURL+"/admin/readonly", nil)
+		req, _ := http.NewRequest(http.MethodDelete, e2eGetAdminURL()+"/admin/readonly", nil)
 		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatalf("DELETE /admin/readonly: %v", err)
@@ -1174,7 +1207,7 @@ func TestE2E_MaintenanceMode(t *testing.T) {
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	// Ensure we start in non-maintenance mode
-	req, _ := http.NewRequest(http.MethodDelete, e2eAdminURL+"/admin/maintenance", nil)
+	req, _ := http.NewRequest(http.MethodDelete, e2eGetAdminURL()+"/admin/maintenance", nil)
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("DELETE /admin/maintenance: %v", err)
@@ -1183,7 +1216,7 @@ func TestE2E_MaintenanceMode(t *testing.T) {
 
 	t.Run("EnableMaintenanceRejectsNewConnections", func(t *testing.T) {
 		// Enable maintenance mode
-		resp, err := client.Post(e2eAdminURL+"/admin/maintenance", "application/json", nil)
+		resp, err := client.Post(e2eGetAdminURL()+"/admin/maintenance", "application/json", nil)
 		if err != nil {
 			t.Fatalf("POST /admin/maintenance: %v", err)
 		}
@@ -1196,7 +1229,7 @@ func TestE2E_MaintenanceMode(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 
 		// Readyz should return 503 in maintenance mode
-		readyResp, err := client.Get(e2eAdminURL + "/readyz")
+		readyResp, err := client.Get(e2eGetAdminURL() + "/readyz")
 		if err != nil {
 			t.Fatalf("GET /readyz: %v", err)
 		}
@@ -1208,7 +1241,7 @@ func TestE2E_MaintenanceMode(t *testing.T) {
 		}
 
 		// New connection attempt should fail
-		newDB, err := sql.Open("postgres", e2eProxyDSN)
+		newDB, err := sql.Open("postgres", e2eGetProxyDSN())
 		if err != nil {
 			t.Fatalf("sql.Open: %v", err)
 		}
@@ -1239,7 +1272,7 @@ func TestE2E_MaintenanceMode(t *testing.T) {
 
 	t.Run("DisableMaintenanceAllowsConnections", func(t *testing.T) {
 		// Disable maintenance mode
-		req, _ := http.NewRequest(http.MethodDelete, e2eAdminURL+"/admin/maintenance", nil)
+		req, _ := http.NewRequest(http.MethodDelete, e2eGetAdminURL()+"/admin/maintenance", nil)
 		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatalf("DELETE /admin/maintenance: %v", err)
@@ -1253,7 +1286,7 @@ func TestE2E_MaintenanceMode(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 
 		// Readyz should return 200 again
-		readyResp, err := client.Get(e2eAdminURL + "/readyz")
+		readyResp, err := client.Get(e2eGetAdminURL() + "/readyz")
 		if err != nil {
 			t.Fatalf("GET /readyz: %v", err)
 		}
@@ -1263,7 +1296,7 @@ func TestE2E_MaintenanceMode(t *testing.T) {
 		}
 
 		// New connection should work
-		newDB, err := sql.Open("postgres", e2eProxyDSN)
+		newDB, err := sql.Open("postgres", e2eGetProxyDSN())
 		if err != nil {
 			t.Fatalf("sql.Open: %v", err)
 		}
@@ -1313,7 +1346,7 @@ func TestE2E_CacheFlush(t *testing.T) {
 	t.Logf("Before flush: two identical queries returned consistent results: %s", name1)
 
 	// Flush cache via admin API
-	resp, err := client.Post(e2eAdminURL+"/admin/cache/flush", "application/json", nil)
+	resp, err := client.Post(e2eGetAdminURL()+"/admin/cache/flush", "application/json", nil)
 	if err != nil {
 		t.Fatalf("POST /admin/cache/flush: %v", err)
 	}
@@ -1608,7 +1641,7 @@ func TestE2E_Auth(t *testing.T) {
 	defer cancel()
 
 	t.Run("ValidUser", func(t *testing.T) {
-		db, err := sql.Open("postgres", e2eProxyDSN)
+		db, err := sql.Open("postgres", e2eGetProxyDSN())
 		if err != nil {
 			t.Fatalf("open: %v", err)
 		}
@@ -1626,7 +1659,7 @@ func TestE2E_Auth(t *testing.T) {
 	})
 
 	t.Run("ValidLimitedUser", func(t *testing.T) {
-		db, err := sql.Open("postgres", e2eLimitedDSN)
+		db, err := sql.Open("postgres", e2eGetLimitedDSN())
 		if err != nil {
 			t.Fatalf("open: %v", err)
 		}
@@ -1753,7 +1786,7 @@ func TestE2E_FirewallRules(t *testing.T) {
 
 	t.Run("FirewallMetric", func(t *testing.T) {
 		client := &http.Client{Timeout: 5 * time.Second}
-		resp, err := client.Get(e2eMetricURL)
+		resp, err := client.Get(e2eGetMetricURL())
 		if err != nil {
 			t.Fatalf("GET /metrics: %v", err)
 		}
@@ -1795,7 +1828,7 @@ func TestE2E_ConnectionLimits(t *testing.T) {
 
 		// Open 3 connections (should all succeed)
 		for i := 0; i < 3; i++ {
-			c, err := sql.Open("postgres", e2eLimitedDSN)
+			c, err := sql.Open("postgres", e2eGetLimitedDSN())
 			if err != nil {
 				t.Fatalf("open conn %d: %v", i, err)
 			}
@@ -1810,7 +1843,7 @@ func TestE2E_ConnectionLimits(t *testing.T) {
 		t.Logf("Opened 3 connections for 'limited' user (max_connections=3)")
 
 		// 4th connection should be rejected
-		c4, err := sql.Open("postgres", e2eLimitedDSN)
+		c4, err := sql.Open("postgres", e2eGetLimitedDSN())
 		if err != nil {
 			t.Fatalf("open conn 4: %v", err)
 		}
@@ -1846,9 +1879,9 @@ func TestE2E_DataAPI(t *testing.T) {
 
 	t.Run("SelectQuery", func(t *testing.T) {
 		body := `{"sql": "SELECT name FROM users ORDER BY id LIMIT 3"}`
-		req, _ := http.NewRequest(http.MethodPost, e2eDataAPIURL+"/v1/query", bytes.NewBufferString(body))
+		req, _ := http.NewRequest(http.MethodPost, e2eGetDataAPIURL()+"/v1/query", bytes.NewBufferString(body))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+e2eDataAPIKey)
+		req.Header.Set("Authorization", "Bearer "+e2eGetDataAPIKey())
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -1883,9 +1916,9 @@ func TestE2E_DataAPI(t *testing.T) {
 
 	t.Run("WriteQuery", func(t *testing.T) {
 		body := `{"sql": "CREATE TABLE IF NOT EXISTS dataapi_test (id SERIAL PRIMARY KEY, val TEXT)"}`
-		req, _ := http.NewRequest(http.MethodPost, e2eDataAPIURL+"/v1/query", bytes.NewBufferString(body))
+		req, _ := http.NewRequest(http.MethodPost, e2eGetDataAPIURL()+"/v1/query", bytes.NewBufferString(body))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+e2eDataAPIKey)
+		req.Header.Set("Authorization", "Bearer "+e2eGetDataAPIKey())
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -1898,9 +1931,9 @@ func TestE2E_DataAPI(t *testing.T) {
 
 		// INSERT via Data API
 		body = `{"sql": "INSERT INTO dataapi_test (val) VALUES ('hello')"}`
-		req, _ = http.NewRequest(http.MethodPost, e2eDataAPIURL+"/v1/query", bytes.NewBufferString(body))
+		req, _ = http.NewRequest(http.MethodPost, e2eGetDataAPIURL()+"/v1/query", bytes.NewBufferString(body))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+e2eDataAPIKey)
+		req.Header.Set("Authorization", "Bearer "+e2eGetDataAPIKey())
 
 		resp, err = client.Do(req)
 		if err != nil {
@@ -1913,9 +1946,9 @@ func TestE2E_DataAPI(t *testing.T) {
 
 		// Cleanup
 		body = `{"sql": "DROP TABLE IF EXISTS dataapi_test"}`
-		req, _ = http.NewRequest(http.MethodPost, e2eDataAPIURL+"/v1/query", bytes.NewBufferString(body))
+		req, _ = http.NewRequest(http.MethodPost, e2eGetDataAPIURL()+"/v1/query", bytes.NewBufferString(body))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+e2eDataAPIKey)
+		req.Header.Set("Authorization", "Bearer "+e2eGetDataAPIKey())
 		resp, err = client.Do(req)
 		if err == nil {
 			resp.Body.Close()
@@ -1926,7 +1959,7 @@ func TestE2E_DataAPI(t *testing.T) {
 
 	t.Run("Unauthorized_NoKey", func(t *testing.T) {
 		body := `{"sql": "SELECT 1"}`
-		req, _ := http.NewRequest(http.MethodPost, e2eDataAPIURL+"/v1/query", bytes.NewBufferString(body))
+		req, _ := http.NewRequest(http.MethodPost, e2eGetDataAPIURL()+"/v1/query", bytes.NewBufferString(body))
 		req.Header.Set("Content-Type", "application/json")
 		// No Authorization header
 
@@ -1945,7 +1978,7 @@ func TestE2E_DataAPI(t *testing.T) {
 
 	t.Run("Unauthorized_WrongKey", func(t *testing.T) {
 		body := `{"sql": "SELECT 1"}`
-		req, _ := http.NewRequest(http.MethodPost, e2eDataAPIURL+"/v1/query", bytes.NewBufferString(body))
+		req, _ := http.NewRequest(http.MethodPost, e2eGetDataAPIURL()+"/v1/query", bytes.NewBufferString(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer wrong-key")
 
@@ -1965,9 +1998,9 @@ func TestE2E_DataAPI(t *testing.T) {
 	t.Run("FirewallViaDataAPI", func(t *testing.T) {
 		// DELETE without WHERE should be blocked via Data API too
 		body := `{"sql": "DELETE FROM users"}`
-		req, _ := http.NewRequest(http.MethodPost, e2eDataAPIURL+"/v1/query", bytes.NewBufferString(body))
+		req, _ := http.NewRequest(http.MethodPost, e2eGetDataAPIURL()+"/v1/query", bytes.NewBufferString(body))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+e2eDataAPIKey)
+		req.Header.Set("Authorization", "Bearer "+e2eGetDataAPIKey())
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -1984,9 +2017,9 @@ func TestE2E_DataAPI(t *testing.T) {
 
 	t.Run("CopyRejected", func(t *testing.T) {
 		body := `{"sql": "COPY users TO STDOUT"}`
-		req, _ := http.NewRequest(http.MethodPost, e2eDataAPIURL+"/v1/query", bytes.NewBufferString(body))
+		req, _ := http.NewRequest(http.MethodPost, e2eGetDataAPIURL()+"/v1/query", bytes.NewBufferString(body))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+e2eDataAPIKey)
+		req.Header.Set("Authorization", "Bearer "+e2eGetDataAPIKey())
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -2019,7 +2052,7 @@ func TestE2E_RateLimitMetric(t *testing.T) {
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	// Verify the rate_limited metric is registered
-	resp, err := client.Get(e2eMetricURL)
+	resp, err := client.Get(e2eGetMetricURL())
 	if err != nil {
 		t.Fatalf("GET /metrics: %v", err)
 	}
@@ -2037,9 +2070,9 @@ func TestE2E_RateLimitMetric(t *testing.T) {
 
 	for i := 0; i < totalReqs; i++ {
 		body := `{"sql": "SELECT 1"}`
-		req, _ := http.NewRequest(http.MethodPost, e2eDataAPIURL+"/v1/query", bytes.NewBufferString(body))
+		req, _ := http.NewRequest(http.MethodPost, e2eGetDataAPIURL()+"/v1/query", bytes.NewBufferString(body))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+e2eDataAPIKey)
+		req.Header.Set("Authorization", "Bearer "+e2eGetDataAPIKey())
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -2084,7 +2117,7 @@ func TestE2E_SessionCompatibility(t *testing.T) {
 
 	// Check that the session dependency metric was incremented
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(e2eMetricURL)
+	resp, err := client.Get(e2eGetMetricURL())
 	if err != nil {
 		t.Fatalf("GET /metrics: %v", err)
 	}
@@ -2150,7 +2183,7 @@ func TestE2E_SQLRedaction(t *testing.T) {
 
 	t.Run("ASTParserActive", func(t *testing.T) {
 		// AST parser is required for SQL redaction (config: routing.ast_parser: true)
-		resp, err := client.Get(e2eAdminURL + "/admin/config")
+		resp, err := client.Get(e2eGetAdminURL() + "/admin/config")
 		if err != nil {
 			t.Fatalf("GET /admin/config: %v", err)
 		}
@@ -2167,7 +2200,7 @@ func TestE2E_SQLRedaction(t *testing.T) {
 	})
 
 	t.Run("MetricsWithRedaction", func(t *testing.T) {
-		resp, err := client.Get(e2eMetricURL)
+		resp, err := client.Get(e2eGetMetricURL())
 		if err != nil {
 			t.Fatalf("GET /metrics: %v", err)
 		}
@@ -2196,7 +2229,7 @@ func TestE2E_AdminConnectionLimitStats(t *testing.T) {
 
 	client := &http.Client{Timeout: 5 * time.Second}
 
-	resp, err := client.Get(e2eAdminURL + "/admin/connections")
+	resp, err := client.Get(e2eGetAdminURL() + "/admin/connections")
 	if err != nil {
 		t.Fatalf("GET /admin/connections: %v", err)
 	}
@@ -2345,7 +2378,7 @@ func TestE2E_DigestReset(t *testing.T) {
 	}
 
 	// Verify digest has entries
-	resp, err := client.Get(e2eAdminURL + "/admin/queries/top")
+	resp, err := client.Get(e2eGetAdminURL() + "/admin/queries/top")
 	if err != nil {
 		t.Fatalf("GET /admin/queries/top: %v", err)
 	}
@@ -2366,7 +2399,7 @@ func TestE2E_DigestReset(t *testing.T) {
 	t.Logf("Digest has %d patterns before reset", len(topBefore))
 
 	// Reset digest
-	resp, err = client.Post(e2eAdminURL+"/admin/queries/reset", "application/json", nil)
+	resp, err = client.Post(e2eGetAdminURL()+"/admin/queries/reset", "application/json", nil)
 	if err != nil {
 		t.Fatalf("POST /admin/queries/reset: %v", err)
 	}
@@ -2376,7 +2409,7 @@ func TestE2E_DigestReset(t *testing.T) {
 	}
 
 	// Verify digest is now empty
-	resp, err = client.Get(e2eAdminURL + "/admin/queries/top")
+	resp, err = client.Get(e2eGetAdminURL() + "/admin/queries/top")
 	if err != nil {
 		t.Fatalf("GET /admin/queries/top after reset: %v", err)
 	}
@@ -2413,7 +2446,7 @@ func TestE2E_SemanticCacheKey(t *testing.T) {
 	client := &http.Client{Timeout: 5 * time.Second}
 
 	// Flush cache first
-	resp, err := client.Post(e2eAdminURL+"/admin/cache/flush", "application/json", nil)
+	resp, err := client.Post(e2eGetAdminURL()+"/admin/cache/flush", "application/json", nil)
 	if err != nil {
 		t.Fatalf("flush cache: %v", err)
 	}
@@ -2515,7 +2548,7 @@ func TestE2E_ConfigReload(t *testing.T) {
 
 	client := &http.Client{Timeout: 5 * time.Second}
 
-	resp, err := client.Post(e2eAdminURL+"/admin/reload", "application/json", nil)
+	resp, err := client.Post(e2eGetAdminURL()+"/admin/reload", "application/json", nil)
 	if err != nil {
 		t.Fatalf("POST /admin/reload: %v", err)
 	}
@@ -2605,7 +2638,7 @@ func TestE2E_MirrorStatsEndpoint(t *testing.T) {
 	db.Close()
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(e2eAdminURL + "/admin/mirror/stats")
+	resp, err := client.Get(e2eGetAdminURL() + "/admin/mirror/stats")
 	if err != nil {
 		t.Fatalf("GET /admin/mirror/stats: %v", err)
 	}
@@ -2636,7 +2669,7 @@ func TestE2E_MirrorStatsEndpoint(t *testing.T) {
 // Returns 0 if the metric is not found.
 func getMetricValue(t *testing.T, client *http.Client, metricName, labelFilter string) float64 {
 	t.Helper()
-	resp, err := client.Get(e2eMetricURL)
+	resp, err := client.Get(e2eGetMetricURL())
 	if err != nil {
 		t.Fatalf("GET /metrics: %v", err)
 	}

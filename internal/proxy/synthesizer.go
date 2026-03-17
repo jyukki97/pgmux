@@ -40,9 +40,16 @@ func (s *Synthesizer) RegisterStatement(name, query string, paramOIDs []uint32) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// If already registered, just update in place
+	// If already registered, update in place and move to back of order (LRU refresh)
 	if _, ok := s.statements[name]; ok {
 		s.statements[name] = &PreparedStmt{Query: query, ParamOIDs: paramOIDs}
+		for i, n := range s.order {
+			if n == name {
+				s.order = append(s.order[:i], s.order[i+1:]...)
+				break
+			}
+		}
+		s.order = append(s.order, name)
 		return
 	}
 

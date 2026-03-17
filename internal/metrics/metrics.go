@@ -1,3 +1,4 @@
+// Package metrics defines Prometheus metrics for monitoring proxy operations.
 package metrics
 
 import (

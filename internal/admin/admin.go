@@ -1,3 +1,4 @@
+// Package admin provides an HTTP API for health checks, statistics, configuration, and operational controls.
 package admin
 
 import (

@@ -95,6 +95,10 @@ func (s *Server) resetConn(conn net.Conn) error {
 // The pool reference is captured before Acquire to prevent cross-pool release on hot-reload.
 func (s *Server) fallbackToWriter(ctx context.Context, clientConn net.Conn, msg *protocol.Message, ct *cancelTarget, dbg *DatabaseGroup) error {
 	wPool := dbg.writerPool // capture before acquire — reload may replace dbg.writerPool
+	if wPool == nil {
+		s.sendError(clientConn, "no available backend connections")
+		return fmt.Errorf("writer pool is nil for fallback")
+	}
 	wConn, err := wPool.Acquire(ctx)
 	if err != nil {
 		s.sendError(clientConn, "no available backend connections")

@@ -1,3 +1,4 @@
+// Package pool provides a thread-safe connection pool for PostgreSQL backend connections with health checking and idle timeout.
 package pool
 
 import (

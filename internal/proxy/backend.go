@@ -171,7 +171,7 @@ func isSessionModifying(query string) bool {
 	ch := rest[0] | 0x20 // lowercase first char
 
 	switch ch {
-	case 's': // SET (but not SET LOCAL / SET TRANSACTION)
+	case 's': // SET (but not SET LOCAL / SET TRANSACTION / SET CONSTRAINTS)
 		if n >= 4 && eqFold3(rest, "SET") && (rest[3] == ' ' || rest[3] == '\t') {
 			// Skip to next word
 			j := 4
@@ -183,6 +183,9 @@ func isSessionModifying(query string) bool {
 			}
 			if j+11 < n && eqFoldN(rest[j:j+11], "TRANSACTION") {
 				return false // SET TRANSACTION — transaction-scoped
+			}
+			if j+11 < n && eqFoldN(rest[j:j+11], "CONSTRAINTS") {
+				return false // SET CONSTRAINTS — transaction-scoped
 			}
 			return true
 		}

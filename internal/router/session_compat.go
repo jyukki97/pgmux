@@ -99,7 +99,7 @@ func detectSingleStmtDependency(query string) SessionDependencyResult {
 		if n >= 8 && eqFoldN(rest[:8], "UNLISTEN") && (n == 8 || rest[8] == ' ' || rest[8] == '\t' || rest[8] == ';') {
 			return SessionDependencyResult{Detected: true, Feature: FeatureUnlisten}
 		}
-	case 's': // SET (but not SET LOCAL / SET TRANSACTION)
+	case 's': // SET (but not SET LOCAL / SET TRANSACTION / SET CONSTRAINTS)
 		if n >= 4 && eqFold3(rest, "SET") && (rest[3] == ' ' || rest[3] == '\t') {
 			j := 4
 			for j < n && (rest[j] == ' ' || rest[j] == '\t') {
@@ -110,6 +110,9 @@ func detectSingleStmtDependency(query string) SessionDependencyResult {
 			}
 			if j+11 < n && eqFoldN(rest[j:j+11], "TRANSACTION") {
 				return SessionDependencyResult{} // SET TRANSACTION — transaction-scoped
+			}
+			if j+11 < n && eqFoldN(rest[j:j+11], "CONSTRAINTS") {
+				return SessionDependencyResult{} // SET CONSTRAINTS — transaction-scoped
 			}
 			return SessionDependencyResult{Detected: true, Feature: FeatureSessionSet}
 		}

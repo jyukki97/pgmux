@@ -157,7 +157,7 @@ func run() error {
 
 	// Start Data API server
 	if cfg.DataAPI.Enabled {
-		apiSrv := dataapi.New(srv.Cfg, srv.DBGroups, srv.DefaultDBName(), srv.Cache, srv.ProxyMetrics(), srv.RateLimiter, func() *cache.Invalidator { return srv.Invalidator() })
+		apiSrv := dataapi.New(srv.Cfg, srv.DBGroups, srv.DefaultDBName, srv.Cache, srv.ProxyMetrics(), srv.RateLimiter, func() *cache.Invalidator { return srv.Invalidator() })
 		apiHTTP := apiSrv.HTTPServer()
 
 		ln, err := net.Listen("tcp", cfg.DataAPI.Listen)

@@ -52,7 +52,7 @@ type ErrorResponse struct {
 type Server struct {
 	cfgFn         func() *config.Config
 	dbGroupsFn    func() map[string]*proxy.DatabaseGroup
-	defaultDB     string
+	defaultDBFn   func() string
 	queryCacheFn  func() *cache.Cache
 	met           *metrics.Metrics
 	rateLimiterFn func() *resilience.RateLimiter
@@ -60,11 +60,11 @@ type Server struct {
 }
 
 // New creates a new Data API server.
-func New(cfgFn func() *config.Config, dbGroupsFn func() map[string]*proxy.DatabaseGroup, defaultDB string, queryCacheFn func() *cache.Cache, met *metrics.Metrics, rateLimiterFn func() *resilience.RateLimiter, invalidatorFn func() *cache.Invalidator) *Server {
+func New(cfgFn func() *config.Config, dbGroupsFn func() map[string]*proxy.DatabaseGroup, defaultDBFn func() string, queryCacheFn func() *cache.Cache, met *metrics.Metrics, rateLimiterFn func() *resilience.RateLimiter, invalidatorFn func() *cache.Invalidator) *Server {
 	return &Server{
 		cfgFn:         cfgFn,
 		dbGroupsFn:    dbGroupsFn,
-		defaultDB:     defaultDB,
+		defaultDBFn:   defaultDBFn,
 		queryCacheFn:  queryCacheFn,
 		met:           met,
 		rateLimiterFn: rateLimiterFn,
@@ -139,7 +139,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	// Resolve database group
 	dbName := r.URL.Query().Get("database")
 	if dbName == "" {
-		dbName = s.defaultDB
+		dbName = s.defaultDBFn()
 	}
 	groups := s.dbGroupsFn()
 	dbg := groups[dbName]

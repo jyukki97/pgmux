@@ -9,7 +9,7 @@ A lightweight PostgreSQL proxy written in Go. Sitting between your application a
 ## Key Features
 
 - **Transaction-Level Connection Pooling** -- Both Writer and Reader connections are managed by connection pools. A connection is acquired when a transaction begins and released when it ends, allowing thousands of clients to share a small number of backend connections. Session state is reset with `DISCARD ALL` upon connection release.
-- **Automatic Read/Write Routing** -- `SELECT` queries are routed to Readers (Replicas), while write queries (`INSERT`, `UPDATE`, `DELETE`, DDL) are routed to the Writer (Primary). Round-robin load balancing across Readers is supported.
+- **Automatic Read/Write Routing** -- `SELECT` queries are routed to Readers (Replicas), while write queries (`INSERT`, `UPDATE`, `DELETE`, `MERGE`, `CALL`, `COMMENT`, DDL) are routed to the Writer (Primary). `EXPLAIN ANALYZE` with write sub-queries is also routed to Writer. Round-robin load balancing across Readers is supported.
 - **Query Caching** -- Results of repeated `SELECT` queries are stored in an in-memory LRU cache. Supports TTL expiration and automatic table-level invalidation on writes. Cache invalidation propagates across multiple proxy instances via Redis Pub/Sub.
 - **Prepared Statement Routing** -- Supports the Extended Query Protocol, routing `SELECT` Prepared Statements to Readers.
 - **Prepared Statement Multiplexing** -- In `multiplex` mode, the proxy intercepts Prepared Statement Parse/Bind and synthesizes them into Simple Queries with safely bound parameters. This is a killer feature that enables Prepared Statements in Transaction Pooling environments (impossible with PgBouncer). Includes built-in type-specific literal serialization for SQL Injection defense.
@@ -18,17 +18,17 @@ A lightweight PostgreSQL proxy written in Go. Sitting between your application a
 - **Query Firewall** -- Blocks dangerous queries such as DELETE/UPDATE without WHERE clauses, DROP TABLE, and TRUNCATE through AST analysis.
 - **Semantic Cache Keys** -- Structurally identical queries produce the same cache key regardless of whitespace or case differences, improving cache hit rates. Queries with different literal values maintain separate cache entries.
 - **Hint-Based Routing** -- Force routing via SQL comments: `/* route:writer */ SELECT ...`
-- **Transaction Awareness** -- All queries within `BEGIN` ~ `COMMIT`/`ROLLBACK` are sent to the Writer.
+- **Transaction Awareness** -- All queries within `BEGIN` ~ `COMMIT`/`ROLLBACK`/`ABORT` are sent to the Writer.
 - **Prometheus Metrics** -- Exposes pool, routing, and cache metrics at the `/metrics` endpoint.
 - **Admin API** -- Provides runtime statistics, health checks, and cache flush operations via HTTP. Supports Bearer API Key authentication with RBAC (admin/viewer role separation) and optional IP allowlist. Settings are hot-reloadable.
-- **Serverless Data API** -- Execute SQL via HTTP with `POST /v1/query` and receive JSON responses. Reuse pooled connections from Lambda/Edge functions without TCP connection overhead. API Key authentication, firewall, and caching are applied transparently.
+- **Serverless Data API** -- Execute SQL via HTTP with `POST /v1/query` and receive JSON responses. Reuse pooled connections from Lambda/Edge functions without TCP connection overhead. API Key authentication, firewall, and caching are applied transparently. `COPY` statements are not supported due to the streaming nature of HTTP.
 - **Audit Logging & Slow Query Tracker** -- Records structured audit logs for all queries or only slow queries. Sends alerts via Webhook (e.g., Slack) when thresholds are exceeded, with automatic deduplication of alerts for the same query.
 - **Query Mirroring** -- Asynchronously mirrors production queries to a Shadow DB for latency comparison. Supports per-pattern P50/P99 latency comparison, automatic performance regression detection, table filtering, and read_only/all modes. Validate the performance impact of DB migrations and index changes without affecting production traffic.
 - **Query Digest / Top-N Queries** -- Normalizes queries (replacing literals with `$N`) and aggregates per-pattern execution counts, average/P50/P99 latency. View the most frequently executed query patterns via `GET /admin/queries/top`, and reset statistics with `POST /admin/queries/reset`. A proxy-level equivalent of `pg_stat_statements`.
 - **Query Timeout** -- Proxy-level query timeout. Sends a `CancelRequest` to the backend when the configured timeout is exceeded. Set globally via `pool.query_timeout: 30s` or per-query via `/* timeout:5s */ SELECT ...` hint.
 - **Idle Client Timeout** -- Automatically disconnects idle clients. With `proxy.client_idle_timeout: 5m`, clients that send no queries for 5 minutes receive a FATAL error (57P01) and are disconnected. Timeout is not applied during active transactions. Hot-reloadable.
 - **Online Maintenance Mode** -- Instantly enable/disable maintenance mode via Admin API. In maintenance mode, new connections and non-transactional queries are rejected while in-progress transactions are allowed to complete (drain). `/readyz` automatically returns 503 so LB/K8s stops routing traffic. Use for safe traffic blocking during deployments, migrations, and patches.
-- **Session Compatibility Guard** -- Detects session-dependent SQL features (LISTEN/UNLISTEN, session SET, DECLARE CURSOR, CREATE TEMP, PREPARE, advisory locks) that are incompatible with transaction pooling. Configurable modes: `block` (reject), `warn` (log + allow), `pin` (bind session to writer for its lifetime), or `allow` (no-op). String-based and AST-based hybrid detection.
+- **Session Compatibility Guard** -- Detects session-dependent SQL features (LISTEN/UNLISTEN, session SET, DECLARE CURSOR, CREATE TEMP, PREPARE, advisory locks) that are incompatible with transaction pooling. `SET LOCAL`, `SET TRANSACTION`, and `SET CONSTRAINTS` are excluded as they are transaction-scoped. Configurable modes: `block` (reject), `warn` (log + allow), `pin` (bind session to writer for its lifetime), or `allow` (no-op). String-based and AST-based hybrid detection.
 - **Read-Only Mode** -- `POST /admin/readonly` rejects all write queries at the proxy level. Maintains read service availability while blocking data modifications during writer failures, emergency maintenance, or data protection scenarios. Disable with `DELETE /admin/readonly`.
 - **Per-User / Per-Database Connection Limits** -- Limit the maximum number of connections per user and per database. Prevents a single user from monopolizing the pool in multi-tenant environments. Rejects with PostgreSQL standard error code (53300, `too_many_connections`). Limits can be hot-reloaded and monitored via `GET /admin/connections`.
 - **Multi-Database Routing** -- Route multiple PostgreSQL databases simultaneously from a single proxy instance. Automatically routes to the correct DB group based on the client's `StartupMessage.database` field, maintaining independent Writer/Reader pools, balancers, and Circuit Breakers per database.
@@ -258,6 +258,14 @@ data_api:
   api_keys:
     - "your-secret-key"
 
+tls:
+  enabled: false
+  cert_file: "/path/to/server.crt"
+  key_file: "/path/to/server.key"
+
+config:
+  watch: false                   # true: watch config file changes via fsnotify (hot-reload)
+
 telemetry:
   enabled: false
   exporter: "otlp"            # "otlp" (gRPC) or "stdout"
@@ -418,7 +426,7 @@ Response:
 }
 ```
 
-R/W routing, caching, firewall, and Rate Limiting are applied transparently.
+R/W routing, caching, firewall, and Rate Limiting are applied transparently. `COPY` statements are not supported via the HTTP API due to their streaming nature.
 
 ## Grafana Dashboard
 

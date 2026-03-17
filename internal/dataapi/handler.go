@@ -80,14 +80,6 @@ func (s *Server) HTTPServer() *http.Server {
 	return &http.Server{Handler: mux}
 }
 
-// ListenAndServe starts the Data API HTTP server.
-func (s *Server) ListenAndServe(addr string) error {
-	srv := s.HTTPServer()
-	srv.Addr = addr
-	slog.Info("data api server starting", "listen", addr)
-	return srv.ListenAndServe()
-}
-
 func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")

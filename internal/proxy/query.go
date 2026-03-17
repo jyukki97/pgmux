@@ -290,11 +290,27 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 
 				ct.setFromConn(dbg.writerAddr, wConn)
 				stopTimer := s.startQueryTimer(queryTimeout, ct, target)
-				s.handleWriteQuery(clientConn, wConn, msg, query, session, parsedQuery, qtype, queryCfg, dbg)
+				writeErr := s.handleWriteQuery(clientConn, wConn, msg, query, session, parsedQuery, qtype, queryCfg, dbg)
 				if stopTimer != nil {
 					stopTimer()
 				}
 				ct.clear()
+
+				// On backend failure, discard the broken connection and terminate session.
+				if writeErr != nil {
+					if tracingEnabled {
+						querySpan.SetStatus(codes.Error, writeErr.Error())
+						querySpan.End()
+					}
+					if acquired {
+						discardToPool(wConn, acquiredPool)
+					} else if boundWriter != nil {
+						discardToPool(boundWriter, boundWriterPool)
+						boundWriter = nil
+						boundWriterPool = nil
+					}
+					return
+				}
 
 				// Track session-modifying queries for dirty flag
 				if isSessionModifying(query) {

@@ -116,13 +116,14 @@ func (s *Server) fallbackToWriter(ctx context.Context, clientConn net.Conn, msg 
 
 // handleWriteQuery forwards a write query to the writer and invalidates cache.
 // qtype is the pre-classified query type to avoid redundant classification.
-func (s *Server) handleWriteQuery(clientConn net.Conn, writerConn net.Conn, msg *protocol.Message, query string, session *router.Session, pq *router.ParsedQuery, qtype router.QueryType, cfg *config.Config, dbg *DatabaseGroup) {
+// Returns an error if the backend communication fails (connection should be discarded).
+func (s *Server) handleWriteQuery(clientConn net.Conn, writerConn net.Conn, msg *protocol.Message, query string, session *router.Session, pq *router.ParsedQuery, qtype router.QueryType, cfg *config.Config, dbg *DatabaseGroup) error {
 	if err := s.forwardAndRelay(clientConn, writerConn, msg); err != nil {
 		slog.Error("forward write to writer", "error", err)
 		if dbg.writerCB != nil {
 			dbg.writerCB.RecordFailure()
 		}
-		return
+		return fmt.Errorf("forward write: %w", err)
 	}
 	if dbg.writerCB != nil {
 		dbg.writerCB.RecordSuccess()
@@ -154,6 +155,7 @@ func (s *Server) handleWriteQuery(clientConn net.Conn, writerConn net.Conn, msg 
 			s.invalidator.Publish(context.Background(), tables)
 		}
 	}
+	return nil
 }
 
 // isSessionModifying returns true if a query modifies persistent session state

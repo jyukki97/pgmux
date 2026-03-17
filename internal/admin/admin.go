@@ -225,14 +225,6 @@ func writeJSONError(w http.ResponseWriter, code int, message string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
-// ListenAndServe starts the admin HTTP server.
-func (s *Server) ListenAndServe(addr string) error {
-	srv := s.HTTPServer()
-	srv.Addr = addr
-	slog.Info("admin server starting", "listen", addr)
-	return srv.ListenAndServe()
-}
-
 // handleHealthz is a lightweight liveness probe. Returns 200 if the process is running.
 // No authentication required — intended for LB / K8s livenessProbe.
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {

@@ -10,6 +10,7 @@ pool:
 
 routing:
   read_after_write_delay: 500ms
+  ast_parser: true
 
 cache:
   enabled: true
@@ -31,6 +32,7 @@ databases:
       user: "postgres"
       password: "postgres"
       database: "testdb"
+    max_connections: 50
 
 metrics:
   enabled: true
@@ -39,3 +41,50 @@ metrics:
 admin:
   enabled: true
   listen: "0.0.0.0:19091"
+
+# --- 신규 기능 활성화 ---
+
+auth:
+  enabled: true
+  users:
+    - username: "postgres"
+      password: "postgres"
+      max_connections: 0
+    - username: "limited"
+      password: "limited"
+      max_connections: 3
+
+firewall:
+  enabled: true
+  block_delete_without_where: true
+  block_update_without_where: true
+  block_drop_table: false
+  block_truncate: false
+
+connection_limits:
+  enabled: true
+  default_max_connections_per_user: 50
+  default_max_connections_per_database: 50
+
+session_compatibility:
+  enabled: true
+  mode: "warn"
+
+data_api:
+  enabled: true
+  listen: "0.0.0.0:18080"
+  api_keys:
+    - "test-api-key-12345"
+
+rate_limit:
+  enabled: true
+  rate: 10000
+  burst: 5000
+
+audit:
+  enabled: true
+  slow_query_threshold: 100ms
+  log_all_queries: false
+
+observability:
+  sql_redaction: "literals"

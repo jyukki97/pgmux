@@ -536,10 +536,14 @@ func (s *Server) getRateLimiter() *resilience.RateLimiter {
 	return s.rateLimitPtr.Load()
 }
 
-// getDBGroups returns the current database groups map snapshot (thread-safe).
+// getDBGroups returns a shallow copy of the database groups map (thread-safe).
+// Returns a copy to prevent data races when Reload() mutates the original map.
 func (s *Server) getDBGroups() map[string]*DatabaseGroup {
 	s.mu.RLock()
-	groups := s.dbGroups
+	groups := make(map[string]*DatabaseGroup, len(s.dbGroups))
+	for k, v := range s.dbGroups {
+		groups[k] = v
+	}
 	s.mu.RUnlock()
 	return groups
 }

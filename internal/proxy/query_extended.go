@@ -203,13 +203,14 @@ func (s *Server) handleExtendedRead(ctx context.Context, clientConn net.Conn, bu
 }
 
 // forwardExtBatch sends a batch of Extended Query messages followed by a Sync message.
+// Uses ForwardRaw for zero-copy forwarding when messages have Raw bytes (from CopyMessage).
 func (s *Server) forwardExtBatch(backendConn net.Conn, buf []*protocol.Message, syncMsg *protocol.Message) error {
 	for _, m := range buf {
-		if err := protocol.WriteMessage(backendConn, m.Type, m.Payload); err != nil {
+		if err := protocol.ForwardRaw(backendConn, m); err != nil {
 			return fmt.Errorf("forward ext message: %w", err)
 		}
 	}
-	if err := protocol.WriteMessage(backendConn, syncMsg.Type, syncMsg.Payload); err != nil {
+	if err := protocol.ForwardRaw(backendConn, syncMsg); err != nil {
 		return fmt.Errorf("forward sync: %w", err)
 	}
 	return nil

@@ -216,14 +216,14 @@ func (s *Server) forwardExtBatch(backendConn net.Conn, buf []*protocol.Message, 
 }
 
 // executeSynthesizedQuery executes a synthesized Simple Query on the appropriate backend.
-func (s *Server) executeSynthesizedQuery(ctx context.Context, clientConn net.Conn, query string, route router.Route, session *router.Session, boundWriter **pool.Conn, boundWriterPool **pool.Pool, extTxStart, extTxEnd bool, ct *cancelTarget, dbg *DatabaseGroup) error {
+func (s *Server) executeSynthesizedQuery(ctx context.Context, clientConn net.Conn, query string, route router.Route, session *router.Session, boundWriter **pool.Conn, boundWriterPool **pool.Pool, extTxStart, extTxEnd bool, ct *cancelTarget, dbg *DatabaseGroup, queryTimeout time.Duration) error {
 	// Build Simple Query message
 	queryPayload := append([]byte(query), 0)
 
 	if route == router.RouteReader && !session.InTransaction() && *boundWriter == nil {
 		// Reader path
 		readerAddr := dbg.balancer.Next()
-		return s.handleSynthesizedRead(ctx, clientConn, queryPayload, readerAddr, ct, dbg)
+		return s.handleSynthesizedRead(ctx, clientConn, queryPayload, readerAddr, ct, dbg, queryTimeout)
 	}
 
 	// Writer path — capture pool reference before acquire
@@ -235,7 +235,11 @@ func (s *Server) executeSynthesizedQuery(ctx context.Context, clientConn net.Con
 	}
 
 	ct.setFromConn(dbg.writerAddr, wConn)
+	stopTimer := s.startQueryTimer(queryTimeout, ct, "writer")
 	if err := protocol.WriteMessage(wConn, protocol.MsgQuery, queryPayload); err != nil {
+		if stopTimer != nil {
+			stopTimer()
+		}
 		ct.clear()
 		if acquired {
 			discardToPool(wConn, acquiredPool)
@@ -249,6 +253,9 @@ func (s *Server) executeSynthesizedQuery(ctx context.Context, clientConn net.Con
 	}
 
 	if err := s.relayUntilReady(clientConn, wConn); err != nil {
+		if stopTimer != nil {
+			stopTimer()
+		}
 		ct.clear()
 		if acquired {
 			discardToPool(wConn, acquiredPool)
@@ -258,6 +265,9 @@ func (s *Server) executeSynthesizedQuery(ctx context.Context, clientConn net.Con
 			*boundWriterPool = nil
 		}
 		return fmt.Errorf("relay synthesized response: %w", err)
+	}
+	if stopTimer != nil {
+		stopTimer()
 	}
 	ct.clear()
 
@@ -285,7 +295,7 @@ func (s *Server) executeSynthesizedQuery(ctx context.Context, clientConn net.Con
 }
 
 // handleSynthesizedRead sends a synthesized Simple Query to a reader.
-func (s *Server) handleSynthesizedRead(ctx context.Context, clientConn net.Conn, queryPayload []byte, readerAddr string, ct *cancelTarget, dbg *DatabaseGroup) error {
+func (s *Server) handleSynthesizedRead(ctx context.Context, clientConn net.Conn, queryPayload []byte, readerAddr string, ct *cancelTarget, dbg *DatabaseGroup, queryTimeout time.Duration) error {
 	// Capture pool reference before Acquire to prevent cross-pool release on hot-reload.
 	fallbackToWriter := func() error {
 		if s.metrics != nil {
@@ -298,15 +308,25 @@ func (s *Server) handleSynthesizedRead(ctx context.Context, clientConn net.Conn,
 			return fmt.Errorf("acquire writer for synthesized fallback: %w", err)
 		}
 		ct.setFromConn(dbg.writerAddr, wConn)
+		stopTimer := s.startQueryTimer(queryTimeout, ct, "writer")
 		if err := protocol.WriteMessage(wConn, protocol.MsgQuery, queryPayload); err != nil {
+			if stopTimer != nil {
+				stopTimer()
+			}
 			ct.clear()
 			wPool.Discard(wConn)
 			return fmt.Errorf("send synthesized to writer: %w", err)
 		}
 		if err := s.relayUntilReady(clientConn, wConn); err != nil {
+			if stopTimer != nil {
+				stopTimer()
+			}
 			ct.clear()
 			wPool.Discard(wConn)
 			return err
+		}
+		if stopTimer != nil {
+			stopTimer()
 		}
 		ct.clear()
 		s.resetAndReleaseToPool(wConn, wPool)
@@ -343,7 +363,11 @@ func (s *Server) handleSynthesizedRead(ctx context.Context, clientConn net.Conn,
 	}
 
 	ct.setFromConn(readerAddr, rConn)
+	stopTimer := s.startQueryTimer(queryTimeout, ct, "reader")
 	if err := protocol.WriteMessage(rConn, protocol.MsgQuery, queryPayload); err != nil {
+		if stopTimer != nil {
+			stopTimer()
+		}
 		ct.clear()
 		rPool.Discard(rConn)
 		if cb, ok := dbg.ReaderCB(readerAddr); ok {
@@ -354,6 +378,9 @@ func (s *Server) handleSynthesizedRead(ctx context.Context, clientConn net.Conn,
 	}
 
 	if err := s.relayUntilReady(clientConn, rConn); err != nil {
+		if stopTimer != nil {
+			stopTimer()
+		}
 		ct.clear()
 		rPool.Discard(rConn)
 		if cb, ok := dbg.ReaderCB(readerAddr); ok {
@@ -361,6 +388,9 @@ func (s *Server) handleSynthesizedRead(ctx context.Context, clientConn net.Conn,
 		}
 		dbg.balancer.MarkUnhealthy(readerAddr)
 		return fmt.Errorf("relay reader synthesized response: %w", err)
+	}
+	if stopTimer != nil {
+		stopTimer()
 	}
 	ct.clear()
 	rPool.Release(rConn)

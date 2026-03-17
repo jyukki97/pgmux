@@ -53,6 +53,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 	var extIsWrite bool // true if the current extended query batch contains a write query
 	var extSessionBlocked bool
 	var extSessionBlockedFeature string
+	var extQueryText string
 
 	// Multiplexing mode: synthesizer for Prepared Statement → Simple Query conversion
 	multiplexMode := s.getConfig().Pool.PreparedStatementMode == "multiplex"
@@ -374,6 +375,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 					slog.Warn("parse message full failed, falling back", "error", err)
 					stmtName, query = protocol.ParseParseMessage(msg.Payload)
 				}
+				extQueryText = query
 				route := session.RegisterStatement(stmtName, query)
 				slog.Debug("parse registered (multiplex)", "stmt", stmtName, "sql", query, "route", routeName(route))
 				synth.RegisterStatement(stmtName, query, paramOIDs)
@@ -431,6 +433,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				}
 			} else {
 				stmtName, query := protocol.ParseParseMessage(msg.Payload)
+				extQueryText = query
 				route := session.RegisterStatement(stmtName, query)
 				slog.Debug("parse registered", "stmt", stmtName, "sql", query, "route", routeName(route))
 
@@ -555,7 +558,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 		case protocol.MsgSync:
 			start := time.Now()
 			target := routeName(extRoute)
-			extQueryTimeout := s.getConfig().Pool.QueryTimeout
+			extQueryTimeout := s.resolveQueryTimeout(extQueryText, s.getConfig())
 
 			// Start root span for extended query batch
 			extCtx, extSpan := telemetry.Tracer().Start(ctx, "pgmux.extended_query",
@@ -628,7 +631,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				slog.Debug("synthesized query", "sql", synthesized, "route", target)
 				extSpan.SetAttributes(attribute.String("db.statement", truncateStr(synthesized, 100)))
 
-				if err := s.executeSynthesizedQuery(extCtx, clientConn, synthesized, extRoute, session, &boundWriter, &boundWriterPool, extTxStart, extTxEnd, ct, dbg); err != nil {
+				if err := s.executeSynthesizedQuery(extCtx, clientConn, synthesized, extRoute, session, &boundWriter, &boundWriterPool, extTxStart, extTxEnd, ct, dbg, extQueryTimeout); err != nil {
 					extSpan.SetStatus(codes.Error, err.Error())
 					extSpan.End()
 					slog.Error("execute synthesized query", "error", err)
@@ -779,6 +782,7 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 			extRoute = router.RouteReader
 			extTxStart, extTxEnd = false, false
 			extIsWrite = false
+			extQueryText = ""
 			muxBindDetail = nil
 
 		default:

@@ -15,11 +15,17 @@ type PreparedStmt struct {
 	ParamOIDs []uint32
 }
 
+// maxSynthStatements is the maximum number of prepared statements a single
+// client session may register before the oldest is evicted. This prevents
+// memory exhaustion from clients that send infinite Parse messages without Close.
+const maxSynthStatements = 10000
+
 // Synthesizer manages prepared statements and synthesizes Simple Queries
 // from Parse+Bind parameter data in multiplex mode.
 type Synthesizer struct {
 	mu         sync.Mutex
 	statements map[string]*PreparedStmt // name → statement
+	order      []string                 // insertion order for LRU eviction
 }
 
 // NewSynthesizer creates a new Synthesizer.
@@ -33,10 +39,25 @@ func NewSynthesizer() *Synthesizer {
 func (s *Synthesizer) RegisterStatement(name, query string, paramOIDs []uint32) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// If already registered, just update in place
+	if _, ok := s.statements[name]; ok {
+		s.statements[name] = &PreparedStmt{Query: query, ParamOIDs: paramOIDs}
+		return
+	}
+
+	// Evict oldest if at capacity
+	if len(s.statements) >= maxSynthStatements {
+		oldest := s.order[0]
+		s.order = s.order[1:]
+		delete(s.statements, oldest)
+	}
+
 	s.statements[name] = &PreparedStmt{
 		Query:     query,
 		ParamOIDs: paramOIDs,
 	}
+	s.order = append(s.order, name)
 }
 
 // GetStatement returns the registered statement, or nil if not found.
@@ -51,6 +72,12 @@ func (s *Synthesizer) CloseStatement(name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.statements, name)
+	for i, n := range s.order {
+		if n == name {
+			s.order = append(s.order[:i], s.order[i+1:]...)
+			break
+		}
+	}
 }
 
 // Synthesize builds a Simple Query string by replacing $N placeholders

@@ -537,5 +537,5 @@ func TestE2E_ProxyStartStop(t *testing.T) {
 		t.Fatal("proxy did not shut down within 5s")
 	}
 
-	fmt.Println("proxy start/stop OK")
+	t.Log("proxy start/stop OK")
 }

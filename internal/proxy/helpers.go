@@ -195,18 +195,33 @@ func routeName(r router.Route) string {
 }
 
 // parseSize converts a size string like "512KB" or "1MB" to bytes.
+// Returns 0 for empty or unparseable values (logged as warning).
 func parseSize(s string) int {
+	raw := s
 	s = strings.TrimSpace(strings.ToUpper(s))
+	if s == "" || s == "0" {
+		return 0
+	}
+	var n int
+	var err error
 	if strings.HasSuffix(s, "MB") {
-		n, _ := strconv.Atoi(strings.TrimSuffix(s, "MB"))
-		return n * 1024 * 1024
+		n, err = strconv.Atoi(strings.TrimSuffix(s, "MB"))
+		if err == nil {
+			return n * 1024 * 1024
+		}
+	} else if strings.HasSuffix(s, "KB") {
+		n, err = strconv.Atoi(strings.TrimSuffix(s, "KB"))
+		if err == nil {
+			return n * 1024
+		}
+	} else {
+		n, err = strconv.Atoi(s)
+		if err == nil {
+			return n
+		}
 	}
-	if strings.HasSuffix(s, "KB") {
-		n, _ := strconv.Atoi(strings.TrimSuffix(s, "KB"))
-		return n * 1024
-	}
-	n, _ := strconv.Atoi(s)
-	return n
+	slog.Warn("invalid size value, defaulting to 0 (unlimited)", "value", raw, "error", err)
+	return 0
 }
 
 // emitAuditEvent sends a query audit event to the audit logger if enabled.

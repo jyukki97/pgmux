@@ -34,6 +34,12 @@ func (rl *RateLimiter) Allow() bool {
 	elapsed := now.Sub(rl.lastTime).Seconds()
 	rl.lastTime = now
 
+	// Clamp to zero: clock skew (NTP correction, VM pause) can make elapsed
+	// negative, which would drain tokens and cause a prolonged self-DoS.
+	if elapsed < 0 {
+		elapsed = 0
+	}
+
 	// Refill tokens
 	rl.tokens += elapsed * rl.rate
 	if rl.tokens > float64(rl.burst) {

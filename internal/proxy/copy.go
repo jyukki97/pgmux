@@ -51,6 +51,9 @@ func (s *Server) relayUntilReady(clientConn, backendConn net.Conn) error {
 			return fmt.Errorf("invalid message length: %d", length)
 		}
 		payloadLen := length - 4
+		if payloadLen > protocol.MaxMessageSize {
+			return fmt.Errorf("backend message too large: %d bytes (max %d)", payloadLen, protocol.MaxMessageSize)
+		}
 		wireLen := 5 + payloadLen
 
 		// Reuse wire buffer to avoid per-message allocation
@@ -142,6 +145,8 @@ func (s *Server) relayCopyOut(clientConn, backendConn net.Conn) error {
 
 // relayCopyBoth handles CopyBothResponse (streaming replication) by relaying
 // bidirectionally until one side sends CopyDone or CopyFail.
+// Both goroutines are drained before returning to prevent data races on the
+// underlying connections.
 func (s *Server) relayCopyBoth(clientConn, backendConn net.Conn) error {
 	errCh := make(chan error, 2)
 
@@ -183,11 +188,15 @@ func (s *Server) relayCopyBoth(clientConn, backendConn net.Conn) error {
 		}
 	}()
 
-	// Wait for one direction to complete
-	if err := <-errCh; err != nil {
-		return err
+	// Wait for BOTH goroutines to finish to prevent data races on connections.
+	// The first error (if any) is returned; the second goroutine will unblock
+	// when the caller closes or resets the connection.
+	err1 := <-errCh
+	err2 := <-errCh
+	if err1 != nil {
+		return err1
 	}
-	return nil
+	return err2
 }
 
 // relayAndCollect relays backend responses to client and collects bytes for caching.

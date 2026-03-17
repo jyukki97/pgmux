@@ -26,6 +26,7 @@ var writeKeywords = map[string]bool{
 	"MERGE":    true,
 	"COPY":     true,
 	"CALL":     true,
+	"COMMENT":  true,
 }
 
 var hintRegex = regexp.MustCompile(`/\*\s*route:(writer|reader)\s*\*/`)
@@ -62,6 +63,10 @@ func Classify(query string) QueryType {
 		}
 		// Side-effectful SELECT: FOR UPDATE/SHARE, nextval(), set_config(), etc.
 		if keyword == "SELECT" && isSideEffectfulSelect(stmt) {
+			return QueryWrite
+		}
+		// EXPLAIN ANALYZE actually executes the query
+		if keyword == "EXPLAIN" && isExplainAnalyzeWrite(stmt) {
 			return QueryWrite
 		}
 	}
@@ -107,8 +112,8 @@ func classifyFast(query string) (QueryType, bool) {
 	if writeKeywords[kw] {
 		return QueryWrite, true
 	}
-	if kw == "WITH" {
-		return 0, false // CTE needs full parser
+	if kw == "WITH" || kw == "EXPLAIN" {
+		return 0, false // CTE / EXPLAIN ANALYZE needs full parser
 	}
 	if kw == "SELECT" {
 		// Check for side-effectful patterns that need full analysis
@@ -372,6 +377,15 @@ func extractTablesFromStmt(stmt string) []string {
 		tables = append(tables, extractAfter(q, upper, "DELETE FROM"))
 	case strings.HasPrefix(upper, "TRUNCATE"):
 		tables = append(tables, extractAfter(q, upper, "TRUNCATE"))
+	case strings.HasPrefix(upper, "MERGE INTO"):
+		tables = append(tables, extractAfter(q, upper, "MERGE INTO"))
+	case strings.HasPrefix(upper, "MERGE"):
+		tables = append(tables, extractAfter(q, upper, "MERGE"))
+	case strings.HasPrefix(upper, "COPY"):
+		tables = append(tables, extractCopyTable(q, upper)...)
+	case strings.HasPrefix(upper, "EXPLAIN"):
+		// EXPLAIN ANALYZE may execute writes — delegate to inner statement
+		tables = append(tables, extractExplainTables(q, upper)...)
 	case strings.HasPrefix(upper, "WITH"):
 		// CTE: scan for write keywords inside the CTE body
 		tables = append(tables, extractCTETables(q)...)
@@ -659,6 +673,75 @@ func isSideEffectfulSelect(query string) bool {
 		return true
 	}
 
+	return false
+}
+
+// extractCopyTable extracts the table name from COPY ... FROM statements.
+func extractCopyTable(q, upper string) []string {
+	// COPY tablename FROM ... — extract tablename
+	// COPY (query) TO ... — subquery, skip
+	rest := strings.TrimSpace(q[4:])
+	if len(rest) > 0 && rest[0] == '(' {
+		return nil // COPY (query) TO — no direct table
+	}
+	name := extractIdentifier(rest)
+	if name == "" {
+		return nil
+	}
+	parts := strings.Split(name, ".")
+	final := strings.ToLower(stripQuotes(parts[len(parts)-1]))
+	if final != "" {
+		return []string{final}
+	}
+	return nil
+}
+
+// extractExplainTables extracts write-target tables from EXPLAIN ANALYZE statements.
+func extractExplainTables(q, upper string) []string {
+	if !strings.Contains(upper, "ANALYZE") {
+		return nil
+	}
+	// Find the inner statement after EXPLAIN [ANALYZE] [VERBOSE] [options]
+	// Simple heuristic: find the first write keyword
+	for _, kw := range []struct {
+		keyword string
+		prefix  string
+	}{
+		{"INSERT INTO", "INSERT INTO"},
+		{"UPDATE", "UPDATE"},
+		{"DELETE FROM", "DELETE FROM"},
+		{"MERGE INTO", "MERGE INTO"},
+		{"MERGE", "MERGE"},
+	} {
+		idx := strings.Index(upper, kw.keyword)
+		if idx >= 0 {
+			sub := q[idx:]
+			subUpper := upper[idx:]
+			t := extractAfter(sub, subUpper, kw.prefix)
+			if t != "" {
+				return []string{t}
+			}
+		}
+	}
+	return nil
+}
+
+// isExplainAnalyzeWrite checks if an EXPLAIN statement has ANALYZE and a write sub-query.
+// EXPLAIN ANALYZE INSERT/UPDATE/DELETE ... actually executes the query.
+func isExplainAnalyzeWrite(stmt string) bool {
+	upper := strings.ToUpper(stripComments(stripStringLiterals(stmt)))
+	if !strings.Contains(upper, "ANALYZE") {
+		return false
+	}
+	// Check if any write keyword appears after ANALYZE
+	for kw := range writeKeywords {
+		if kw == "COPY" || kw == "COMMENT" {
+			continue // EXPLAIN ANALYZE COPY / COMMENT unlikely
+		}
+		if strings.Contains(upper, kw) {
+			return true
+		}
+	}
 	return false
 }
 

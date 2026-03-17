@@ -137,7 +137,7 @@ func (s *Session) updateTransactionState(query string) {
 			s.inTransaction = true
 		}
 		if strings.HasPrefix(upper, "COMMIT") || strings.HasPrefix(upper, "ROLLBACK") ||
-			strings.HasPrefix(upper, "END") {
+			strings.HasPrefix(upper, "END") || strings.HasPrefix(upper, "ABORT") {
 			s.inTransaction = false
 		}
 	}
@@ -150,7 +150,7 @@ func containsTransactionKeyword(query string) bool {
 		upper := strings.ToUpper(strings.TrimSpace(stripComments(stmt)))
 		if strings.HasPrefix(upper, "BEGIN") || strings.HasPrefix(upper, "START TRANSACTION") ||
 			strings.HasPrefix(upper, "COMMIT") || strings.HasPrefix(upper, "ROLLBACK") ||
-			strings.HasPrefix(upper, "END") {
+			strings.HasPrefix(upper, "END") || strings.HasPrefix(upper, "ABORT") {
 			return true
 		}
 	}
@@ -300,6 +300,10 @@ func hasTxPrefix(query string) int {
 		}
 	case 'e': // END
 		if n >= 3 && eqFold3(rest, "END") && (n == 3 || isSpace(rest[3]) || rest[3] == ';') {
+			return 2
+		}
+	case 'a': // ABORT (PostgreSQL synonym for ROLLBACK)
+		if n >= 5 && eqFold5(rest, "ABORT") && (n == 5 || isSpace(rest[5]) || rest[5] == ';') {
 			return 2
 		}
 	}

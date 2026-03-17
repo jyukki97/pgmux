@@ -210,7 +210,14 @@ func run() error {
 				slog.Error("config file watcher error", "error", err)
 			}
 		}()
-		<-fw.Ready() // wait for watcher to be armed before proceeding
+		// Wait for watcher to be armed, but don't block forever if Start fails
+		select {
+		case <-fw.Ready():
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Second):
+			slog.Warn("config file watcher did not become ready within 5s, continuing")
+		}
 	}
 
 	// Graceful shutdown of HTTP servers when context is cancelled

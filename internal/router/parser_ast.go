@@ -316,6 +316,21 @@ func extractWriteTables(node *pg_query.Node, add func(string)) {
 				}
 			}
 		}
+	case *pg_query.Node_MergeStmt:
+		if rel := n.MergeStmt.GetRelation(); rel != nil {
+			add(rel.GetRelname())
+		}
+	case *pg_query.Node_CopyStmt:
+		if rel := n.CopyStmt.GetRelation(); rel != nil {
+			add(rel.GetRelname())
+		}
+	case *pg_query.Node_ExplainStmt:
+		if n.ExplainStmt.GetQuery() != nil {
+			extractWriteTables(n.ExplainStmt.GetQuery(), add)
+		}
+	case *pg_query.Node_CallStmt:
+		// CALL procedure — we can't know which tables it modifies,
+		// but log the procedure name for tracing
 	case *pg_query.Node_SelectStmt:
 		extractCTEWriteTables(n.SelectStmt.GetWithClause(), add)
 	}

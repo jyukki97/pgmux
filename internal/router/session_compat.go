@@ -166,8 +166,12 @@ func detectNodeDependency(node *pg_query.Node) SessionDependencyResult {
 		return SessionDependencyResult{Detected: true, Feature: FeatureUnlisten}
 
 	case *pg_query.Node_VariableSetStmt:
-		// SET LOCAL and SET TRANSACTION are transaction-scoped (safe)
+		// SET LOCAL, SET TRANSACTION, and SET CONSTRAINTS are transaction-scoped (safe)
 		if n.VariableSetStmt.GetIsLocal() {
+			return SessionDependencyResult{}
+		}
+		name := strings.ToUpper(n.VariableSetStmt.GetName())
+		if name == "TRANSACTION" || name == "CONSTRAINTS" {
 			return SessionDependencyResult{}
 		}
 		return SessionDependencyResult{Detected: true, Feature: FeatureSessionSet}

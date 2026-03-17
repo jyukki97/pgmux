@@ -154,9 +154,9 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 
 	// Reject COPY statements — Data API uses Simple Query Protocol which
 	// cannot handle the CopyIn/CopyOut sub-protocol. COPY would hang or
-	// produce incomplete results.
-	sqlUpper := strings.ToUpper(strings.TrimSpace(req.SQL))
-	if strings.HasPrefix(sqlUpper, "COPY ") || strings.HasPrefix(sqlUpper, "COPY\t") {
+	// produce incomplete results. Uses router's parser to handle leading
+	// comments, newlines, multi-statement queries, etc.
+	if router.ContainsCopyStatement(req.SQL) {
 		writeError(w, http.StatusBadRequest, "COPY is not supported via Data API")
 		return
 	}
@@ -481,6 +481,19 @@ func executeQuery(conn net.Conn, sql string) (*QueryResponse, error) {
 
 		case protocol.MsgNoticeResponse:
 			// Ignore notices
+
+		case protocol.MsgCopyInResponse, protocol.MsgCopyOutResponse, protocol.MsgCopyBothResponse:
+			// COPY sub-protocol is not supported in Data API.
+			// Send CopyFail to abort the COPY and drain until ReadyForQuery.
+			failPayload := append([]byte("COPY not supported via Data API"), 0)
+			_ = protocol.WriteMessage(conn, protocol.MsgCopyFail, failPayload)
+			for {
+				m, e := protocol.ReadMessage(conn)
+				if e != nil || m.Type == protocol.MsgReadyForQuery {
+					break
+				}
+			}
+			return nil, fmt.Errorf("COPY is not supported via Data API")
 		}
 	}
 }

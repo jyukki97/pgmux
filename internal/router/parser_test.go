@@ -383,3 +383,31 @@ func TestExtractTimeoutHint(t *testing.T) {
 		})
 	}
 }
+
+func TestContainsCopyStatement(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  bool
+	}{
+		{"plain COPY", "COPY users FROM STDIN", true},
+		{"lowercase copy", "copy users from stdin", true},
+		{"leading space", "  COPY users FROM STDIN", true},
+		{"leading comment", "/* comment */ COPY users FROM STDIN", true},
+		{"line comment", "-- comment\nCOPY users FROM STDIN", true},
+		{"newline after COPY", "COPY\nusers FROM STDIN", true},
+		{"tab after COPY", "COPY\tusers FROM STDIN", true},
+		{"multi-statement", "SELECT 1; COPY users FROM STDIN", true},
+		{"route hint", "/* route:writer */ COPY users FROM STDIN", true},
+		{"no COPY", "SELECT * FROM users", false},
+		{"COPY in string literal", "SELECT 'COPY users FROM STDIN'", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ContainsCopyStatement(tt.query)
+			if got != tt.want {
+				t.Errorf("ContainsCopyStatement(%q) = %v, want %v", tt.query, got, tt.want)
+			}
+		})
+	}
+}

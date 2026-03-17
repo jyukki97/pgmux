@@ -1,3 +1,4 @@
+// Package digest tracks top-N query patterns by frequency and latency.
 package digest
 
 import (

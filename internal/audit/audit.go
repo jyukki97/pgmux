@@ -1,3 +1,4 @@
+// Package audit provides slow query logging and webhook-based audit event delivery.
 package audit
 
 import (

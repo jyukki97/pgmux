@@ -1,3 +1,4 @@
+// Package router provides query classification and routing to determine whether queries should be sent to writer or reader backends.
 package router
 
 import (

@@ -1,3 +1,4 @@
+// Package mirror sends query traffic to a shadow database for comparison testing.
 package mirror
 
 import (

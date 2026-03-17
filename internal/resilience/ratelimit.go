@@ -1,3 +1,4 @@
+// Package resilience provides rate limiting and circuit breaker patterns for backend protection.
 package resilience
 
 import (

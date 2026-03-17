@@ -1,3 +1,4 @@
+// Package redact provides SQL query redaction to mask sensitive literals in logs and traces.
 package redact
 
 import (

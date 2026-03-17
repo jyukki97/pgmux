@@ -1,3 +1,4 @@
+// Package protocol implements the PostgreSQL wire protocol message encoding and decoding.
 package protocol
 
 import (

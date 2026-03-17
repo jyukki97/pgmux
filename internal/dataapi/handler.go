@@ -1,3 +1,4 @@
+// Package dataapi exposes a RESTful HTTP interface for executing SQL queries against the proxy.
 package dataapi
 
 import (

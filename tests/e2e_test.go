@@ -2218,3 +2218,448 @@ func TestE2E_AdminConnectionLimitStats(t *testing.T) {
 	}
 	t.Logf("GET /admin/connections OK: %s", bodyStr)
 }
+
+// ---------------------------------------------------------------------------
+// Route Hint E2E tests
+// ---------------------------------------------------------------------------
+
+// TestE2E_RouteHint verifies that /* route:writer */ and /* route:reader */ hints
+// override the default routing decision.
+func TestE2E_RouteHint(t *testing.T) {
+	db := e2eCheckProxy(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	// Snapshot writer query count before hint test
+	writerBefore := getMetricValue(t, client, "pgmux_queries_routed_total", `target="writer"`)
+
+	t.Run("RouteSelectToWriter", func(t *testing.T) {
+		// SELECT normally goes to reader, but hint forces it to writer
+		var result int
+		err := db.QueryRowContext(ctx, "/* route:writer */ SELECT 1").Scan(&result)
+		if err != nil {
+			t.Fatalf("route hint SELECT failed: %v", err)
+		}
+		if result != 1 {
+			t.Errorf("got %d, want 1", result)
+		}
+		t.Logf("/* route:writer */ SELECT OK: routed to writer")
+	})
+
+	t.Run("RouteSelectToReader", func(t *testing.T) {
+		// Explicit reader hint on a SELECT (should still work normally)
+		var result int
+		err := db.QueryRowContext(ctx, "/* route:reader */ SELECT 2").Scan(&result)
+		if err != nil {
+			t.Fatalf("route hint reader SELECT failed: %v", err)
+		}
+		if result != 2 {
+			t.Errorf("got %d, want 2", result)
+		}
+		t.Logf("/* route:reader */ SELECT OK: routed to reader")
+	})
+
+	t.Run("WriterMetricIncreased", func(t *testing.T) {
+		// Writer count should have increased from the /* route:writer */ SELECT
+		writerAfter := getMetricValue(t, client, "pgmux_queries_routed_total", `target="writer"`)
+		if writerAfter <= writerBefore {
+			t.Errorf("writer metric did not increase: before=%f, after=%f", writerBefore, writerAfter)
+		} else {
+			t.Logf("Writer metric increased: %f → %f (route hint worked)", writerBefore, writerAfter)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Timeout Hint E2E tests
+// ---------------------------------------------------------------------------
+
+// TestE2E_TimeoutHint verifies that /* timeout:Xs */ hint cancels a long-running query.
+func TestE2E_TimeoutHint(t *testing.T) {
+	db := e2eCheckProxy(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	t.Run("TimeoutCancelsQuery", func(t *testing.T) {
+		// pg_sleep(5) should be cancelled by the 200ms timeout hint
+		start := time.Now()
+		_, err := db.ExecContext(ctx, "/* timeout:200ms */ SELECT pg_sleep(5)")
+		elapsed := time.Since(start)
+
+		if err == nil {
+			t.Fatal("expected timeout error, got nil")
+		}
+		// Should complete well before 5s
+		if elapsed > 3*time.Second {
+			t.Errorf("query took %v, expected cancellation within ~200ms", elapsed)
+		}
+		t.Logf("Timeout hint cancelled query after %v (error: %v)", elapsed, err)
+	})
+
+	t.Run("NoTimeoutOnFastQuery", func(t *testing.T) {
+		// A fast query with a generous timeout should succeed
+		var result int
+		err := db.QueryRowContext(ctx, "/* timeout:5s */ SELECT 42").Scan(&result)
+		if err != nil {
+			t.Fatalf("fast query with timeout hint failed: %v", err)
+		}
+		if result != 42 {
+			t.Errorf("got %d, want 42", result)
+		}
+		t.Logf("Fast query with timeout hint OK: %d", result)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Digest Reset E2E tests
+// ---------------------------------------------------------------------------
+
+// TestE2E_DigestReset verifies POST /admin/queries/reset clears query digest stats.
+func TestE2E_DigestReset(t *testing.T) {
+	db := e2eCheckProxy(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	// Execute some queries to populate digest
+	for i := 0; i < 5; i++ {
+		db.QueryRowContext(ctx, "SELECT name FROM users WHERE id = 1")
+	}
+
+	// Verify digest has entries
+	resp, err := client.Get(e2eAdminURL + "/admin/queries/top")
+	if err != nil {
+		t.Fatalf("GET /admin/queries/top: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /admin/queries/top: status=%d", resp.StatusCode)
+	}
+
+	var topBefore []json.RawMessage
+	if err := json.Unmarshal(body, &topBefore); err != nil {
+		t.Fatalf("parse queries/top response: %v", err)
+	}
+	if len(topBefore) == 0 {
+		t.Skip("digest has no entries (digest may be disabled)")
+	}
+	t.Logf("Digest has %d patterns before reset", len(topBefore))
+
+	// Reset digest
+	resp, err = client.Post(e2eAdminURL+"/admin/queries/reset", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST /admin/queries/reset: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /admin/queries/reset: status=%d, want 200", resp.StatusCode)
+	}
+
+	// Verify digest is now empty
+	resp, err = client.Get(e2eAdminURL + "/admin/queries/top")
+	if err != nil {
+		t.Fatalf("GET /admin/queries/top after reset: %v", err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	var topAfter []json.RawMessage
+	if err := json.Unmarshal(body, &topAfter); err != nil {
+		t.Fatalf("parse queries/top after reset: %v", err)
+	}
+	if len(topAfter) != 0 {
+		t.Errorf("digest should be empty after reset, got %d entries", len(topAfter))
+	} else {
+		t.Logf("Digest reset OK: 0 patterns after POST /admin/queries/reset")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Semantic Cache Key E2E tests
+// ---------------------------------------------------------------------------
+
+// TestE2E_SemanticCacheKey verifies that queries differing only in whitespace or
+// casing share the same cache entry (AST-based normalization).
+func TestE2E_SemanticCacheKey(t *testing.T) {
+	db := e2eCheckProxy(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	// Flush cache first
+	resp, err := client.Post(e2eAdminURL+"/admin/cache/flush", "application/json", nil)
+	if err != nil {
+		t.Fatalf("flush cache: %v", err)
+	}
+	resp.Body.Close()
+
+	// Snapshot cache miss count
+	missBefore := getMetricValue(t, client, "pgmux_cache_misses_total", "")
+
+	// First query — cache miss
+	var name1 string
+	err = db.QueryRowContext(ctx, "SELECT  name  FROM  users  WHERE  id = 1").Scan(&name1)
+	if err != nil {
+		t.Fatalf("query 1 failed: %v", err)
+	}
+
+	missAfterFirst := getMetricValue(t, client, "pgmux_cache_misses_total", "")
+
+	// Second query — same semantics, different whitespace/casing
+	var name2 string
+	err = db.QueryRowContext(ctx, "select name from users where id = 1").Scan(&name2)
+	if err != nil {
+		t.Fatalf("query 2 failed: %v", err)
+	}
+
+	missAfterSecond := getMetricValue(t, client, "pgmux_cache_misses_total", "")
+
+	if name1 != name2 {
+		t.Errorf("results differ: %q vs %q", name1, name2)
+	}
+
+	// First query should cause a miss; second should hit cache (no additional miss)
+	firstCausedMiss := missAfterFirst > missBefore
+	secondWasHit := missAfterSecond == missAfterFirst
+
+	if firstCausedMiss && secondWasHit {
+		t.Logf("Semantic cache key OK: %q == %q, second query was cache hit", name1, name2)
+	} else {
+		t.Logf("Cache misses: before=%f, afterFirst=%f, afterSecond=%f",
+			missBefore, missAfterFirst, missAfterSecond)
+		if !firstCausedMiss {
+			t.Log("Note: first query did not miss (may have been cached previously)")
+		}
+		if !secondWasHit {
+			t.Error("Semantic cache miss: differently-formatted query should have been a cache hit")
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Slow Query Detection E2E tests
+// ---------------------------------------------------------------------------
+
+// TestE2E_SlowQueryDetection verifies that queries exceeding the slow_query_threshold
+// are counted in metrics (config has audit.slow_query_threshold: 100ms).
+func TestE2E_SlowQueryDetection(t *testing.T) {
+	db := e2eCheckProxy(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	// Snapshot slow query counter
+	slowBefore := getMetricValue(t, client, "pgmux_slow_queries_total", "")
+
+	// Execute a query that takes > 100ms (threshold from test config)
+	_, err := db.ExecContext(ctx, "SELECT pg_sleep(0.2)")
+	if err != nil {
+		t.Fatalf("pg_sleep query failed: %v", err)
+	}
+
+	// Small delay for async audit processing
+	time.Sleep(200 * time.Millisecond)
+
+	slowAfter := getMetricValue(t, client, "pgmux_slow_queries_total", "")
+
+	if slowAfter > slowBefore {
+		t.Logf("Slow query detected: metric %f → %f", slowBefore, slowAfter)
+	} else {
+		t.Errorf("Slow query metric did not increase: before=%f, after=%f", slowBefore, slowAfter)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Config Reload E2E tests
+// ---------------------------------------------------------------------------
+
+// TestE2E_ConfigReload verifies that POST /admin/reload reloads the configuration.
+func TestE2E_ConfigReload(t *testing.T) {
+	db := e2eCheckProxy(t)
+	if db == nil {
+		return
+	}
+	db.Close()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	resp, err := client.Post(e2eAdminURL+"/admin/reload", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST /admin/reload: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /admin/reload: status=%d, body=%s", resp.StatusCode, string(body))
+	}
+
+	// Verify the proxy still works after reload
+	db2 := e2eCheckProxy(t)
+	if db2 == nil {
+		t.Fatal("proxy unreachable after config reload")
+	}
+	defer db2.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var result int
+	if err := db2.QueryRowContext(ctx, "SELECT 1").Scan(&result); err != nil {
+		t.Fatalf("query after reload failed: %v", err)
+	}
+	t.Logf("Config reload OK: status=%d, post-reload query succeeded", resp.StatusCode)
+}
+
+// ---------------------------------------------------------------------------
+// Cancel Request E2E tests
+// ---------------------------------------------------------------------------
+
+// TestE2E_CancelRequest verifies that cancelling a context properly cancels
+// a long-running query on the backend via the PG CancelRequest protocol.
+func TestE2E_CancelRequest(t *testing.T) {
+	db := e2eCheckProxy(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	t.Run("ContextCancelStopsQuery", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+
+		start := time.Now()
+		_, err := db.ExecContext(ctx, "SELECT pg_sleep(10)")
+		elapsed := time.Since(start)
+
+		if err == nil {
+			t.Fatal("expected context cancellation error, got nil")
+		}
+		// Should complete well before 10s — the cancel request should kill the backend query
+		if elapsed > 3*time.Second {
+			t.Errorf("cancellation took %v, expected < 3s", elapsed)
+		}
+		t.Logf("Cancel request OK: query cancelled after %v (error: %v)", elapsed, err)
+	})
+
+	t.Run("ProxyStillWorksAfterCancel", func(t *testing.T) {
+		// Verify the proxy is still functional after a cancel
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		var result int
+		if err := db.QueryRowContext(ctx, "SELECT 1").Scan(&result); err != nil {
+			t.Fatalf("query after cancel failed: %v", err)
+		}
+		if result != 1 {
+			t.Errorf("got %d, want 1", result)
+		}
+		t.Logf("Proxy still works after cancel: result=%d", result)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Mirror Stats Endpoint E2E tests
+// ---------------------------------------------------------------------------
+
+// TestE2E_MirrorStatsEndpoint verifies the /admin/mirror/stats endpoint is
+// reachable and returns a valid response (mirror may not be configured in test).
+func TestE2E_MirrorStatsEndpoint(t *testing.T) {
+	db := e2eCheckProxy(t)
+	if db == nil {
+		return
+	}
+	db.Close()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(e2eAdminURL + "/admin/mirror/stats")
+	if err != nil {
+		t.Fatalf("GET /admin/mirror/stats: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	// Should return 200 even if mirror is disabled (with zeroed stats)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /admin/mirror/stats: status=%d, body=%s", resp.StatusCode, string(body))
+	}
+
+	var stats map[string]any
+	if err := json.Unmarshal(body, &stats); err != nil {
+		t.Fatalf("parse mirror stats: %v", err)
+	}
+
+	t.Logf("Mirror stats endpoint OK: %v", stats)
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// getMetricValue extracts a Prometheus metric value from /metrics endpoint.
+// metricName is the metric name (e.g. "pgmux_cache_misses_total").
+// labelFilter is an optional label match string (e.g. `target="writer"`).
+// Returns 0 if the metric is not found.
+func getMetricValue(t *testing.T, client *http.Client, metricName, labelFilter string) float64 {
+	t.Helper()
+	resp, err := client.Get(e2eMetricURL)
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	for _, line := range strings.Split(string(body), "\n") {
+		if strings.HasPrefix(line, "#") || line == "" {
+			continue
+		}
+		if !strings.Contains(line, metricName) {
+			continue
+		}
+		if labelFilter != "" && !strings.Contains(line, labelFilter) {
+			continue
+		}
+		// Extract the numeric value at the end of the line
+		parts := strings.Fields(line)
+		if len(parts) >= 2 {
+			var val float64
+			fmt.Sscanf(parts[len(parts)-1], "%f", &val)
+			return val
+		}
+	}
+	return 0
+}

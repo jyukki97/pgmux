@@ -30,8 +30,9 @@ Thumbs.db
 .env
 .env.local
 
-# Internal docs (development-only)
+# Internal docs and Claude Code config (development-only)
 docs/
+CLAUDE.md
 
 # Config (use config.example.yaml as template)
 config.yaml

@@ -765,13 +765,6 @@ func (s *Server) redactSQLForLog(sql string) string {
 	return redact.ForLog(sql, s.redactPolicy())
 }
 
-// truncateSQL returns the first 100 characters of a SQL statement for span attributes.
-func truncateSQL(sql string) string {
-	if len(sql) > 100 {
-		return sql[:100]
-	}
-	return sql
-}
 
 func extractBearerToken(r *http.Request) string {
 	auth := r.Header.Get("Authorization")

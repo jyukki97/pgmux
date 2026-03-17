@@ -4,13 +4,12 @@ PostgreSQL 프록시 — Go, PostgreSQL wire protocol 직접 구현.
 
 ## 참고 문서
 
-필요 시 해당 문서를 읽을 것.
+필요 시 해당 문서를 읽을 것. (`docs/`는 .gitignore 대상, 로컬에서만 참고)
 
 - 기술 스택/프로젝트 구조/설계/설정: `docs/implementation.md`
 - 워크플로우/Task: `docs/workflow.md`
 - 향후 Task: `docs/tasks-next.md`
 - Git 규칙 상세: `docs/git-workflow.md`
-- 블로그 계획: `docs/blog-plan.md`
 
 ## 프로젝트 구조
 
@@ -68,8 +67,6 @@ tests/      e2e_test.go, integration_test.go, benchmark_test.go,
 
 ## 블로그 포스팅
 
-- 블로그 경로: `/Users/nhn/Library/Mobile Documents/com~apple~CloudDocs/project/study-blog/`
-- 프로젝트 페이지: `content/projects/pgmux.md`
-- 시리즈 포스트: `content/posts/YYYY-MM-DD-pgmux-N-제목.md` (P1~P32 완료)
-- Hugo frontmatter 형식, 기존 포스트 참고 (`content/projects/simple-queue-service.md`)
+- 시리즈 포스트: `content/posts/YYYY-MM-DD-pgmux-N-제목.md`
+- Hugo frontmatter 형식
 - 포스팅 시점과 주제는 `docs/workflow.md` 섹션 6 참고

@@ -495,6 +495,10 @@ helm install pgmux deploy/helm/pgmux/ \
 | `serviceMonitor.enabled` | false | Prometheus Operator ServiceMonitor |
 | `grafanaDashboard.enabled` | false | Dashboard ConfigMap for Grafana sidecar |
 
+## Contributing
+
+Contributions are welcome. Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE).

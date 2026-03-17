@@ -29,3 +29,9 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# Internal docs (development-only)
+docs/
+
+# Config (use config.example.yaml as template)
+config.yaml

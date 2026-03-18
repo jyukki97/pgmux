@@ -64,6 +64,9 @@ type Metrics struct {
 	SessionDepDetected *prometheus.CounterVec
 	SessionDepBlocked  *prometheus.CounterVec
 	SessionPinned      *prometheus.CounterVec
+
+	// Query rewriting
+	QueryRewritten *prometheus.CounterVec
 }
 
 // New creates and registers all Prometheus metrics.
@@ -280,6 +283,14 @@ func New() *Metrics {
 			},
 			[]string{"feature"},
 		),
+
+		QueryRewritten: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "pgmux_query_rewritten_total",
+				Help: "Total number of queries rewritten by rewrite rules.",
+			},
+			[]string{"rule"},
+		),
 	}
 
 	prometheus.MustRegister(
@@ -313,6 +324,7 @@ func New() *Metrics {
 		m.SessionDepDetected,
 		m.SessionDepBlocked,
 		m.SessionPinned,
+		m.QueryRewritten,
 	)
 
 	return m

@@ -143,6 +143,13 @@ func run() error {
 		})
 		adminSrv.SetMaintenanceFns(srv.MaintenanceState, srv.SetMaintenance)
 		adminSrv.SetReadOnlyFns(srv.ReadOnlyState, srv.SetReadOnly)
+		adminSrv.SetRewriteRulesFn(func() []string {
+			rw := srv.Rewriter()
+			if rw == nil {
+				return nil
+			}
+			return rw.Rules()
+		})
 		adminHTTP := adminSrv.HTTPServer()
 
 		ln, err := net.Listen("tcp", cfg.Admin.Listen)

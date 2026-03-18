@@ -164,6 +164,23 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				}
 			}
 
+			// Query rewriting (before firewall — firewall checks the rewritten query)
+			if rw := s.rewriterPtr.Load(); rw != nil {
+				rwResult := rw.Apply(query, parsedQuery)
+				if rwResult.Rewritten {
+					slog.Debug("query rewritten", "rules", rwResult.AppliedRules, "sql", s.redactSQLForLog(rwResult.RewrittenSQL))
+					query = rwResult.RewrittenSQL
+					// Invalidate parsedQuery — the AST was modified in-place and
+					// the SQL string changed; re-parse lazily if needed downstream.
+					parsedQuery = nil
+					if s.metrics != nil {
+						for _, rule := range rwResult.AppliedRules {
+							s.metrics.QueryRewritten.WithLabelValues(rule).Inc()
+						}
+					}
+				}
+			}
+
 			// Firewall check
 			if queryCfg.Firewall.Enabled {
 				var fwResult router.FirewallResult
@@ -415,6 +432,17 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 					slog.Warn("parse message full failed, falling back", "error", err)
 					stmtName, query = protocol.ParseParseMessage(msg.Payload)
 				}
+				// Apply query rewriting (extended — multiplex mode)
+				if rw := s.rewriterPtr.Load(); rw != nil {
+					if rwResult := rw.Apply(query, nil); rwResult.Rewritten {
+						query = rwResult.RewrittenSQL
+						if s.metrics != nil {
+							for _, rule := range rwResult.AppliedRules {
+								s.metrics.QueryRewritten.WithLabelValues(rule).Inc()
+							}
+						}
+					}
+				}
 				extQueryText = query
 				route := session.RegisterStatement(stmtName, query)
 				slog.Debug("parse registered (multiplex)", "stmt", stmtName, "sql", s.redactSQLForLog(query), "route", routeName(route))
@@ -469,7 +497,25 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 					return
 				}
 			} else {
-				stmtName, query := protocol.ParseParseMessage(msg.Payload)
+				stmtName, query, paramOIDs, parseErr := protocol.ParseParseMessageFull(msg.Payload)
+				if parseErr != nil {
+					slog.Warn("parse message full failed, falling back", "error", parseErr)
+					stmtName, query = protocol.ParseParseMessage(msg.Payload)
+					paramOIDs = nil
+				}
+				// Apply query rewriting (extended — proxy mode)
+				extRewritten := false
+				if rw := s.rewriterPtr.Load(); rw != nil {
+					if rwResult := rw.Apply(query, nil); rwResult.Rewritten {
+						query = rwResult.RewrittenSQL
+						extRewritten = true
+						if s.metrics != nil {
+							for _, rule := range rwResult.AppliedRules {
+								s.metrics.QueryRewritten.WithLabelValues(rule).Inc()
+							}
+						}
+					}
+				}
 				extQueryText = query
 				route := session.RegisterStatement(stmtName, query)
 				slog.Debug("parse registered", "stmt", stmtName, "sql", s.redactSQLForLog(query), "route", routeName(route))
@@ -516,7 +562,13 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				} else {
 					extRoute = route
 				}
-				extBuf = append(extBuf, protocol.CopyMessage(msg))
+				// Buffer the (possibly rebuilt) Parse message for backend forwarding.
+				if extRewritten {
+					newPayload := protocol.BuildParsePayload(stmtName, query, paramOIDs)
+					extBuf = append(extBuf, &protocol.Message{Type: protocol.MsgParse, Payload: newPayload})
+				} else {
+					extBuf = append(extBuf, protocol.CopyMessage(msg))
+				}
 			}
 
 		case protocol.MsgBind:

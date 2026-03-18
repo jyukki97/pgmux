@@ -29,6 +29,7 @@ type Server struct {
 	digestStatsFn    func() any
 	digestResetFn    func()
 	connStatsFn      func() any
+	rewriteRulesFn   func() []string
 	reloadFunc       func() error
 	maintenanceGetFn func() (bool, time.Time)
 	maintenanceSetFn func(bool)
@@ -63,6 +64,13 @@ func (s *Server) SetReadOnlyFns(getFn func() (bool, time.Time), setFn func(bool)
 // New creates a new Admin server.
 // All parameters except reloadFunc are getter functions so that Admin always
 // accesses the latest objects even after a hot-reload.
+// SetRewriteRulesFn sets the function to retrieve active rewrite rule names.
+func (s *Server) SetRewriteRulesFn(fn func() []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rewriteRulesFn = fn
+}
+
 func New(cfgFn func() *config.Config, cacheFn func() *cache.Cache, invalidatorFn func() *cache.Invalidator, dbGroupsFn func() map[string]*proxy.DatabaseGroup, defaultDBName string, auditLoggerFn func() *audit.Logger, mirrorStatsFn func() any, digestStatsFn func() any, digestResetFn func(), connStatsFn func() any) *Server {
 	return &Server{
 		cfgFn:         cfgFn,
@@ -97,6 +105,7 @@ func (s *Server) HTTPServer() *http.Server {
 	mux.HandleFunc("/admin/connections", s.withAuth(s.handleConnections, false))
 	mux.HandleFunc("/admin/maintenance", s.withAuth(s.handleMaintenance, false))
 	mux.HandleFunc("/admin/readonly", s.withAuth(s.handleReadOnly, false))
+	mux.HandleFunc("/admin/rewrite/rules", s.withAuth(s.handleRewriteRules, false))
 	return &http.Server{Handler: mux}
 }
 
@@ -812,6 +821,34 @@ func (s *Server) handleReadOnly(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// handleRewriteRules returns the list of active query rewrite rules.
+func (s *Server) handleRewriteRules(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	cfg := s.cfgFn()
+	enabled := cfg.QueryRewriting.Enabled
+
+	s.mu.RLock()
+	rulesFn := s.rewriteRulesFn
+	s.mu.RUnlock()
+
+	var rules []string
+	if rulesFn != nil {
+		rules = rulesFn()
+	}
+	if rules == nil {
+		rules = []string{}
+	}
+
+	writeJSON(w, map[string]any{
+		"enabled": enabled,
+		"rules":   rules,
+	})
 }
 
 func checkTCP(addr string) bool {

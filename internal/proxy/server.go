@@ -46,6 +46,7 @@ type Server struct {
 	maintenanceAt   atomic.Int64 // unix nano timestamp when maintenance was entered
 	readOnlyMode    atomic.Bool
 	readOnlyAt      atomic.Int64 // unix timestamp when read-only mode was entered
+	rewriterPtr     atomic.Pointer[router.Rewriter]
 }
 
 func NewServer(cfg *config.Config) (*Server, error) {
@@ -191,6 +192,13 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		slog.Info("connection limits enabled",
 			"default_per_user", cfg.ConnectionLimits.DefaultMaxConnectionsPerUser,
 			"default_per_db", cfg.ConnectionLimits.DefaultMaxConnectionsPerDB)
+	}
+
+	// Initialize query rewriter
+	if cfg.QueryRewriting.Enabled {
+		rw := router.NewRewriter(buildRewriteRules(cfg))
+		s.rewriterPtr.Store(rw)
+		slog.Info("query rewriting enabled", "rules", len(rw.Rules()))
 	}
 
 	slog.Info("server initialized",
@@ -494,6 +502,14 @@ func (s *Server) Reload(newCfg *config.Config) error {
 		s.connTrackerPtr.Store(nil)
 	}
 
+	// Update query rewriter (atomic — no lock needed for readers)
+	if newCfg.QueryRewriting.Enabled {
+		rw := router.NewRewriter(buildRewriteRules(newCfg))
+		s.rewriterPtr.Store(rw)
+	} else {
+		s.rewriterPtr.Store(nil)
+	}
+
 	// Update default DB
 	s.defaultDB = newCfg.DefaultDatabaseName()
 
@@ -651,6 +667,11 @@ func (s *Server) InReadOnly() bool {
 	return s.readOnlyMode.Load()
 }
 
+// Rewriter returns the current query rewriter (may be nil if disabled).
+func (s *Server) Rewriter() *router.Rewriter {
+	return s.rewriterPtr.Load()
+}
+
 // ReadOnlyState returns the current read-only state and the time it was entered.
 func (s *Server) ReadOnlyState() (bool, time.Time) {
 	enabled := s.readOnlyMode.Load()
@@ -659,4 +680,35 @@ func (s *Server) ReadOnlyState() (bool, time.Time) {
 	}
 	ts := s.readOnlyAt.Load()
 	return true, time.Unix(ts, 0)
+}
+
+// buildRewriteRules converts config rules to router.RewriteRule slice.
+func buildRewriteRules(cfg *config.Config) []router.RewriteRule {
+	rules := make([]router.RewriteRule, 0, len(cfg.QueryRewriting.Rules))
+	for _, r := range cfg.QueryRewriting.Rules {
+		enabled := true
+		if r.Enabled != nil {
+			enabled = *r.Enabled
+		}
+		actions := make([]router.RewriteAction, len(r.Actions))
+		for j, a := range r.Actions {
+			actions[j] = router.RewriteAction{
+				Type:      router.RewriteActionType(a.Type),
+				From:      a.From,
+				To:        a.To,
+				Condition: a.Condition,
+			}
+		}
+		rules = append(rules, router.RewriteRule{
+			Name:    r.Name,
+			Enabled: enabled,
+			Match: router.RewriteRuleMatch{
+				Tables:        r.Match.Tables,
+				StatementType: r.Match.StatementType,
+				QueryPattern:  r.Match.QueryPattern,
+			},
+			Actions: actions,
+		})
+	}
+	return rules
 }

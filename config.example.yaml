@@ -1,6 +1,10 @@
+# pgmux 설정 파일 예시
+# 전체 옵션 레퍼런스 — 코드 기준 (internal/config/config.go)
+
 proxy:
   listen: "0.0.0.0:5432"
-  # client_idle_timeout: 5m           # 유휴 클라이언트 타임아웃 (0 = 무제한)
+  shutdown_timeout: 30s              # Graceful shutdown 타임아웃 (기본: 30s)
+  # client_idle_timeout: 5m          # 유휴 클라이언트 타임아웃 (0 = 무제한)
 
 pool:
   min_connections: 5
@@ -8,20 +12,108 @@ pool:
   idle_timeout: 10m
   max_lifetime: 1h
   connection_timeout: 5s
-  # query_timeout: 30s                    # 0 = 무제한 (기본). 쿼리별 힌트: /* timeout:5s */
-  # prepared_statement_mode: "multiplex"  # "proxy" (기본) | "multiplex" (PS → Simple Query 합성)
+  query_timeout: 0                   # 0 = 무제한. 쿼리별 힌트: /* timeout:5s */
+  reset_query: "DISCARD ALL"         # 커넥션 반환 시 세션 리셋 쿼리
+  prepared_statement_mode: "proxy"   # "proxy" (기본, 패스스루) | "multiplex" (Simple Query로 합성)
 
 routing:
-  read_after_write_delay: 500ms
+  read_after_write_delay: 500ms      # 타이머 기반 (causal_consistency와 양자택일)
+  causal_consistency: false           # true: LSN 기반 Causal Consistency (read_after_write_delay 무시)
+  ast_parser: false                   # true: pg_query_go AST 파서 사용 (정확도↑, 성능 약간↓)
+
+firewall:
+  enabled: true
+  block_delete_without_where: true
+  block_update_without_where: true
+  block_drop_table: false
+  block_truncate: false
+
+session_compatibility:
+  enabled: true
+  mode: "warn"                       # "block" | "warn" | "pin" | "allow"
+
+observability:
+  sql_redaction: "literals"          # "none" | "literals" | "full"
+
+circuit_breaker:
+  enabled: false
+  error_threshold: 0.5              # 에러율 (0.0-1.0) — 이 비율 초과 시 차단
+  open_duration: 10s                # Open 상태 유지 시간
+  half_open_max: 3                  # Half-Open 상태에서 허용할 최대 요청 수
+  window_size: 10                   # 에러율 계산 윈도우 크기
+
+rate_limit:
+  enabled: false
+  rate: 1000                        # 초당 허용 쿼리 수
+  burst: 100                        # 최대 버스트 크기
 
 cache:
   enabled: true
   cache_ttl: 10s
   max_cache_entries: 10000
   max_result_size: "1MB"
+  invalidation:
+    mode: "local"                   # "local" (기본) 또는 "pubsub" (Redis)
+    # redis_addr: "localhost:6379"  # pubsub 모드 시 Redis 주소
+    # channel: "pgmux:invalidate"  # Redis 채널명 (기본: pgmux:invalidate)
+
+audit:
+  enabled: false
+  slow_query_threshold: 500ms       # 이 이상이면 slow query로 기록
+  log_all_queries: false            # true면 모든 쿼리 감사 로그
+  webhook:
+    enabled: false
+    url: ""                         # 예: "https://hooks.slack.com/services/..."
+    timeout: 5s
+
+mirror:
+  enabled: false
+  host: "shadow-db.internal"
+  port: 5432
+  # user: ""                        # 미설정 시 backend 값 사용
+  # password: ""                    # 미설정 시 backend 값 사용
+  # database: ""                    # 미설정 시 backend 값 사용
+  mode: "read_only"                 # "read_only" (기본) | "all"
+  tables: []                        # 빈 배열 = 모든 테이블
+  compare: true                     # 패턴별 P50/P99 레이턴시 비교
+  workers: 4                        # 미러링 워커 수
+  buffer_size: 10000                # 비동기 큐 크기 (초과 시 드롭)
+
+digest:
+  enabled: true
+  max_patterns: 1000                # 추적할 최대 고유 쿼리 패턴 수
+  samples_per_pattern: 1000         # 패턴별 P50/P99 계산용 샘플 수
+
+query_rewriting:
+  enabled: false
+  rules:
+    - name: "migrate_old_users"        # deprecated 테이블명 자동 치환
+      # enabled: true                  # 개별 규칙 비활성화 가능 (기본: true)
+      match:
+        tables: ["old_users"]
+        # statement_type: ["SELECT"]   # SELECT, INSERT, UPDATE, DELETE (비어있으면 전체)
+        # query_pattern: ".*old.*"     # 정규식 매칭 (선택사항)
+      actions:
+        - type: "table_rename"
+          from: "old_users"
+          to: "users_v2"
+    - name: "tenant_isolation"         # 멀티테넌시 WHERE 조건 자동 추가
+      match:
+        tables: ["orders", "items"]
+        statement_type: ["SELECT"]
+      actions:
+        - type: "add_where"
+          condition: "tenant_id = current_setting('app.tenant_id')"
+    - name: "qualify_public"           # 스키마 미지정 테이블에 스키마 자동 추가
+      match:
+        tables: ["products"]
+      actions:
+        - type: "schema_qualify"
+          from: "products"
+          to: "public"
 
 databases:
-  testdb:
+  mydb:
     writer:
       host: "primary.db.internal"
       port: 5432
@@ -33,21 +125,60 @@ databases:
     backend:
       user: "postgres"
       password: "postgres"
-      database: "testdb"
+      database: "mydb"
+    # max_connections: 100            # DB별 커넥션 제한 (0 = 기본값 사용)
+    # pool:                           # DB별 풀 설정 오버라이드 (미설정 시 전역 pool 값 상속)
+    #   max_connections: 30
+    #   min_connections: 3
 
-observability:
-  sql_redaction: "literals"        # "none" | "literals" | "full"
-
-audit:
+connection_limits:
   enabled: false
-  slow_query_threshold: 500ms
-  log_all_queries: false
-  webhook:
+  default_max_connections_per_user: 100       # 사용자별 기본 최대 커넥션 (0 = 무제한)
+  default_max_connections_per_database: 200   # DB별 기본 최대 커넥션 (0 = 무제한)
+
+auth:
+  enabled: false
+  users:
+    - username: "app_user"
+      password: "secret"
+      max_connections: 50            # 사용자별 오버라이드 (0 = 무제한)
+    - username: "admin_user"
+      password: "secret"
+      max_connections: 0
+
+metrics:
+  enabled: true
+  listen: "0.0.0.0:9090"
+
+admin:
+  enabled: true
+  listen: "0.0.0.0:9091"
+  auth:
     enabled: false
-    url: ""
-    timeout: 5s
+    api_keys:
+      - key: "your-admin-api-key"
+        role: "admin"                # 전체 엔드포인트 접근 (GET + POST)
+      - key: "your-viewer-api-key"
+        role: "viewer"               # GET 엔드포인트만 접근
+    ip_allowlist: []                 # 허용 IP/CIDR (비어있으면 모든 IP 허용)
+    trusted_proxies: []              # X-Forwarded-For를 신뢰할 리버스 프록시 IP/CIDR
 
 data_api:
   enabled: false
   listen: "0.0.0.0:8080"
   api_keys: []
+
+tls:
+  enabled: false
+  cert_file: "/path/to/server.crt"
+  key_file: "/path/to/server.key"
+
+config:
+  watch: false                       # true: fsnotify로 설정 파일 변경 감시 (hot-reload)
+
+telemetry:
+  enabled: false
+  exporter: "otlp"                   # "otlp" (gRPC) 또는 "stdout"
+  endpoint: "localhost:4317"         # OTLP Collector gRPC 엔드포인트
+  service_name: "pgmux"
+  sample_ratio: 1.0                  # 0.0 ~ 1.0 (샘플링 비율)

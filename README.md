@@ -253,14 +253,10 @@ databases:
       user: "postgres"
       password: "postgres"
       database: "mydb"
-  # otherdb:
-  #   writer:
-  #     host: "primary-2.db.internal"
-  #     port: 5432
-  #   backend:
-  #     user: "admin"
-  #     password: "secret"
-  #     database: "otherdb"
+    # max_connections: 100            # DB별 커넥션 제한 (0 = 기본값 사용)
+    # pool:                           # DB별 풀 설정 오버라이드 (미설정 시 전역 pool 값 상속)
+    #   max_connections: 30
+    #   min_connections: 3
 
 connection_limits:
   enabled: true

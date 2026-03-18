@@ -1,0 +1,55 @@
+## pgmux 작업 워크플로우
+
+---
+
+### 작업 개요
+
+| # | 작업 | 설명 | 상태 |
+|---|------|------|------|
+| W1 | 프로젝트 초기 세팅 | Go 모듈 초기화, 디렉토리 구조 생성, CI 설정, linter 설정 | 완료 |
+| W2 | 설정 시스템 | YAML 설정 파일 파싱, 설정 구조체 정의, validation | 완료 |
+| W3 | TCP 프록시 서버 | TCP 리스너, PostgreSQL wire protocol 핸드셰이크, 쿼리 릴레이 | 완료 |
+| W4 | 커넥션 풀링 | 풀 생성/관리, 커넥션 획득/반환, 유휴 타임아웃, 최대 수명 관리 | 완료 |
+| W5 | 커넥션 헬스체크 | 주기적 ping, 비정상 커넥션 교체, min_connections 유지 | 완료 |
+| W6 | 쿼리 파서 | SQL 키워드 기반 R/W 분류, 힌트 주석 파싱, 테이블명 추출 | 완료 |
+| W7 | R/W 라우팅 | Writer/Reader 분기, 트랜잭션 세션 추적, read_after_write_delay | 완료 |
+| W8 | Reader 로드밸런싱 | 라운드로빈 분산, Reader 장애 감지 및 자동 제외/복구 | 완료 |
+| W9 | 쿼리 캐싱 | LRU 캐시 구현, TTL 만료, 캐시 키 해싱 | 완료 |
+| W10 | 캐시 무효화 | 쓰기 시 테이블별 캐시 무효화, 테이블-캐시 역인덱스 관리 | 완료 |
+| W11 | 테스트 & 벤치마크 | 통합 테스트(docker-compose), 벤치마크, 부하 테스트 | 완료 |
+| W12 | 블로그 포스팅 | 개발 과정 및 기술적 내용 블로그 정리 | 완료 |
+| W13 | Prometheus 메트릭 | 풀/캐시/라우팅 메트릭 수집, `/metrics` 엔드포인트 | 완료 |
+| W14 | Prepared Statement 라우팅 | Extended Query Parse에서 SQL 추출, reader 라우팅 | 완료 |
+| W15 | Admin API | HTTP 관리 인터페이스 (stats, health, cache flush) | 완료 |
+| W16 | Transaction Pooling | Writer 커넥션 다중화, 트랜잭션 레벨 풀링 | 완료 |
+| W17 | SSL/TLS + Front-end Auth | TLS Termination, 프록시 자체 인증 | 완료 |
+| W18 | Circuit Breaker & Rate Limiting | 연쇄 장애 방어, 트래픽 제한 | 완료 |
+| W19 | Zero-Downtime Reload | SIGHUP 무중단 설정 리로드 | 완료 |
+| W20 | LSN 기반 Causal Consistency | Replication Lag 인지형 라우팅, Writer LSN 트래킹 | 완료 |
+| W21-22 | AST 파서 + 쿼리 방화벽 | pg_query_go AST 파서 도입, 쿼리 방화벽, Semantic Caching | 완료 |
+| W23 | Audit Logging & Slow Query | 쿼리 감사 로그, Slow Query 감지, Webhook 알림 | 완료 |
+| W24 | Helm Chart | K8s 배포용 Helm Chart, Dockerfile 최적화 | 완료 |
+| W25 | Serverless Data API | HTTP REST → PG Protocol 변환, JSON 응답 | 완료 |
+| W26-27 | OpenTelemetry 분산 추적 | TracerProvider, Span 계측, Data API traceparent 전파 | 완료 |
+| W28 | Config File Watch | fsnotify 설정 파일 변경 감지, 자동 리로드 | 완료 |
+| W29 | Writer-Only Mode | readers 선택사항, writer-only 모드, 최소 설정 지원 | 완료 |
+| W30 | Hot Reload Race Fix | sync.RWMutex 도입으로 concurrent map 접근 방지 | 완료 |
+| W31 | Prepared Statement Multiplexing | Parse/Bind 인터셉트 → Simple Query 합성, SQL Injection 방어 | 완료 |
+| W32 | 프로토콜/메모리 핫픽스 | COPY 프로토콜 교착, Map 메모리 누수, 커넥션 오염, Panic 격리 | 완료 |
+| W33 | Zombie/Dangling 핫픽스 | Data API 좀비 고루틴 방지, Admin/DataAPI Dangling Pointer 수정 | 완료 |
+| W34 | server.go 리팩토링 | 2,259줄 → 9개 역할별 파일 분리 | 완료 |
+| W35 | 운영 안정성 핫픽스 | Balancer RLock, Graceful Shutdown, CancelRequest, DataAPI 핫픽스 | 완료 |
+| W36 | Dead Code 정리 | 미사용 함수 5건 제거 (handleReadQuery, Ping 등) | 완료 |
+| W37 | Query Mirroring | Shadow DB 비동기 미러링, P50/P99 레이턴시 비교, 회귀 감지 | 완료 |
+| W38 | Query Rewriting Rules | AST 기반 쿼리 변환 엔진 (table_rename, column_rename, add_where, schema_qualify) | 완료 |
+
+---
+
+### 세부 문서
+
+| 문서 | 경로 | 내용 |
+|------|------|------|
+| 전체 Task | `docs/tasks-completed.md` | Phase 1-16 Task 목록 및 이슈/PR 번호 |
+| Agent Teams | `docs/agent-teams.md` | Claude Code Agent Teams 활용 가이드 |
+| Git 워크플로우 | `docs/git-workflow.md` | 브랜치 전략, 커밋, PR 규칙 |
+| 블로그 계획 | `docs/blog-plan.md` | 포스팅 시점, 주제, 템플릿 |

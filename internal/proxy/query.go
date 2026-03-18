@@ -164,6 +164,23 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				}
 			}
 
+			// Query rewriting (before firewall — firewall checks the rewritten query)
+			if rw := s.rewriterPtr.Load(); rw != nil {
+				rwResult := rw.Apply(query, parsedQuery)
+				if rwResult.Rewritten {
+					slog.Debug("query rewritten", "rules", rwResult.AppliedRules, "sql", s.redactSQLForLog(rwResult.RewrittenSQL))
+					query = rwResult.RewrittenSQL
+					// Invalidate parsedQuery — the AST was modified in-place and
+					// the SQL string changed; re-parse lazily if needed downstream.
+					parsedQuery = nil
+					if s.metrics != nil {
+						for _, rule := range rwResult.AppliedRules {
+							s.metrics.QueryRewritten.WithLabelValues(rule).Inc()
+						}
+					}
+				}
+			}
+
 			// Firewall check
 			if queryCfg.Firewall.Enabled {
 				var fwResult router.FirewallResult
@@ -415,6 +432,17 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 					slog.Warn("parse message full failed, falling back", "error", err)
 					stmtName, query = protocol.ParseParseMessage(msg.Payload)
 				}
+				// Apply query rewriting (extended — multiplex mode)
+				if rw := s.rewriterPtr.Load(); rw != nil {
+					if rwResult := rw.Apply(query, nil); rwResult.Rewritten {
+						query = rwResult.RewrittenSQL
+						if s.metrics != nil {
+							for _, rule := range rwResult.AppliedRules {
+								s.metrics.QueryRewritten.WithLabelValues(rule).Inc()
+							}
+						}
+					}
+				}
 				extQueryText = query
 				route := session.RegisterStatement(stmtName, query)
 				slog.Debug("parse registered (multiplex)", "stmt", stmtName, "sql", s.redactSQLForLog(query), "route", routeName(route))
@@ -470,6 +498,17 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				}
 			} else {
 				stmtName, query := protocol.ParseParseMessage(msg.Payload)
+				// Apply query rewriting (extended — proxy mode)
+				if rw := s.rewriterPtr.Load(); rw != nil {
+					if rwResult := rw.Apply(query, nil); rwResult.Rewritten {
+						query = rwResult.RewrittenSQL
+						if s.metrics != nil {
+							for _, rule := range rwResult.AppliedRules {
+								s.metrics.QueryRewritten.WithLabelValues(rule).Inc()
+							}
+						}
+					}
+				}
 				extQueryText = query
 				route := session.RegisterStatement(stmtName, query)
 				slog.Debug("parse registered", "stmt", stmtName, "sql", s.redactSQLForLog(query), "route", routeName(route))

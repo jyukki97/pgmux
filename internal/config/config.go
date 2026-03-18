@@ -33,6 +33,32 @@ type Config struct {
 	ConnectionLimits ConnectionLimitsConfig    `yaml:"connection_limits"`
 	SessionCompat    SessionCompatConfig       `yaml:"session_compatibility"`
 	Observability    ObservabilityConfig       `yaml:"observability"`
+	QueryRewriting   QueryRewritingConfig      `yaml:"query_rewriting"`
+}
+
+type QueryRewritingConfig struct {
+	Enabled bool               `yaml:"enabled"`
+	Rules   []QueryRewriteRule `yaml:"rules"`
+}
+
+type QueryRewriteRule struct {
+	Name    string               `yaml:"name"`
+	Enabled *bool                `yaml:"enabled"` // nil → true (enabled by default)
+	Match   QueryRewriteMatch    `yaml:"match"`
+	Actions []QueryRewriteAction `yaml:"actions"`
+}
+
+type QueryRewriteMatch struct {
+	Tables        []string `yaml:"tables"`
+	StatementType []string `yaml:"statement_type"`
+	QueryPattern  string   `yaml:"query_pattern"`
+}
+
+type QueryRewriteAction struct {
+	Type      string `yaml:"type"` // table_rename, column_rename, add_where, schema_qualify
+	From      string `yaml:"from"`
+	To        string `yaml:"to"`
+	Condition string `yaml:"condition"`
 }
 
 type ObservabilityConfig struct {
@@ -540,6 +566,35 @@ func (c *Config) validate() error {
 			return fmt.Errorf("session_compatibility.mode must be \"block\", \"warn\", \"pin\", or \"allow\", got %q", c.SessionCompat.Mode)
 		}
 	}
+	if c.QueryRewriting.Enabled {
+		for i, rule := range c.QueryRewriting.Rules {
+			if rule.Name == "" {
+				return fmt.Errorf("query_rewriting.rules[%d].name must not be empty", i)
+			}
+			if len(rule.Actions) == 0 {
+				return fmt.Errorf("query_rewriting.rules[%d] (%s): at least one action is required", i, rule.Name)
+			}
+			for j, action := range rule.Actions {
+				switch action.Type {
+				case "table_rename", "column_rename":
+					if action.From == "" || action.To == "" {
+						return fmt.Errorf("query_rewriting.rules[%d].actions[%d]: from and to are required for %s", i, j, action.Type)
+					}
+				case "add_where":
+					if action.Condition == "" {
+						return fmt.Errorf("query_rewriting.rules[%d].actions[%d]: condition is required for add_where", i, j)
+					}
+				case "schema_qualify":
+					if action.From == "" || action.To == "" {
+						return fmt.Errorf("query_rewriting.rules[%d].actions[%d]: from (table) and to (schema) are required for schema_qualify", i, j)
+					}
+				default:
+					return fmt.Errorf("query_rewriting.rules[%d].actions[%d]: unknown action type %q", i, j, action.Type)
+				}
+			}
+		}
+	}
+
 	switch c.Observability.SQLRedaction {
 	case "none", "literals", "full":
 		// valid

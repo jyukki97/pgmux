@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,9 @@ type Server struct {
 	digestResetFn    func()
 	connStatsFn      func() any
 	rewriteRulesFn   func() []string
+	sessionsFn       func() any
+	sessionCancelFn  func(uint32) (bool, bool)
+	redactSQLFn      func(string) string
 	reloadFunc       func() error
 	maintenanceGetFn func() (bool, time.Time)
 	maintenanceSetFn func(bool)
@@ -71,6 +75,15 @@ func (s *Server) SetRewriteRulesFn(fn func() []string) {
 	s.rewriteRulesFn = fn
 }
 
+// SetSessionsFns sets the functions to retrieve active sessions and cancel a session.
+func (s *Server) SetSessionsFns(listFn func() any, cancelFn func(uint32) (bool, bool), redactFn func(string) string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionsFn = listFn
+	s.sessionCancelFn = cancelFn
+	s.redactSQLFn = redactFn
+}
+
 func New(cfgFn func() *config.Config, cacheFn func() *cache.Cache, invalidatorFn func() *cache.Invalidator, dbGroupsFn func() map[string]*proxy.DatabaseGroup, defaultDBName string, auditLoggerFn func() *audit.Logger, mirrorStatsFn func() any, digestStatsFn func() any, digestResetFn func(), connStatsFn func() any) *Server {
 	return &Server{
 		cfgFn:         cfgFn,
@@ -106,6 +119,8 @@ func (s *Server) HTTPServer() *http.Server {
 	mux.HandleFunc("/admin/maintenance", s.withAuth(s.handleMaintenance, false))
 	mux.HandleFunc("/admin/readonly", s.withAuth(s.handleReadOnly, false))
 	mux.HandleFunc("/admin/rewrite/rules", s.withAuth(s.handleRewriteRules, false))
+	mux.HandleFunc("/admin/sessions", s.withAuth(s.handleSessions, false))
+	mux.HandleFunc("/admin/sessions/", s.withAuth(s.handleSessionCancel, true))
 	return &http.Server{Handler: mux}
 }
 
@@ -849,6 +864,89 @@ func (s *Server) handleRewriteRules(w http.ResponseWriter, r *http.Request) {
 		"enabled": enabled,
 		"rules":   rules,
 	})
+}
+
+// handleSessions returns a list of active client sessions.
+func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	s.mu.RLock()
+	fn := s.sessionsFn
+	redactFn := s.redactSQLFn
+	s.mu.RUnlock()
+
+	if fn == nil {
+		writeJSON(w, map[string]any{"sessions": []any{}})
+		return
+	}
+
+	sessions := fn()
+	if sessions == nil {
+		writeJSON(w, map[string]any{"sessions": []any{}})
+		return
+	}
+
+	// Apply SQL redaction to current_query if redactFn is available
+	if redactFn != nil {
+		if snapshots, ok := sessions.([]proxy.SessionSnapshot); ok {
+			for i := range snapshots {
+				if snapshots[i].CurrentQuery != "" {
+					snapshots[i].CurrentQuery = redactFn(snapshots[i].CurrentQuery)
+				}
+			}
+			sessions = snapshots
+		}
+	}
+
+	writeJSON(w, map[string]any{"sessions": sessions})
+}
+
+// handleSessionCancel cancels the active query on a specific session.
+// POST /admin/sessions/{id}/cancel
+func (s *Server) handleSessionCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse session ID from path: /admin/sessions/{id}/cancel
+	path := strings.TrimPrefix(r.URL.Path, "/admin/sessions/")
+	parts := strings.SplitN(path, "/", 2)
+	if len(parts) != 2 || parts[1] != "cancel" || parts[0] == "" {
+		writeJSONError(w, http.StatusBadRequest, "invalid path, expected /admin/sessions/{id}/cancel")
+		return
+	}
+
+	id, err := strconv.ParseUint(parts[0], 10, 32)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid session id")
+		return
+	}
+
+	s.mu.RLock()
+	cancelFn := s.sessionCancelFn
+	s.mu.RUnlock()
+
+	if cancelFn == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "session cancel not configured")
+		return
+	}
+
+	found, cancelled := cancelFn(uint32(id))
+	if !found {
+		writeJSONError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	if !cancelled {
+		writeJSON(w, map[string]string{"status": "no_active_query", "message": "session has no running query to cancel"})
+		return
+	}
+
+	slog.Info("admin: session query cancelled", "session_id", id)
+	writeJSON(w, map[string]string{"status": "cancelled"})
 }
 
 func checkTCP(addr string) bool {

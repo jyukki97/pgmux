@@ -1522,6 +1522,287 @@ func TestHandleReadyz_MaintenanceMode(t *testing.T) {
 	}
 }
 
+// --- Session Dashboard Tests ---
+
+func TestHandleSessions_Empty(t *testing.T) {
+	srv, _ := testServer()
+	srv.SetSessionsFns(
+		func() any { return []proxy.SessionSnapshot{} },
+		func(id uint32) (bool, bool) { return false, false },
+		func(q string) string { return q },
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/sessions", nil)
+	w := httptest.NewRecorder()
+	srv.handleSessions(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	sessions := resp["sessions"].([]any)
+	if len(sessions) != 0 {
+		t.Errorf("sessions count = %d, want 0", len(sessions))
+	}
+}
+
+func TestHandleSessions_WithActiveSessions(t *testing.T) {
+	srv, _ := testServer()
+	now := time.Now()
+	srv.SetSessionsFns(
+		func() any {
+			return []proxy.SessionSnapshot{
+				{
+					ID:            1,
+					ClientAddr:    "192.168.1.10:54321",
+					User:          "app_user",
+					Database:      "mydb",
+					ConnectedAt:   now,
+					CurrentQuery:  "SELECT * FROM users WHERE id = 1",
+					QueryStartedAt: now.Format(time.RFC3339),
+					BackendAddr:   "10.0.0.1:5432",
+					InTransaction: false,
+					Pinned:        false,
+				},
+				{
+					ID:            2,
+					ClientAddr:    "192.168.1.20:54322",
+					User:          "admin_user",
+					Database:      "mydb",
+					ConnectedAt:   now.Add(-10 * time.Minute),
+					InTransaction: true,
+					Pinned:        true,
+					PinnedReason:  "LISTEN",
+				},
+			}
+		},
+		func(id uint32) (bool, bool) { return false, false },
+		func(q string) string { return q },
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/sessions", nil)
+	w := httptest.NewRecorder()
+	srv.handleSessions(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	sessions := resp["sessions"].([]any)
+	if len(sessions) != 2 {
+		t.Fatalf("sessions count = %d, want 2", len(sessions))
+	}
+
+	s1 := sessions[0].(map[string]any)
+	if s1["client_addr"] != "192.168.1.10:54321" {
+		t.Errorf("client_addr = %v, want 192.168.1.10:54321", s1["client_addr"])
+	}
+	if s1["user"] != "app_user" {
+		t.Errorf("user = %v, want app_user", s1["user"])
+	}
+	if s1["current_query"] != "SELECT * FROM users WHERE id = 1" {
+		t.Errorf("current_query = %v", s1["current_query"])
+	}
+
+	s2 := sessions[1].(map[string]any)
+	if s2["in_transaction"] != true {
+		t.Errorf("in_transaction = %v, want true", s2["in_transaction"])
+	}
+	if s2["pinned"] != true {
+		t.Errorf("pinned = %v, want true", s2["pinned"])
+	}
+	if s2["pinned_reason"] != "LISTEN" {
+		t.Errorf("pinned_reason = %v, want LISTEN", s2["pinned_reason"])
+	}
+}
+
+func TestHandleSessions_SQLRedaction(t *testing.T) {
+	srv, _ := testServer()
+	srv.SetSessionsFns(
+		func() any {
+			return []proxy.SessionSnapshot{
+				{
+					ID:           1,
+					ClientAddr:   "127.0.0.1:1234",
+					User:         "user",
+					Database:     "db",
+					ConnectedAt:  time.Now(),
+					CurrentQuery: "SELECT * FROM users WHERE password = 'secret123'",
+				},
+			}
+		},
+		func(id uint32) (bool, bool) { return false, false },
+		func(q string) string { return "[REDACTED]" },
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/sessions", nil)
+	w := httptest.NewRecorder()
+	srv.handleSessions(w, req)
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	sessions := resp["sessions"].([]any)
+	s1 := sessions[0].(map[string]any)
+	if s1["current_query"] != "[REDACTED]" {
+		t.Errorf("expected redacted query, got %v", s1["current_query"])
+	}
+}
+
+func TestHandleSessions_MethodNotAllowed(t *testing.T) {
+	srv, _ := testServer()
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/sessions", nil)
+	w := httptest.NewRecorder()
+	srv.handleSessions(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", w.Code)
+	}
+}
+
+func TestHandleSessions_NotConfigured(t *testing.T) {
+	srv, _ := testServer()
+	// No session functions set
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/sessions", nil)
+	w := httptest.NewRecorder()
+	srv.handleSessions(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	sessions := resp["sessions"].([]any)
+	if len(sessions) != 0 {
+		t.Errorf("sessions count = %d, want 0", len(sessions))
+	}
+}
+
+func TestHandleSessionCancel_Success(t *testing.T) {
+	srv, _ := testServer()
+	srv.SetSessionsFns(
+		func() any { return nil },
+		func(id uint32) (bool, bool) {
+			if id == 42 {
+				return true, true
+			}
+			return false, false
+		},
+		func(q string) string { return q },
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/sessions/42/cancel", nil)
+	w := httptest.NewRecorder()
+	srv.handleSessionCancel(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+
+	var resp map[string]string
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "cancelled" {
+		t.Errorf("status = %q, want cancelled", resp["status"])
+	}
+}
+
+func TestHandleSessionCancel_NotFound(t *testing.T) {
+	srv, _ := testServer()
+	srv.SetSessionsFns(
+		func() any { return nil },
+		func(id uint32) (bool, bool) { return false, false },
+		func(q string) string { return q },
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/sessions/999/cancel", nil)
+	w := httptest.NewRecorder()
+	srv.handleSessionCancel(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestHandleSessionCancel_NoActiveQuery(t *testing.T) {
+	srv, _ := testServer()
+	srv.SetSessionsFns(
+		func() any { return nil },
+		func(id uint32) (bool, bool) { return true, false },
+		func(q string) string { return q },
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/sessions/1/cancel", nil)
+	w := httptest.NewRecorder()
+	srv.handleSessionCancel(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+
+	var resp map[string]string
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "no_active_query" {
+		t.Errorf("status = %q, want no_active_query", resp["status"])
+	}
+}
+
+func TestHandleSessionCancel_InvalidPath(t *testing.T) {
+	srv, _ := testServer()
+	srv.SetSessionsFns(
+		func() any { return nil },
+		func(id uint32) (bool, bool) { return false, false },
+		func(q string) string { return q },
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/sessions/abc/cancel", nil)
+	w := httptest.NewRecorder()
+	srv.handleSessionCancel(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestHandleSessionCancel_InvalidPathFormat(t *testing.T) {
+	srv, _ := testServer()
+	srv.SetSessionsFns(
+		func() any { return nil },
+		func(id uint32) (bool, bool) { return false, false },
+		func(q string) string { return q },
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/sessions/42/unknown", nil)
+	w := httptest.NewRecorder()
+	srv.handleSessionCancel(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestHandleSessionCancel_MethodNotAllowed(t *testing.T) {
+	srv, _ := testServer()
+	srv.SetSessionsFns(
+		func() any { return nil },
+		func(id uint32) (bool, bool) { return false, false },
+		func(q string) string { return q },
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/sessions/42/cancel", nil)
+	w := httptest.NewRecorder()
+	srv.handleSessionCancel(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", w.Code)
+	}
+}
+
 func TestHandleHealth_NoReaders(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

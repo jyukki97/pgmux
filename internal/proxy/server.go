@@ -40,6 +40,7 @@ type Server struct {
 	queryDigest     *digest.Digest
 	wg              sync.WaitGroup
 	cancelMap       sync.Map // cancelKeyPair → *cancelTarget
+	sessions        sync.Map // uint32 (proxyPID) → *SessionInfo
 	nextProxyPID    atomic.Uint32
 	connTrackerPtr  atomic.Pointer[ConnTracker] // per-user/per-DB connection limits (nil if disabled)
 	maintenanceMode atomic.Bool
@@ -446,11 +447,23 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 
 	slog.Info("handshake complete", "remote", rawConn.RemoteAddr())
 
-	// 7. Create per-client session router
+	// 7. Register session for admin dashboard
+	si := &SessionInfo{
+		ID:          ct.proxyPID,
+		ClientAddr:  clientConn.RemoteAddr().String(),
+		User:        username,
+		Database:    dbName,
+		ConnectedAt: time.Now(),
+		ct:          ct,
+	}
+	s.registerSession(si)
+	defer s.unregisterSession(si.ID)
+
+	// 8. Create per-client session router
 	session := router.NewSession(cfg.Routing.ReadAfterWriteDelay, cfg.Routing.CausalConsistency, cfg.Routing.ASTParser)
 
-	// 8. Relay queries with transaction-level pooling
-	s.relayQueries(ctx, clientConn, session, ct, dbg)
+	// 9. Relay queries with transaction-level pooling
+	s.relayQueries(ctx, clientConn, session, ct, dbg, si)
 }
 
 // Reload applies a new configuration without restarting the proxy.

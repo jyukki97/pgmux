@@ -1555,16 +1555,16 @@ func TestHandleSessions_WithActiveSessions(t *testing.T) {
 		func() any {
 			return []proxy.SessionSnapshot{
 				{
-					ID:            1,
-					ClientAddr:    "192.168.1.10:54321",
-					User:          "app_user",
-					Database:      "mydb",
-					ConnectedAt:   now,
-					CurrentQuery:  "SELECT * FROM users WHERE id = 1",
-					QueryStartedAt: now.Format(time.RFC3339),
-					BackendAddr:   "10.0.0.1:5432",
-					InTransaction: false,
-					Pinned:        false,
+					ID:             1,
+					ClientAddr:     "192.168.1.10:54321",
+					User:           "app_user",
+					Database:       "mydb",
+					ConnectedAt:    now,
+					CurrentQuery:   "SELECT * FROM users WHERE id = 1",
+					QueryStartedAt: &now,
+					BackendAddr:    "10.0.0.1:5432",
+					InTransaction:  false,
+					Pinned:         false,
 				},
 				{
 					ID:            2,

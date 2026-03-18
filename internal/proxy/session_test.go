@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -19,20 +20,17 @@ func TestSessionInfo_SetAndClearQueryState(t *testing.T) {
 	if snap.CurrentQuery != "" {
 		t.Errorf("expected empty query, got %q", snap.CurrentQuery)
 	}
-	if snap.QueryStartedAt != "" {
-		t.Errorf("expected empty query_started_at, got %q", snap.QueryStartedAt)
+	if snap.QueryStartedAt != nil {
+		t.Errorf("expected nil query_started_at, got %v", snap.QueryStartedAt)
 	}
 
 	// Set query state
-	si.SetQueryState("SELECT 1", "10.0.0.1:5432")
+	si.SetQueryState("SELECT 1")
 	snap = si.Snapshot()
 	if snap.CurrentQuery != "SELECT 1" {
 		t.Errorf("current_query = %q, want SELECT 1", snap.CurrentQuery)
 	}
-	if snap.BackendAddr != "10.0.0.1:5432" {
-		t.Errorf("backend_addr = %q, want 10.0.0.1:5432", snap.BackendAddr)
-	}
-	if snap.QueryStartedAt == "" {
+	if snap.QueryStartedAt == nil {
 		t.Error("expected query_started_at to be set")
 	}
 
@@ -42,11 +40,42 @@ func TestSessionInfo_SetAndClearQueryState(t *testing.T) {
 	if snap.CurrentQuery != "" {
 		t.Errorf("expected empty query after clear, got %q", snap.CurrentQuery)
 	}
+	if snap.QueryStartedAt != nil {
+		t.Errorf("expected nil query_started_at after clear, got %v", snap.QueryStartedAt)
+	}
+}
+
+func TestSessionInfo_BackendAddrFromCancelTarget(t *testing.T) {
+	ct := &cancelTarget{proxyPID: 1, proxySecret: 42}
+	si := &SessionInfo{
+		ID:          1,
+		ConnectedAt: time.Now(),
+		ct:          ct,
+	}
+
+	// No active backend → empty addr
+	snap := si.Snapshot()
+	if snap.BackendAddr != "" {
+		t.Errorf("expected empty backend_addr, got %q", snap.BackendAddr)
+	}
+
+	// Set backend via cancelTarget (simulates query execution)
+	ct.mu.Lock()
+	ct.backendAddr = "10.0.0.1:5432"
+	ct.backendPID = 100
+	ct.backendSecret = 200
+	ct.mu.Unlock()
+
+	snap = si.Snapshot()
+	if snap.BackendAddr != "10.0.0.1:5432" {
+		t.Errorf("backend_addr = %q, want 10.0.0.1:5432", snap.BackendAddr)
+	}
+
+	// Clear backend (simulates query completion)
+	ct.clear()
+	snap = si.Snapshot()
 	if snap.BackendAddr != "" {
 		t.Errorf("expected empty backend_addr after clear, got %q", snap.BackendAddr)
-	}
-	if snap.QueryStartedAt != "" {
-		t.Errorf("expected empty query_started_at after clear, got %q", snap.QueryStartedAt)
 	}
 }
 
@@ -91,8 +120,8 @@ func TestSessionSnapshot_OmitsEmptyFields(t *testing.T) {
 	if snap.CurrentQuery != "" {
 		t.Error("expected empty current_query")
 	}
-	if snap.QueryStartedAt != "" {
-		t.Error("expected empty query_started_at")
+	if snap.QueryStartedAt != nil {
+		t.Error("expected nil query_started_at")
 	}
 	if snap.BackendAddr != "" {
 		t.Error("expected empty backend_addr")
@@ -103,7 +132,6 @@ func TestSessionSnapshot_OmitsEmptyFields(t *testing.T) {
 }
 
 func TestServer_SessionRegistry(t *testing.T) {
-	// Create minimal server (only need sync.Map)
 	s := &Server{}
 
 	si1 := &SessionInfo{ID: 1, User: "user1", ConnectedAt: time.Now()}
@@ -116,6 +144,10 @@ func TestServer_SessionRegistry(t *testing.T) {
 	sessions := s.Sessions()
 	if len(sessions) != 2 {
 		t.Fatalf("sessions count = %d, want 2", len(sessions))
+	}
+	// Verify sorted by ID
+	if sessions[0].ID != 1 || sessions[1].ID != 2 {
+		t.Errorf("sessions not sorted: [%d, %d]", sessions[0].ID, sessions[1].ID)
 	}
 
 	// Unregister one
@@ -161,4 +193,32 @@ func TestServer_CancelSession_NoActiveQuery(t *testing.T) {
 	if cancelled {
 		t.Error("expected cancelled = false (no active backend query)")
 	}
+}
+
+func TestSessionInfo_ConcurrentAccess(t *testing.T) {
+	si := &SessionInfo{
+		ID:          1,
+		ClientAddr:  "127.0.0.1:1234",
+		User:        "test",
+		Database:    "testdb",
+		ConnectedAt: time.Now(),
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			si.SetQueryState("SELECT 1")
+		}()
+		go func() {
+			defer wg.Done()
+			si.ClearQueryState()
+		}()
+		go func() {
+			defer wg.Done()
+			_ = si.Snapshot()
+		}()
+	}
+	wg.Wait()
 }

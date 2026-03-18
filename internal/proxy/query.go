@@ -299,8 +299,8 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 
 			start := time.Now()
 
-			// Update session dashboard state
-			si.SetQueryState(query, "")
+			// Update session dashboard state (backend addr set after connection acquisition)
+			si.SetQueryState(query)
 
 			// Resolve query timeout (per-query hint overrides global config)
 			queryTimeout := s.resolveQueryTimeout(query, queryCfg)
@@ -652,8 +652,8 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 			target := routeName(extRoute)
 			extQueryTimeout := s.resolveQueryTimeout(extQueryText, s.getConfig())
 
-			// Update session dashboard state for extended query
-			si.SetQueryState(extQueryText, "")
+			// Update session dashboard state (backend addr set after connection acquisition)
+			si.SetQueryState(extQueryText)
 
 			// Start root span for extended query batch
 			extCtx, extSpan := telemetry.Tracer().Start(ctx, "pgmux.extended_query",

@@ -1,12 +1,18 @@
 package proxy
 
 import (
+	"log/slog"
+	"sort"
 	"sync"
 	"time"
 )
 
 // SessionInfo holds observable state for a single client session.
-// All mutable fields are protected by mu for concurrent admin reads.
+// Mutable fields (currentQuery, queryStartedAt, inTransaction, pinned,
+// pinnedReason) are protected by mu for concurrent admin reads.
+// ct is immutable after construction and does not require locking.
+// The backend address is derived from ct at snapshot time (ct tracks it
+// via setFromConn/clear during query execution).
 type SessionInfo struct {
 	mu             sync.RWMutex
 	ID             uint32
@@ -16,19 +22,17 @@ type SessionInfo struct {
 	ConnectedAt    time.Time
 	currentQuery   string
 	queryStartedAt time.Time
-	backendAddr    string
 	inTransaction  bool
 	pinned         bool
 	pinnedReason   string
-	ct             *cancelTarget
+	ct             *cancelTarget // immutable after construction
 }
 
-// SetQueryState updates the current query and backend info atomically.
-func (si *SessionInfo) SetQueryState(query, backendAddr string) {
+// SetQueryState updates the current query text atomically.
+func (si *SessionInfo) SetQueryState(query string) {
 	si.mu.Lock()
 	si.currentQuery = query
 	si.queryStartedAt = time.Now()
-	si.backendAddr = backendAddr
 	si.mu.Unlock()
 }
 
@@ -37,7 +41,6 @@ func (si *SessionInfo) ClearQueryState() {
 	si.mu.Lock()
 	si.currentQuery = ""
 	si.queryStartedAt = time.Time{}
-	si.backendAddr = ""
 	si.mu.Unlock()
 }
 
@@ -52,17 +55,17 @@ func (si *SessionInfo) SetTransactionState(inTx, pinned bool, pinnedReason strin
 
 // SessionSnapshot is a point-in-time copy of SessionInfo for serialization.
 type SessionSnapshot struct {
-	ID             uint32    `json:"id"`
-	ClientAddr     string    `json:"client_addr"`
-	User           string    `json:"user"`
-	Database       string    `json:"database"`
-	ConnectedAt    time.Time `json:"connected_at"`
-	CurrentQuery   string    `json:"current_query,omitempty"`
-	QueryStartedAt string    `json:"query_started_at,omitempty"`
-	BackendAddr    string    `json:"backend_addr,omitempty"`
-	InTransaction  bool      `json:"in_transaction"`
-	Pinned         bool      `json:"pinned"`
-	PinnedReason   string    `json:"pinned_reason,omitempty"`
+	ID             uint32     `json:"id"`
+	ClientAddr     string     `json:"client_addr"`
+	User           string     `json:"user"`
+	Database       string     `json:"database"`
+	ConnectedAt    time.Time  `json:"connected_at"`
+	CurrentQuery   string     `json:"current_query,omitempty"`
+	QueryStartedAt *time.Time `json:"query_started_at,omitempty"`
+	BackendAddr    string     `json:"backend_addr,omitempty"`
+	InTransaction  bool       `json:"in_transaction"`
+	Pinned         bool       `json:"pinned"`
+	PinnedReason   string     `json:"pinned_reason,omitempty"`
 }
 
 // Snapshot returns a read-consistent copy of the session state.
@@ -75,15 +78,23 @@ func (si *SessionInfo) Snapshot() SessionSnapshot {
 		Database:      si.Database,
 		ConnectedAt:   si.ConnectedAt,
 		CurrentQuery:  si.currentQuery,
-		BackendAddr:   si.backendAddr,
 		InTransaction: si.inTransaction,
 		Pinned:        si.pinned,
 		PinnedReason:  si.pinnedReason,
 	}
 	if !si.queryStartedAt.IsZero() {
-		snap.QueryStartedAt = si.queryStartedAt.Format(time.RFC3339)
+		t := si.queryStartedAt
+		snap.QueryStartedAt = &t
 	}
 	si.mu.RUnlock()
+
+	// Derive backend address from cancel target (tracks it via setFromConn/clear).
+	// ct is immutable — no session lock needed; ct.get() has its own lock.
+	if si.ct != nil {
+		addr, _, _ := si.ct.get()
+		snap.BackendAddr = addr
+	}
+
 	return snap
 }
 
@@ -97,7 +108,7 @@ func (s *Server) unregisterSession(id uint32) {
 	s.sessions.Delete(id)
 }
 
-// Sessions returns a snapshot of all active sessions.
+// Sessions returns a snapshot of all active sessions, sorted by ID.
 func (s *Server) Sessions() []SessionSnapshot {
 	var result []SessionSnapshot
 	s.sessions.Range(func(_, val any) bool {
@@ -105,21 +116,21 @@ func (s *Server) Sessions() []SessionSnapshot {
 		result = append(result, si.Snapshot())
 		return true
 	})
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].ID < result[j].ID
+	})
 	return result
 }
 
 // CancelSession cancels the active query on the given session.
-// Returns true if a cancel was forwarded, false if no active query.
-// Returns an error string if the session was not found.
+// Returns found=true if the session exists, cancelled=true if a cancel was forwarded.
 func (s *Server) CancelSession(id uint32) (found bool, cancelled bool) {
 	val, ok := s.sessions.Load(id)
 	if !ok {
 		return false, false
 	}
 	si := val.(*SessionInfo)
-	si.mu.RLock()
-	ct := si.ct
-	si.mu.RUnlock()
+	ct := si.ct // immutable — no lock needed
 	if ct == nil {
 		return true, false
 	}
@@ -128,6 +139,7 @@ func (s *Server) CancelSession(id uint32) (found bool, cancelled bool) {
 		return true, false
 	}
 	if err := forwardCancel(addr, bPID, bSecret); err != nil {
+		slog.Warn("session cancel forward failed", "session_id", id, "error", err)
 		return true, false
 	}
 	return true, true

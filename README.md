@@ -262,10 +262,6 @@ databases:
   #     password: "secret"
   #     database: "otherdb"
 
-backend:                          # 공유 기본값 — databases에서 미지정 시 사용
-  user: "postgres"
-  password: "postgres"
-
 connection_limits:
   enabled: true
   default_max_connections_per_user: 100     # 사용자별 기본 최대 커넥션 (0 = 무제한)

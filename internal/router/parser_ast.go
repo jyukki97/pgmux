@@ -166,20 +166,20 @@ func isWriteNode(node *pg_query.Node) bool {
 
 // sideEffectFuncNames lists function names (lowercased) that indicate side effects in SELECT.
 var sideEffectFuncNames = map[string]bool{
-	"nextval":                    true,
-	"setval":                     true,
-	"currval":                    true,
-	"set_config":                 true,
-	"pg_advisory_lock":           true,
-	"pg_advisory_xact_lock":      true,
-	"pg_advisory_unlock":         true,
-	"pg_advisory_unlock_all":     true,
-	"pg_try_advisory_lock":       true,
-	"pg_try_advisory_xact_lock":  true,
-	"lo_create":                  true,
-	"lo_unlink":                  true,
-	"pg_notify":                  true,
-	"txid_current":               true,
+	"nextval":                   true,
+	"setval":                    true,
+	"currval":                   true,
+	"set_config":                true,
+	"pg_advisory_lock":          true,
+	"pg_advisory_xact_lock":     true,
+	"pg_advisory_unlock":        true,
+	"pg_advisory_unlock_all":    true,
+	"pg_try_advisory_lock":      true,
+	"pg_try_advisory_xact_lock": true,
+	"lo_create":                 true,
+	"lo_unlink":                 true,
+	"pg_notify":                 true,
+	"txid_current":              true,
 }
 
 // hasSideEffectFuncCalls walks the AST node tree looking for FuncCall nodes

@@ -27,7 +27,6 @@ func (s *Server) sendReadyForQuery(conn net.Conn, inTransaction bool) {
 	_ = protocol.WriteMessage(conn, protocol.MsgReadyForQuery, []byte{status})
 }
 
-
 func (s *Server) sendError(conn net.Conn, msg string) {
 	var payload []byte
 	payload = append(payload, 'S')
@@ -173,7 +172,6 @@ func (s *Server) extractQueryTablesParsed(query string, pq *router.ParsedQuery) 
 	return s.extractQueryTables(query)
 }
 
-
 // redactPolicy returns the current SQL redaction policy from config.
 func (s *Server) redactPolicy() redact.Policy {
 	return redact.Policy(s.getConfig().Observability.SQLRedaction)
@@ -299,4 +297,3 @@ func (s *Server) mirrorQuery(msg *protocol.Message, query string, qtype router.Q
 		s.mirror.Send(msg.Type, msg.Payload, query, elapsed)
 	}
 }
-

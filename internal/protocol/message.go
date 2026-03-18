@@ -11,14 +11,14 @@ import (
 // PG wire protocol message types
 const (
 	// Frontend (client → server)
-	MsgQuery       byte = 'Q'
-	MsgTerminate   byte = 'X'
-	MsgParse       byte = 'P'
-	MsgBind        byte = 'B'
-	MsgDescribe    byte = 'D'
-	MsgExecute     byte = 'E'
-	MsgSync        byte = 'S'
-	MsgClose       byte = 'C'
+	MsgQuery     byte = 'Q'
+	MsgTerminate byte = 'X'
+	MsgParse     byte = 'P'
+	MsgBind      byte = 'B'
+	MsgDescribe  byte = 'D'
+	MsgExecute   byte = 'E'
+	MsgSync      byte = 'S'
+	MsgClose     byte = 'C'
 
 	// Frontend — COPY protocol
 	MsgCopyData byte = 'd'
@@ -26,17 +26,17 @@ const (
 	MsgCopyFail byte = 'f'
 
 	// Backend (server → client)
-	MsgAuthentication  byte = 'R'
-	MsgParameterStatus byte = 'S'
-	MsgBackendKeyData  byte = 'K'
-	MsgReadyForQuery   byte = 'Z'
-	MsgRowDescription  byte = 'T'
-	MsgDataRow         byte = 'D'
-	MsgCommandComplete byte = 'C'
-	MsgErrorResponse   byte = 'E'
-	MsgNoticeResponse  byte = 'N'
-	MsgCopyInResponse  byte = 'G'
-	MsgCopyOutResponse byte = 'H'
+	MsgAuthentication   byte = 'R'
+	MsgParameterStatus  byte = 'S'
+	MsgBackendKeyData   byte = 'K'
+	MsgReadyForQuery    byte = 'Z'
+	MsgRowDescription   byte = 'T'
+	MsgDataRow          byte = 'D'
+	MsgCommandComplete  byte = 'C'
+	MsgErrorResponse    byte = 'E'
+	MsgNoticeResponse   byte = 'N'
+	MsgCopyInResponse   byte = 'G'
+	MsgCopyOutResponse  byte = 'H'
 	MsgCopyBothResponse byte = 'W'
 )
 
@@ -182,8 +182,8 @@ func BuildStartupMessage(params map[string]string) []byte {
 	// Protocol version 3.0
 	var buf []byte
 	buf = binary.BigEndian.AppendUint32(buf, 0) // placeholder for length
-	buf = binary.BigEndian.AppendUint16(buf, 3)  // major version
-	buf = binary.BigEndian.AppendUint16(buf, 0)  // minor version
+	buf = binary.BigEndian.AppendUint16(buf, 3) // major version
+	buf = binary.BigEndian.AppendUint16(buf, 0) // minor version
 
 	for k, v := range params {
 		buf = append(buf, []byte(k)...)
@@ -315,11 +315,11 @@ func ParseBindMessage(payload []byte) (portal, stmtName string) {
 
 // BindMessageDetail holds the fully parsed contents of a Bind message.
 type BindMessageDetail struct {
-	Portal           string
-	StatementName    string
-	FormatCodes      []int16  // parameter format codes (0=text, 1=binary)
-	Parameters       [][]byte // parameter values (nil element = NULL)
-	ResultFormatCodes []int16 // result column format codes
+	Portal            string
+	StatementName     string
+	FormatCodes       []int16  // parameter format codes (0=text, 1=binary)
+	Parameters        [][]byte // parameter values (nil element = NULL)
+	ResultFormatCodes []int16  // result column format codes
 }
 
 // ParseBindMessageFull extracts all fields from a Bind ('B') message payload.

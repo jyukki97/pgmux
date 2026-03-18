@@ -275,9 +275,9 @@ func TestClassifyAST_DollarQuotingHintInjection(t *testing.T) {
 
 func TestExtractReadTablesAST(t *testing.T) {
 	tests := []struct {
-		name string
+		name  string
 		query string
-		want []string
+		want  []string
 	}{
 		{
 			"simple select",

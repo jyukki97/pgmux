@@ -81,11 +81,11 @@ func TestIntegration_TransactionRouting(t *testing.T) {
 		want  router.Route
 	}{
 		{"BEGIN", router.RouteWriter},
-		{"SELECT * FROM users", router.RouteWriter},            // in tx → writer
+		{"SELECT * FROM users", router.RouteWriter}, // in tx → writer
 		{"UPDATE users SET name = 'x' WHERE id = 1", router.RouteWriter},
 		{"SELECT * FROM users WHERE id = 1", router.RouteWriter}, // still in tx
 		{"COMMIT", router.RouteWriter},
-		{"SELECT * FROM users", router.RouteReader},             // after commit → reader
+		{"SELECT * FROM users", router.RouteReader}, // after commit → reader
 	}
 
 	for _, s := range steps {

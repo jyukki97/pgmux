@@ -173,9 +173,9 @@ func TestExtractTables(t *testing.T) {
 
 func TestExtractReadTables(t *testing.T) {
 	tests := []struct {
-		name string
+		name  string
 		query string
-		want []string
+		want  []string
 	}{
 		{
 			"simple select",

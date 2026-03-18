@@ -149,4 +149,3 @@ func authNeedsResponse(authType uint32) bool {
 		return false
 	}
 }
-

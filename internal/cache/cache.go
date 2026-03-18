@@ -48,9 +48,9 @@ func New(cfg Config) *Cache {
 // Different response formats (PG wire, JSON, extended wire) must use
 // different namespaces so the same SQL doesn't return the wrong format.
 const (
-	NSProxyWire uint64 = 0                    // proxy simple query (default)
-	NSDataAPI   uint64 = 0xa5a5a5a5a5a5a5a5  // Data API JSON responses
-	NSExtended  uint64 = 0x5a5a5a5a5a5a5a5a  // extended query wire responses
+	NSProxyWire uint64 = 0                  // proxy simple query (default)
+	NSDataAPI   uint64 = 0xa5a5a5a5a5a5a5a5 // Data API JSON responses
+	NSExtended  uint64 = 0x5a5a5a5a5a5a5a5a // extended query wire responses
 )
 
 // WithNamespace mixes a namespace into a cache key to prevent collisions

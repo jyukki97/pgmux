@@ -10,12 +10,12 @@ import (
 func TestParseServerFirst(t *testing.T) {
 	salt := base64.StdEncoding.EncodeToString([]byte("somesalt1234"))
 	tests := []struct {
-		name       string
-		msg        string
-		wantNonce  string
-		wantSalt   string
-		wantIter   int
-		wantErr    bool
+		name      string
+		msg       string
+		wantNonce string
+		wantSalt  string
+		wantIter  int
+		wantErr   bool
 	}{
 		{
 			name:      "valid message",

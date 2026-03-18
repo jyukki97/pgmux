@@ -153,7 +153,7 @@ func TestParseParseMessageFull(t *testing.T) {
 			func() []byte {
 				b := append([]byte("s1"), 0)
 				b = append(b, append([]byte("SELECT $1, $2"), 0)...)
-				b = binary.BigEndian.AppendUint16(b, 2) // 2 params
+				b = binary.BigEndian.AppendUint16(b, 2)  // 2 params
 				b = binary.BigEndian.AppendUint32(b, 23) // int4
 				b = binary.BigEndian.AppendUint32(b, 25) // text
 				return b
@@ -217,9 +217,9 @@ func TestParseBindMessageFull(t *testing.T) {
 			"basic with text params",
 			func() []byte {
 				var b []byte
-				b = append(b, 0)         // portal ""
+				b = append(b, 0) // portal ""
 				b = append(b, []byte("stmt1")...)
-				b = append(b, 0)         // stmt name
+				b = append(b, 0)                        // stmt name
 				b = binary.BigEndian.AppendUint16(b, 1) // 1 format code
 				b = binary.BigEndian.AppendUint16(b, 0) // text
 				b = binary.BigEndian.AppendUint16(b, 2) // 2 params
@@ -261,8 +261,8 @@ func TestParseBindMessageFull(t *testing.T) {
 			"NULL parameter",
 			func() []byte {
 				var b []byte
-				b = append(b, 0)         // portal
-				b = append(b, 0)         // stmt
+				b = append(b, 0)                        // portal
+				b = append(b, 0)                        // stmt
 				b = binary.BigEndian.AppendUint16(b, 0) // 0 format codes
 				b = binary.BigEndian.AppendUint16(b, 1) // 1 param
 				// NULL param: length = -1

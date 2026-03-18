@@ -46,9 +46,9 @@ func buildExecutePayload(portal string, maxRows uint32) []byte {
 
 func TestHasParameterPlaceholders(t *testing.T) {
 	tests := []struct {
-		name  string
-		buf   []*protocol.Message
-		want  bool
+		name string
+		buf  []*protocol.Message
+		want bool
 	}{
 		{
 			name: "no placeholders",

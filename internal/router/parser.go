@@ -9,7 +9,7 @@ import (
 type QueryType int
 
 const (
-	QueryRead  QueryType = iota
+	QueryRead QueryType = iota
 	QueryWrite
 )
 
@@ -431,8 +431,8 @@ func extractCTETables(query string) []string {
 }
 
 // stripStringLiterals replaces content inside single/double-quoted strings with empty strings.
-// Handles PostgreSQL escaped quotes ('') correctly.
-// Example: "SELECT * FROM t WHERE x = 'INSERT INTO foo'" → "SELECT * FROM t WHERE x = ''"
+// Handles PostgreSQL escaped quotes (”) correctly.
+// Example: "SELECT * FROM t WHERE x = 'INSERT INTO foo'" → "SELECT * FROM t WHERE x = ”"
 func stripStringLiterals(query string) string {
 	var result strings.Builder
 	result.Grow(len(query))

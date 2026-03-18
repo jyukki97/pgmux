@@ -14,7 +14,7 @@ func TestIsSessionModifying(t *testing.T) {
 		// SET -> true (session-scoped)
 		{"SET search_path TO public", true},
 		{"set search_path to public", true},   // case insensitive
-		{"  SET search_path TO public", true},  // leading whitespace
+		{"  SET search_path TO public", true}, // leading whitespace
 		{"SET statement_timeout = 5000", true},
 
 		// SET LOCAL -> false (transaction-scoped)

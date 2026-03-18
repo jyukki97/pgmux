@@ -14,7 +14,7 @@ import (
 // Event represents a single audit log entry.
 type Event struct {
 	Timestamp  time.Time `json:"timestamp"`
-	EventType  string    `json:"event"`       // "query" or "slow_query"
+	EventType  string    `json:"event"` // "query" or "slow_query"
 	User       string    `json:"user"`
 	SourceIP   string    `json:"source_ip"`
 	Query      string    `json:"query"`

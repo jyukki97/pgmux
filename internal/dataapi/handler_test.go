@@ -162,7 +162,7 @@ func TestFirewallBlock(t *testing.T) {
 	cfg := &config.Config{
 		Pool: config.PoolConfig{MaxConnections: 1, IdleTimeout: time.Minute, ResetQuery: "DISCARD ALL"},
 		Firewall: config.FirewallConfig{
-			Enabled:                true,
+			Enabled:                 true,
 			BlockDeleteWithoutWhere: true,
 		},
 		Routing: config.RoutingConfig{ASTParser: true},
@@ -195,7 +195,7 @@ func TestParseRowDescription(t *testing.T) {
 
 	// Column 1: "id"
 	buf = append(buf, []byte("id")...)
-	buf = append(buf, 0) // null terminator
+	buf = append(buf, 0)                         // null terminator
 	buf = binary.BigEndian.AppendUint32(buf, 0)  // table OID
 	buf = binary.BigEndian.AppendUint16(buf, 0)  // column attr
 	buf = binary.BigEndian.AppendUint32(buf, 23) // type OID (int4)

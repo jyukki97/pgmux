@@ -24,28 +24,28 @@ import (
 )
 
 type Server struct {
-	mu           sync.RWMutex // protects dbGroups, defaultDB
-	cfgPtr       atomic.Pointer[config.Config]
-	rateLimitPtr atomic.Pointer[resilience.RateLimiter]
-	listenAddr   string
-	dbGroups     map[string]*DatabaseGroup
-	defaultDB    string
-	queryCache   *cache.Cache
-	invalidator  *cache.Invalidator
-	metrics      *metrics.Metrics
-	listener     net.Listener
-	tlsConfig    *tls.Config
-	auditLogger  *audit.Logger
-	mirror       *mirror.Mirror
-	queryDigest  *digest.Digest
-	wg           sync.WaitGroup
-	cancelMap       sync.Map         // cancelKeyPair → *cancelTarget
+	mu              sync.RWMutex // protects dbGroups, defaultDB
+	cfgPtr          atomic.Pointer[config.Config]
+	rateLimitPtr    atomic.Pointer[resilience.RateLimiter]
+	listenAddr      string
+	dbGroups        map[string]*DatabaseGroup
+	defaultDB       string
+	queryCache      *cache.Cache
+	invalidator     *cache.Invalidator
+	metrics         *metrics.Metrics
+	listener        net.Listener
+	tlsConfig       *tls.Config
+	auditLogger     *audit.Logger
+	mirror          *mirror.Mirror
+	queryDigest     *digest.Digest
+	wg              sync.WaitGroup
+	cancelMap       sync.Map // cancelKeyPair → *cancelTarget
 	nextProxyPID    atomic.Uint32
 	connTrackerPtr  atomic.Pointer[ConnTracker] // per-user/per-DB connection limits (nil if disabled)
 	maintenanceMode atomic.Bool
-	maintenanceAt   atomic.Int64    // unix nano timestamp when maintenance was entered
+	maintenanceAt   atomic.Int64 // unix nano timestamp when maintenance was entered
 	readOnlyMode    atomic.Bool
-	readOnlyAt      atomic.Int64    // unix timestamp when read-only mode was entered
+	readOnlyAt      atomic.Int64 // unix timestamp when read-only mode was entered
 }
 
 func NewServer(cfg *config.Config) (*Server, error) {

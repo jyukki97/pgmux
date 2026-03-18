@@ -34,9 +34,9 @@ type Metrics struct {
 	FirewallBlocked *prometheus.CounterVec
 
 	// Audit
-	SlowQueries    *prometheus.CounterVec
-	WebhookSent    prometheus.Counter
-	WebhookErrors  prometheus.Counter
+	SlowQueries   *prometheus.CounterVec
+	WebhookSent   prometheus.Counter
+	WebhookErrors prometheus.Counter
 
 	// Query Digest
 	DigestPatterns prometheus.Gauge

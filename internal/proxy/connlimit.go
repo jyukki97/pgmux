@@ -10,13 +10,13 @@ import (
 // ConnTracker tracks active client connections per user and per database.
 // Thread-safe via sync.Mutex (TryAcquire always writes, critical section is tiny).
 type ConnTracker struct {
-	mu         sync.Mutex
-	byUser     map[string]int // username → active count
-	byDB       map[string]int // database → active count
-	userLimits map[string]int // username → max (from auth.users[].max_connections)
-	dbLimits   map[string]int // database → max (from databases[].max_connections)
-	defaultUser int           // default_max_connections_per_user (0 = unlimited)
-	defaultDB   int           // default_max_connections_per_database (0 = unlimited)
+	mu          sync.Mutex
+	byUser      map[string]int // username → active count
+	byDB        map[string]int // database → active count
+	userLimits  map[string]int // username → max (from auth.users[].max_connections)
+	dbLimits    map[string]int // database → max (from databases[].max_connections)
+	defaultUser int            // default_max_connections_per_user (0 = unlimited)
+	defaultDB   int            // default_max_connections_per_database (0 = unlimited)
 }
 
 // ConnLimitStats is a snapshot of connection limit state for the admin API.

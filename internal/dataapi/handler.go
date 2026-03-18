@@ -766,7 +766,6 @@ func (s *Server) redactSQLForLog(sql string) string {
 	return redact.ForLog(sql, s.redactPolicy())
 }
 
-
 func extractBearerToken(r *http.Request) string {
 	auth := r.Header.Get("Authorization")
 	if strings.HasPrefix(auth, "Bearer ") {

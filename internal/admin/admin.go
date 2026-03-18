@@ -19,22 +19,22 @@ import (
 
 // Server is the Admin API HTTP server.
 type Server struct {
-	cfgFn              func() *config.Config
-	cacheFn            func() *cache.Cache
-	invalidatorFn      func() *cache.Invalidator
-	dbGroupsFn         func() map[string]*proxy.DatabaseGroup
-	defaultDBName      string
-	auditLoggerFn      func() *audit.Logger
-	mirrorStatsFn      func() any
-	digestStatsFn      func() any
-	digestResetFn      func()
-	connStatsFn        func() any
-	reloadFunc         func() error
-	maintenanceGetFn   func() (bool, time.Time)
-	maintenanceSetFn   func(bool)
-	readOnlyGetFn      func() (bool, time.Time)
-	readOnlySetFn      func(bool)
-	mu                 sync.RWMutex
+	cfgFn            func() *config.Config
+	cacheFn          func() *cache.Cache
+	invalidatorFn    func() *cache.Invalidator
+	dbGroupsFn       func() map[string]*proxy.DatabaseGroup
+	defaultDBName    string
+	auditLoggerFn    func() *audit.Logger
+	mirrorStatsFn    func() any
+	digestStatsFn    func() any
+	digestResetFn    func()
+	connStatsFn      func() any
+	reloadFunc       func() error
+	maintenanceGetFn func() (bool, time.Time)
+	maintenanceSetFn func(bool)
+	readOnlyGetFn    func() (bool, time.Time)
+	readOnlySetFn    func(bool)
+	mu               sync.RWMutex
 }
 
 // SetReloadFunc sets the function to call when reload is requested.
@@ -452,7 +452,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		Role string `json:"role"`
 	}
 	type safeDBConfig struct {
-		Writer  config.DBConfig `json:"writer"`
+		Writer  config.DBConfig   `json:"writer"`
 		Readers []config.DBConfig `json:"readers"`
 		Backend struct {
 			User     string `json:"user"`
@@ -462,17 +462,17 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	safe := struct {
-		Proxy     config.ProxyConfig   `json:"proxy"`
-		Pool      config.PoolConfig    `json:"pool"`
-		Routing   config.RoutingConfig `json:"routing"`
-		Cache     config.CacheConfig   `json:"cache"`
-		TLS       config.TLSConfig     `json:"tls"`
-		Auth      struct {
+		Proxy   config.ProxyConfig   `json:"proxy"`
+		Pool    config.PoolConfig    `json:"pool"`
+		Routing config.RoutingConfig `json:"routing"`
+		Cache   config.CacheConfig   `json:"cache"`
+		TLS     config.TLSConfig     `json:"tls"`
+		Auth    struct {
 			Enabled bool           `json:"enabled"`
 			Users   []safeAuthUser `json:"users,omitempty"`
 		} `json:"auth"`
 		Admin struct {
-			Enabled bool `json:"enabled"`
+			Enabled bool   `json:"enabled"`
 			Listen  string `json:"listen"`
 			Auth    struct {
 				Enabled        bool              `json:"enabled"`

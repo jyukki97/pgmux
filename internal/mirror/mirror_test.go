@@ -56,11 +56,11 @@ func TestIsReadOnly(t *testing.T) {
 
 func TestSend_BufferFull_DropsJob(t *testing.T) {
 	m := &Mirror{
-		workCh:  make(chan *job, 1), // buffer size 1
-		done:    make(chan struct{}),
-		tables:  nil,
-		cfg:     Config{Mode: "all"},
-		stats:   newStatsCollector(),
+		workCh: make(chan *job, 1), // buffer size 1
+		done:   make(chan struct{}),
+		tables: nil,
+		cfg:    Config{Mode: "all"},
+		stats:  newStatsCollector(),
 	}
 
 	// First send should succeed

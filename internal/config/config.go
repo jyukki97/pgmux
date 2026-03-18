@@ -11,28 +11,28 @@ import (
 )
 
 type Config struct {
-	Proxy   ProxyConfig   `yaml:"proxy"`
-	Pool    PoolConfig    `yaml:"pool"`
-	Routing RoutingConfig `yaml:"routing"`
-	Cache   CacheConfig   `yaml:"cache"`
-	Backend BackendConfig `yaml:"backend"`
-	Metrics MetricsConfig `yaml:"metrics"`
-	Admin   AdminConfig   `yaml:"admin"`
-	TLS            TLSConfig            `yaml:"tls"`
-	Auth           AuthConfig           `yaml:"auth"`
-	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
-	RateLimit      RateLimitConfig      `yaml:"rate_limit"`
-	Firewall       FirewallConfig       `yaml:"firewall"`
-	Audit          AuditConfig          `yaml:"audit"`
-	DataAPI        DataAPIConfig        `yaml:"data_api"`
-	ConfigOptions  ConfigOptionsConfig  `yaml:"config"`
-	Telemetry      TelemetryConfig      `yaml:"telemetry"`
-	Mirror           MirrorConfig                  `yaml:"mirror"`
-	Digest           DigestConfig                  `yaml:"digest"`
-	Databases        map[string]DatabaseConfig     `yaml:"databases"`
-	ConnectionLimits ConnectionLimitsConfig        `yaml:"connection_limits"`
-	SessionCompat    SessionCompatConfig           `yaml:"session_compatibility"`
-	Observability    ObservabilityConfig           `yaml:"observability"`
+	Proxy            ProxyConfig               `yaml:"proxy"`
+	Pool             PoolConfig                `yaml:"pool"`
+	Routing          RoutingConfig             `yaml:"routing"`
+	Cache            CacheConfig               `yaml:"cache"`
+	Backend          BackendConfig             `yaml:"backend"`
+	Metrics          MetricsConfig             `yaml:"metrics"`
+	Admin            AdminConfig               `yaml:"admin"`
+	TLS              TLSConfig                 `yaml:"tls"`
+	Auth             AuthConfig                `yaml:"auth"`
+	CircuitBreaker   CircuitBreakerConfig      `yaml:"circuit_breaker"`
+	RateLimit        RateLimitConfig           `yaml:"rate_limit"`
+	Firewall         FirewallConfig            `yaml:"firewall"`
+	Audit            AuditConfig               `yaml:"audit"`
+	DataAPI          DataAPIConfig             `yaml:"data_api"`
+	ConfigOptions    ConfigOptionsConfig       `yaml:"config"`
+	Telemetry        TelemetryConfig           `yaml:"telemetry"`
+	Mirror           MirrorConfig              `yaml:"mirror"`
+	Digest           DigestConfig              `yaml:"digest"`
+	Databases        map[string]DatabaseConfig `yaml:"databases"`
+	ConnectionLimits ConnectionLimitsConfig    `yaml:"connection_limits"`
+	SessionCompat    SessionCompatConfig       `yaml:"session_compatibility"`
+	Observability    ObservabilityConfig       `yaml:"observability"`
 }
 
 type ObservabilityConfig struct {
@@ -55,11 +55,11 @@ type ConfigOptionsConfig struct {
 }
 
 type TelemetryConfig struct {
-	Enabled     bool    `yaml:"enabled"`
-	Exporter    string  `yaml:"exporter"`      // "otlp" or "stdout"
-	Endpoint    string  `yaml:"endpoint"`       // OTLP gRPC endpoint
-	ServiceName string  `yaml:"service_name"`
-	SampleRatio *float64 `yaml:"sample_ratio"`  // 0.0 ~ 1.0
+	Enabled     bool     `yaml:"enabled"`
+	Exporter    string   `yaml:"exporter"` // "otlp" or "stdout"
+	Endpoint    string   `yaml:"endpoint"` // OTLP gRPC endpoint
+	ServiceName string   `yaml:"service_name"`
+	SampleRatio *float64 `yaml:"sample_ratio"` // 0.0 ~ 1.0
 }
 
 type DataAPIConfig struct {
@@ -69,10 +69,10 @@ type DataAPIConfig struct {
 }
 
 type AuditConfig struct {
-	Enabled            bool                `yaml:"enabled"`
-	SlowQueryThreshold time.Duration       `yaml:"slow_query_threshold"`
-	LogAllQueries      bool                `yaml:"log_all_queries"`
-	Webhook            AuditWebhookConfig  `yaml:"webhook"`
+	Enabled            bool               `yaml:"enabled"`
+	SlowQueryThreshold time.Duration      `yaml:"slow_query_threshold"`
+	LogAllQueries      bool               `yaml:"log_all_queries"`
+	Webhook            AuditWebhookConfig `yaml:"webhook"`
 }
 
 type AuditWebhookConfig struct {
@@ -161,14 +161,14 @@ type DBConfig struct {
 }
 
 type PoolConfig struct {
-	MinConnections         int           `yaml:"min_connections"`
-	MaxConnections         int           `yaml:"max_connections"`
-	IdleTimeout            time.Duration `yaml:"idle_timeout"`
-	MaxLifetime            time.Duration `yaml:"max_lifetime"`
-	ConnectionTimeout      time.Duration `yaml:"connection_timeout"`
-	QueryTimeout           time.Duration `yaml:"query_timeout"`            // 0 = disabled (no timeout)
-	ResetQuery             string        `yaml:"reset_query"`
-	PreparedStatementMode  string        `yaml:"prepared_statement_mode"` // "proxy" (default) or "multiplex"
+	MinConnections        int           `yaml:"min_connections"`
+	MaxConnections        int           `yaml:"max_connections"`
+	IdleTimeout           time.Duration `yaml:"idle_timeout"`
+	MaxLifetime           time.Duration `yaml:"max_lifetime"`
+	ConnectionTimeout     time.Duration `yaml:"connection_timeout"`
+	QueryTimeout          time.Duration `yaml:"query_timeout"` // 0 = disabled (no timeout)
+	ResetQuery            string        `yaml:"reset_query"`
+	PreparedStatementMode string        `yaml:"prepared_statement_mode"` // "proxy" (default) or "multiplex"
 }
 
 type RoutingConfig struct {
@@ -178,10 +178,10 @@ type RoutingConfig struct {
 }
 
 type CacheConfig struct {
-	Enabled         bool                   `yaml:"enabled"`
-	CacheTTL        time.Duration          `yaml:"cache_ttl"`
-	MaxCacheEntries int                    `yaml:"max_cache_entries"`
-	MaxResultSize   string                 `yaml:"max_result_size"`
+	Enabled         bool                    `yaml:"enabled"`
+	CacheTTL        time.Duration           `yaml:"cache_ttl"`
+	MaxCacheEntries int                     `yaml:"max_cache_entries"`
+	MaxResultSize   string                  `yaml:"max_result_size"`
 	Invalidation    CacheInvalidationConfig `yaml:"invalidation"`
 }
 
@@ -207,11 +207,11 @@ type MirrorConfig struct {
 	User       string   `yaml:"user"`
 	Password   string   `yaml:"password"`
 	Database   string   `yaml:"database"`
-	Mode       string   `yaml:"mode"`        // "read_only" (default) | "all"
+	Mode       string   `yaml:"mode"` // "read_only" (default) | "all"
 	Tables     []string `yaml:"tables"`
 	Compare    bool     `yaml:"compare"`
-	Workers    int      `yaml:"workers"`      // default 4
-	BufferSize int      `yaml:"buffer_size"`  // default 10000
+	Workers    int      `yaml:"workers"`     // default 4
+	BufferSize int      `yaml:"buffer_size"` // default 10000
 }
 
 type DigestConfig struct {

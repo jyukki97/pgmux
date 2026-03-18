@@ -39,4 +39,3 @@ func semanticCacheKeyFromTree(tree *pg_query.ParseResult, query string) uint64 {
 	h.Write([]byte(deparsed))
 	return h.Sum64()
 }
-

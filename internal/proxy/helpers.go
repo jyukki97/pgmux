@@ -182,6 +182,11 @@ func (s *Server) redactSQL(query string) string {
 	return redact.SQL(query, s.redactPolicy())
 }
 
+// RedactSQL applies the configured SQL redaction policy (public, for admin API).
+func (s *Server) RedactSQL(query string) string {
+	return s.redactSQL(query)
+}
+
 // redactSQLForLog returns a redacted, truncated SQL for slog attributes.
 func (s *Server) redactSQLForLog(query string) string {
 	return redact.ForLog(query, s.redactPolicy())

@@ -150,6 +150,11 @@ func run() error {
 			}
 			return rw.Rules()
 		})
+		adminSrv.SetSessionsFns(
+			func() any { return srv.Sessions() },
+			func(id uint32) (bool, bool) { return srv.CancelSession(id) },
+			srv.RedactSQL,
+		)
 		adminHTTP := adminSrv.HTTPServer()
 
 		ln, err := net.Listen("tcp", cfg.Admin.Listen)

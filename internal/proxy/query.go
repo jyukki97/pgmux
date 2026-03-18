@@ -19,7 +19,7 @@ import (
 
 // relayQueries handles the main query loop with transaction-level connection pooling.
 // Writer connections are acquired from writerPool per query/transaction and released back.
-func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session *router.Session, ct *cancelTarget, dbg *DatabaseGroup) {
+func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session *router.Session, ct *cancelTarget, dbg *DatabaseGroup, si *SessionInfo) {
 	// boundWriter is non-nil when a transaction is in progress.
 	// The connection stays bound from BEGIN until COMMIT/ROLLBACK.
 	var boundWriter *pool.Conn
@@ -299,6 +299,9 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 
 			start := time.Now()
 
+			// Update session dashboard state (backend addr set after connection acquisition)
+			si.SetQueryState(query)
+
 			// Resolve query timeout (per-query hint overrides global config)
 			queryTimeout := s.resolveQueryTimeout(query, queryCfg)
 
@@ -398,6 +401,8 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 			}
 
 			elapsed := time.Since(start)
+			si.ClearQueryState()
+			si.SetTransactionState(session.InTransaction(), session.Pinned(), session.PinnedReason())
 			if s.metrics != nil {
 				s.metrics.QueriesRouted.WithLabelValues(target).Inc()
 				s.metrics.QueryDuration.WithLabelValues(target).Observe(elapsed.Seconds())
@@ -646,6 +651,9 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 			start := time.Now()
 			target := routeName(extRoute)
 			extQueryTimeout := s.resolveQueryTimeout(extQueryText, s.getConfig())
+
+			// Update session dashboard state (backend addr set after connection acquisition)
+			si.SetQueryState(extQueryText)
 
 			// Start root span for extended query batch
 			extCtx, extSpan := telemetry.Tracer().Start(ctx, "pgmux.extended_query",
@@ -983,6 +991,8 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 			}
 
 			elapsed := time.Since(start)
+			si.ClearQueryState()
+			si.SetTransactionState(session.InTransaction(), session.Pinned(), session.PinnedReason())
 			if s.metrics != nil {
 				s.metrics.QueriesRouted.WithLabelValues(target).Inc()
 				s.metrics.QueryDuration.WithLabelValues(target).Observe(elapsed.Seconds())

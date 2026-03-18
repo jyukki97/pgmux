@@ -443,6 +443,8 @@ curl -H "Authorization: Bearer your-admin-api-key" http://localhost:9091/admin/s
 | `/admin/readonly` | GET | viewer | Read-only 모드 상태 조회 |
 | `/admin/readonly` | POST | admin | Read-only 모드 활성화 (쓰기 쿼리 거부) |
 | `/admin/readonly` | DELETE | admin | Read-only 모드 해제 |
+| `/admin/sessions` | GET | viewer | 활성 세션 목록 (세션 ID, 클라이언트 IP, 사용자, DB, 연결 시각, 현재 쿼리, 백엔드 주소, 트랜잭션 상태, 핀 상태) |
+| `/admin/sessions/{id}/cancel` | POST | admin | 특정 세션의 현재 쿼리 취소 (CancelRequest 전송) |
 
 ## 메트릭
 

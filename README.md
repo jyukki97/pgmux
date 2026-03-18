@@ -3,6 +3,11 @@
 # pgmux
 
 [![CI](https://github.com/jyukki97/pgmux/actions/workflows/ci.yml/badge.svg)](https://github.com/jyukki97/pgmux/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/jyukki97/pgmux?style=flat-square)](https://github.com/jyukki97/pgmux/releases/latest)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/jyukki97/pgmux?style=flat-square)](https://go.dev/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
+[![Go Report Card](https://goreportcard.com/badge/github.com/jyukki97/pgmux?style=flat-square)](https://goreportcard.com/report/github.com/jyukki97/pgmux)
+[![Docker Image](https://img.shields.io/badge/GHCR-pgmux-blue?style=flat-square&logo=docker)](https://github.com/jyukki97/pgmux/pkgs/container/pgmux)
 
 Go로 작성한 경량 PostgreSQL 프록시. 애플리케이션과 데이터베이스 사이에서 커넥션 풀링, 읽기/쓰기 쿼리 자동 분산, 반복 쿼리 캐싱을 수행합니다. 기존 PostgreSQL 드라이버를 그대로 사용할 수 있습니다.
 

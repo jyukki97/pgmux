@@ -6,7 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/jyukki97/pgmux?style=flat-square)](https://github.com/jyukki97/pgmux/releases/latest)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/jyukki97/pgmux?style=flat-square)](https://go.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
-[![Go Report Card](https://goreportcard.com/badge/github.com/jyukki97/pgmux?style=flat-square)](https://goreportcard.com/report/github.com/jyukki97/pgmux)
+[![Go Report Card](https://goreportcard.com/badge/github.com/jyukki97/pgmux)](https://goreportcard.com/report/github.com/jyukki97/pgmux)
 [![Docker Image](https://img.shields.io/badge/GHCR-pgmux-blue?style=flat-square&logo=docker)](https://github.com/jyukki97/pgmux/pkgs/container/pgmux)
 
 A lightweight PostgreSQL proxy written in Go. Sitting between your application and database, it provides connection pooling, automatic read/write query routing, and repeated query caching. Works with any existing PostgreSQL driver without modification.

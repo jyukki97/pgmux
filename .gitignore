@@ -33,6 +33,10 @@ Thumbs.db
 # Internal docs and Claude Code config (development-only)
 docs/
 CLAUDE.md
+.claudeignore
+
+# Benchmark results (local artifacts)
+bench-results/
 
 # Config (use config.example.yaml as template)
 config.yaml

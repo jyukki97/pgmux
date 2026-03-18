@@ -517,7 +517,16 @@ helm install pgmux deploy/helm/pgmux/ \
 
 ## Kubernetes 배포 (Helm)
 
-### Docker 이미지 빌드
+### Docker 이미지
+
+공식 이미지는 GitHub Container Registry에서 제공됩니다:
+
+```bash
+docker pull ghcr.io/jyukki97/pgmux:1.0.0    # 특정 버전
+docker pull ghcr.io/jyukki97/pgmux:latest    # 최신
+```
+
+직접 빌드하려면:
 
 ```bash
 make docker-build
@@ -528,6 +537,8 @@ make docker-build
 ```bash
 # values.yaml에서 databases 주소를 실제 DB로 수정한 뒤:
 helm install pgmux deploy/helm/pgmux/ \
+  --set image.repository=ghcr.io/jyukki97/pgmux \
+  --set image.tag=1.0.0 \
   --set config.databases.mydb.writer.host=primary.db.internal \
   --set config.databases.mydb.backend.password=mypassword
 ```

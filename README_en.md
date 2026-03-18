@@ -474,7 +474,16 @@ A ConfigMap with the `grafana_dashboard: "1"` label is created, and the Grafana 
 
 ## Kubernetes Deployment (Helm)
 
-### Build Docker Image
+### Docker Image
+
+Official images are available on GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/jyukki97/pgmux:1.0.0    # specific version
+docker pull ghcr.io/jyukki97/pgmux:latest    # latest
+```
+
+To build locally:
 
 ```bash
 make docker-build
@@ -485,6 +494,8 @@ make docker-build
 ```bash
 # Edit database addresses in values.yaml to point to your actual DB, then:
 helm install pgmux deploy/helm/pgmux/ \
+  --set image.repository=ghcr.io/jyukki97/pgmux \
+  --set image.tag=1.0.0 \
   --set config.databases.mydb.writer.host=primary.db.internal \
   --set config.databases.mydb.backend.password=mypassword
 ```

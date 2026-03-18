@@ -295,6 +295,23 @@ func ParseParseMessageFull(payload []byte) (stmtName, query string, paramOIDs []
 	return stmtName, query, paramOIDs, nil
 }
 
+// BuildParsePayload constructs a Parse message payload from its components.
+// The result can be used with CopyMessage or WriteMessage to send to the backend.
+func BuildParsePayload(stmtName, query string, paramOIDs []uint32) []byte {
+	// stmtName\0 + query\0 + uint16(paramCount) + uint32[](paramOIDs)
+	size := len(stmtName) + 1 + len(query) + 1 + 2 + len(paramOIDs)*4
+	buf := make([]byte, 0, size)
+	buf = append(buf, []byte(stmtName)...)
+	buf = append(buf, 0)
+	buf = append(buf, []byte(query)...)
+	buf = append(buf, 0)
+	buf = binary.BigEndian.AppendUint16(buf, uint16(len(paramOIDs)))
+	for _, oid := range paramOIDs {
+		buf = binary.BigEndian.AppendUint32(buf, oid)
+	}
+	return buf
+}
+
 // ParseBindMessage extracts the destination portal and source statement name from a Bind ('B') message.
 // Bind payload format: portal_name (string\0) + statement_name (string\0) + ...
 func ParseBindMessage(payload []byte) (portal, stmtName string) {

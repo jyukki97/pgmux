@@ -497,11 +497,18 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 					return
 				}
 			} else {
-				stmtName, query := protocol.ParseParseMessage(msg.Payload)
+				stmtName, query, paramOIDs, parseErr := protocol.ParseParseMessageFull(msg.Payload)
+				if parseErr != nil {
+					slog.Warn("parse message full failed, falling back", "error", parseErr)
+					stmtName, query = protocol.ParseParseMessage(msg.Payload)
+					paramOIDs = nil
+				}
 				// Apply query rewriting (extended — proxy mode)
+				extRewritten := false
 				if rw := s.rewriterPtr.Load(); rw != nil {
 					if rwResult := rw.Apply(query, nil); rwResult.Rewritten {
 						query = rwResult.RewrittenSQL
+						extRewritten = true
 						if s.metrics != nil {
 							for _, rule := range rwResult.AppliedRules {
 								s.metrics.QueryRewritten.WithLabelValues(rule).Inc()
@@ -555,7 +562,13 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 				} else {
 					extRoute = route
 				}
-				extBuf = append(extBuf, protocol.CopyMessage(msg))
+				// Buffer the (possibly rebuilt) Parse message for backend forwarding.
+				if extRewritten {
+					newPayload := protocol.BuildParsePayload(stmtName, query, paramOIDs)
+					extBuf = append(extBuf, &protocol.Message{Type: protocol.MsgParse, Payload: newPayload})
+				} else {
+					extBuf = append(extBuf, protocol.CopyMessage(msg))
+				}
 			}
 
 		case protocol.MsgBind:

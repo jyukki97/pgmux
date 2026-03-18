@@ -4,7 +4,6 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
-	"sync"
 
 	pg_query "github.com/pganalyze/pg_query_go/v5"
 )
@@ -49,15 +48,15 @@ type RewriteResult struct {
 	AppliedRules []string
 }
 
-// compiledRule caches the compiled regex for a rule.
+// compiledRule caches the compiled regex and pre-parsed add_where conditions.
 type compiledRule struct {
 	rule    RewriteRule
 	pattern *regexp.Regexp // nil if no QueryPattern
 }
 
-// Rewriter applies query rewrite rules. It is safe for concurrent use.
+// Rewriter applies query rewrite rules. It is immutable after construction
+// and safe for concurrent use without a mutex (managed via atomic.Pointer in proxy).
 type Rewriter struct {
-	mu    sync.RWMutex
 	rules []compiledRule
 }
 
@@ -86,8 +85,6 @@ func NewRewriter(rules []RewriteRule) *Rewriter {
 
 // Rules returns the list of active rule names.
 func (rw *Rewriter) Rules() []string {
-	rw.mu.RLock()
-	defer rw.mu.RUnlock()
 	names := make([]string, len(rw.rules))
 	for i, cr := range rw.rules {
 		names[i] = cr.rule.Name
@@ -96,25 +93,19 @@ func (rw *Rewriter) Rules() []string {
 }
 
 // Apply applies all matching rewrite rules to the query.
-// If pq is non-nil, its pre-parsed tree is used; otherwise the query is parsed.
+// The query is always re-parsed internally to avoid mutating a shared AST.
 // Fail-open: returns the original query on any error.
 func (rw *Rewriter) Apply(query string, pq *ParsedQuery) RewriteResult {
-	rw.mu.RLock()
-	defer rw.mu.RUnlock()
-
 	if len(rw.rules) == 0 {
 		return RewriteResult{}
 	}
 
-	var tree *pg_query.ParseResult
-	if pq != nil {
-		tree = pq.Tree
-	} else {
-		var err error
-		tree, err = ParseSQL(query)
-		if err != nil {
-			return RewriteResult{}
-		}
+	// Always parse a fresh tree to avoid mutating a shared ParsedQuery's AST.
+	// The cost of re-parsing is acceptable since rewriting is not on every query
+	// (only when rules are configured) and AST mutation safety is critical.
+	tree, err := ParseSQL(query)
+	if err != nil {
+		return RewriteResult{}
 	}
 
 	var appliedRules []string
@@ -125,14 +116,15 @@ func (rw *Rewriter) Apply(query string, pq *ParsedQuery) RewriteResult {
 			continue
 		}
 
+		ruleModified := false
 		for _, action := range cr.rule.Actions {
-			changed := applyAction(tree, action)
-			if changed {
+			if applyAction(tree, action) {
+				ruleModified = true
 				modified = true
 			}
 		}
 
-		if modified {
+		if ruleModified {
 			appliedRules = append(appliedRules, cr.rule.Name)
 		}
 	}
@@ -282,6 +274,7 @@ func rewriteTableName(tree *pg_query.ParseResult, oldName, newName string) bool 
 }
 
 // rewriteColumnName renames all occurrences of oldName to newName in ColumnRef nodes.
+// Note: This is a global rename — it does not scope to specific tables.
 func rewriteColumnName(tree *pg_query.ParseResult, oldName, newName string) bool {
 	oldLower := strings.ToLower(oldName)
 	changed := false
@@ -297,13 +290,6 @@ func rewriteColumnName(tree *pg_query.ParseResult, oldName, newName string) bool
 				}
 			}
 		}
-		// Also check ResTarget aliases (SELECT user_name AS ...)
-		if rt := node.GetResTarget(); rt != nil {
-			if strings.ToLower(rt.GetName()) == oldLower {
-				rt.Name = newName
-				changed = true
-			}
-		}
 		return true
 	})
 
@@ -312,33 +298,22 @@ func rewriteColumnName(tree *pg_query.ParseResult, oldName, newName string) bool
 
 // rewriteAddWhere adds an AND condition to every SELECT/UPDATE/DELETE WHERE clause.
 // If no WHERE clause exists, it becomes the sole WHERE condition.
+// The condition is re-parsed for each statement to avoid shared AST node references.
 func rewriteAddWhere(tree *pg_query.ParseResult, condition string) bool {
-	// Parse the condition as a standalone expression
-	condTree, err := pg_query.Parse("SELECT * FROM _t WHERE " + condition)
-	if err != nil {
-		slog.Warn("rewrite add_where: condition parse failed", "condition", condition, "error", err)
-		return false
-	}
-
-	// Extract the WhereClause node from the parsed condition
-	var condNode *pg_query.Node
-	for _, rawStmt := range condTree.GetStmts() {
-		if sel := rawStmt.GetStmt().GetSelectStmt(); sel != nil {
-			condNode = sel.GetWhereClause()
-			break
-		}
-	}
-	if condNode == nil {
-		slog.Warn("rewrite add_where: could not extract condition node", "condition", condition)
-		return false
-	}
-
 	changed := false
 	for _, rawStmt := range tree.GetStmts() {
 		stmt := rawStmt.GetStmt()
 		if stmt == nil {
 			continue
 		}
+
+		// Parse a fresh condition node per statement to avoid shared references.
+		condNode, err := parseCondition(condition)
+		if err != nil {
+			slog.Warn("rewrite add_where: condition parse failed", "condition", condition, "error", err)
+			return false
+		}
+
 		switch n := stmt.GetNode().(type) {
 		case *pg_query.Node_SelectStmt:
 			n.SelectStmt.WhereClause = andWhere(n.SelectStmt.GetWhereClause(), condNode)
@@ -353,6 +328,22 @@ func rewriteAddWhere(tree *pg_query.ParseResult, condition string) bool {
 	}
 
 	return changed
+}
+
+// parseCondition parses a SQL condition expression and returns the WhereClause node.
+func parseCondition(condition string) (*pg_query.Node, error) {
+	condTree, err := pg_query.Parse("SELECT 1 WHERE " + condition)
+	if err != nil {
+		return nil, err
+	}
+	for _, rawStmt := range condTree.GetStmts() {
+		if sel := rawStmt.GetStmt().GetSelectStmt(); sel != nil {
+			if wc := sel.GetWhereClause(); wc != nil {
+				return wc, nil
+			}
+		}
+	}
+	return nil, err
 }
 
 // andWhere combines an existing WHERE clause with a new condition using AND.

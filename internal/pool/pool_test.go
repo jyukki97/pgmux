@@ -38,7 +38,7 @@ func startEchoServer(t *testing.T) string {
 	return ln.Addr().String()
 }
 
-func TestPool_NewCreatesMinConnections(t *testing.T) {
+func TestPool_NewDoesNotPreCreate(t *testing.T) {
 	addr := startEchoServer(t)
 
 	p, err := New(Config{
@@ -52,11 +52,91 @@ func TestPool_NewCreatesMinConnections(t *testing.T) {
 	defer p.Close()
 
 	numOpen, numIdle := p.Stats()
+	if numOpen != 0 {
+		t.Errorf("numOpen = %d, want 0 (New should not pre-create)", numOpen)
+	}
+	if numIdle != 0 {
+		t.Errorf("numIdle = %d, want 0 (New should not pre-create)", numIdle)
+	}
+}
+
+func TestPool_Warm(t *testing.T) {
+	addr := startEchoServer(t)
+
+	p, err := New(Config{
+		Addr:           addr,
+		MinConnections: 3,
+		MaxConnections: 10,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	defer p.Close()
+
+	ctx := context.Background()
+	p.Warm(ctx)
+
+	// Wait for background warming to complete
+	time.Sleep(200 * time.Millisecond)
+
+	numOpen, numIdle := p.Stats()
 	if numOpen != 3 {
 		t.Errorf("numOpen = %d, want 3", numOpen)
 	}
 	if numIdle != 3 {
 		t.Errorf("numIdle = %d, want 3", numIdle)
+	}
+}
+
+func TestPool_WarmZeroMinConnections(t *testing.T) {
+	addr := startEchoServer(t)
+
+	p, err := New(Config{
+		Addr:           addr,
+		MinConnections: 0,
+		MaxConnections: 10,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	defer p.Close()
+
+	ctx := context.Background()
+	p.Warm(ctx)
+
+	time.Sleep(50 * time.Millisecond)
+
+	numOpen, numIdle := p.Stats()
+	if numOpen != 0 {
+		t.Errorf("numOpen = %d, want 0", numOpen)
+	}
+	if numIdle != 0 {
+		t.Errorf("numIdle = %d, want 0", numIdle)
+	}
+}
+
+func TestPool_WarmRespectsCancel(t *testing.T) {
+	addr := startEchoServer(t)
+
+	p, err := New(Config{
+		Addr:           addr,
+		MinConnections: 5,
+		MaxConnections: 10,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	defer p.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+	p.Warm(ctx)
+
+	time.Sleep(100 * time.Millisecond)
+
+	numOpen, _ := p.Stats()
+	if numOpen >= 5 {
+		t.Errorf("numOpen = %d, expected < 5 after cancel", numOpen)
 	}
 }
 
@@ -217,7 +297,7 @@ func TestPool_HealthCheck(t *testing.T) {
 		Addr:           addr,
 		MinConnections: 2,
 		MaxConnections: 5,
-		IdleTimeout:    50 * time.Millisecond,
+		IdleTimeout:    5 * time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -229,7 +309,7 @@ func TestPool_HealthCheck(t *testing.T) {
 
 	p.StartHealthCheck(ctx, 30*time.Millisecond)
 
-	// Wait for idle connections to expire and be replenished
+	// Health check should replenish to min_connections (2)
 	time.Sleep(150 * time.Millisecond)
 
 	numOpen, _ := p.Stats()

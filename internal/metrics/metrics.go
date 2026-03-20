@@ -67,6 +67,10 @@ type Metrics struct {
 
 	// Query rewriting
 	QueryRewritten *prometheus.CounterVec
+
+	// Connection warming
+	PoolWarmConns  *prometheus.CounterVec
+	PoolWarmErrors *prometheus.CounterVec
 }
 
 // New creates and registers all Prometheus metrics.
@@ -292,6 +296,21 @@ func New() *Metrics {
 			},
 			[]string{"rule"},
 		),
+
+		PoolWarmConns: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "pgmux_pool_warm_connections_total",
+				Help: "Total number of connections pre-created by pool warming.",
+			},
+			[]string{"role", "addr"},
+		),
+		PoolWarmErrors: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "pgmux_pool_warm_errors_total",
+				Help: "Total number of errors during pool warming.",
+			},
+			[]string{"role", "addr"},
+		),
 	}
 
 	prometheus.MustRegister(
@@ -326,6 +345,8 @@ func New() *Metrics {
 		m.SessionDepBlocked,
 		m.SessionPinned,
 		m.QueryRewritten,
+		m.PoolWarmConns,
+		m.PoolWarmErrors,
 	)
 
 	return m

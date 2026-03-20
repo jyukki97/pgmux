@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -47,7 +48,7 @@ func newDatabaseGroup(name string, dbCfg config.DatabaseConfig, cbCfg config.Cir
 		DialFunc: func() (net.Conn, error) {
 			return pgConnect(writerAddr, dbCfg.Backend.User, dbCfg.Backend.Password, dbCfg.Backend.Database)
 		},
-		MinConnections:    0, // lazy creation; backend may not be ready at startup
+		MinConnections:    dbCfg.Pool.MinConnections,
 		MaxConnections:    dbCfg.Pool.MaxConnections,
 		IdleTimeout:       dbCfg.Pool.IdleTimeout,
 		MaxLifetime:       dbCfg.Pool.MaxLifetime,
@@ -67,7 +68,7 @@ func newDatabaseGroup(name string, dbCfg config.DatabaseConfig, cbCfg config.Cir
 			DialFunc: func() (net.Conn, error) {
 				return pgConnect(addr, dbCfg.Backend.User, dbCfg.Backend.Password, dbCfg.Backend.Database)
 			},
-			MinConnections:    0,
+			MinConnections:    dbCfg.Pool.MinConnections,
 			MaxConnections:    dbCfg.Pool.MaxConnections,
 			IdleTimeout:       dbCfg.Pool.IdleTimeout,
 			MaxLifetime:       dbCfg.Pool.MaxLifetime,
@@ -117,6 +118,19 @@ func (g *DatabaseGroup) Close() {
 	}
 }
 
+// WarmPools pre-creates connections for writer and all reader pools in the background.
+func (g *DatabaseGroup) WarmPools(ctx context.Context) {
+	if g.writerPool != nil {
+		g.writerPool.Warm(ctx)
+	}
+	g.mu.RLock()
+	pools := g.readerPools
+	g.mu.RUnlock()
+	for _, p := range pools {
+		p.Warm(ctx)
+	}
+}
+
 // Reload updates writer/reader pools and circuit breakers for a config change.
 // If backend credentials (user, password, database) changed, all pools are
 // recreated so that new connections use the updated credentials.
@@ -144,7 +158,7 @@ func (g *DatabaseGroup) Reload(dbCfg config.DatabaseConfig, cbCfg config.Circuit
 			DialFunc: func() (net.Conn, error) {
 				return pgConnect(newWriterAddr, dbCfg.Backend.User, dbCfg.Backend.Password, dbCfg.Backend.Database)
 			},
-			MinConnections:    0,
+			MinConnections:    dbCfg.Pool.MinConnections,
 			MaxConnections:    dbCfg.Pool.MaxConnections,
 			IdleTimeout:       dbCfg.Pool.IdleTimeout,
 			MaxLifetime:       dbCfg.Pool.MaxLifetime,
@@ -179,7 +193,7 @@ func (g *DatabaseGroup) Reload(dbCfg config.DatabaseConfig, cbCfg config.Circuit
 			DialFunc: func() (net.Conn, error) {
 				return pgConnect(addr, dbCfg.Backend.User, dbCfg.Backend.Password, dbCfg.Backend.Database)
 			},
-			MinConnections:    0,
+			MinConnections:    dbCfg.Pool.MinConnections,
 			MaxConnections:    dbCfg.Pool.MaxConnections,
 			IdleTimeout:       dbCfg.Pool.IdleTimeout,
 			MaxLifetime:       dbCfg.Pool.MaxLifetime,

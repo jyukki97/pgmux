@@ -70,19 +70,61 @@ func New(cfg Config) (*Pool, error) {
 		waitCh: make(chan struct{}, cfg.MaxConnections),
 		done:   make(chan struct{}),
 	}
+	return p, nil
+}
 
-	// Pre-create min connections
-	for i := 0; i < cfg.MinConnections; i++ {
-		conn, err := p.newConn()
-		if err != nil {
-			p.Close()
-			return nil, fmt.Errorf("pre-create connection %d: %w", i, err)
-		}
-		p.idle = append(p.idle, conn)
-		p.numOpen++
+// Warm pre-creates connections up to MinConnections in a background goroutine.
+// It is non-blocking and error-tolerant: failures are logged but do not block
+// the caller. The goroutine stops when ctx is canceled or the pool is closed.
+func (p *Pool) Warm(ctx context.Context) {
+	target := p.cfg.MinConnections
+	if target <= 0 {
+		return
 	}
 
-	return p, nil
+	go func() {
+		var created int
+		for i := 0; i < target; i++ {
+			select {
+			case <-ctx.Done():
+				return
+			case <-p.done:
+				return
+			default:
+			}
+
+			p.mu.Lock()
+			if p.closed || p.numOpen >= target {
+				p.mu.Unlock()
+				break
+			}
+			p.numOpen++ // reserve slot
+			p.mu.Unlock()
+
+			conn, err := p.newConn()
+
+			p.mu.Lock()
+			if err != nil {
+				p.numOpen--
+				p.mu.Unlock()
+				slog.Warn("warm: pre-create connection failed",
+					"addr", p.cfg.Addr, "error", err)
+				continue
+			}
+			if p.closed {
+				p.numOpen--
+				p.mu.Unlock()
+				conn.Close()
+				return
+			}
+			p.idle = append(p.idle, conn)
+			created++
+			p.mu.Unlock()
+		}
+		if created > 0 {
+			slog.Info("pool warmed", "addr", p.cfg.Addr, "connections", created, "target", target)
+		}
+	}()
 }
 
 // timerPool recycles time.Timer objects to avoid per-Acquire allocations.

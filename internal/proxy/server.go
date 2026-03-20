@@ -243,7 +243,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.listener = ln
 	slog.Info("proxy listening", "addr", s.listenAddr)
 
-	// Start health checks for all database groups
+	// Start health checks and warm connection pools for all database groups
 	for name, dbg := range s.dbGroups {
 		if dbg.writerPool != nil {
 			dbg.writerPool.StartHealthCheck(ctx, s.cfgPtr.Load().Pool.IdleTimeout/2)
@@ -254,6 +254,7 @@ func (s *Server) Start(ctx context.Context) error {
 			slog.Debug("reader health check started", "db", name, "addr", addr)
 		}
 		dbg.balancer.StartHealthCheck(ctx, s.cfgPtr.Load().Pool.ConnectionTimeout)
+		dbg.WarmPools(ctx)
 	}
 
 	// Start cache invalidation subscriber
@@ -501,9 +502,11 @@ func (s *Server) Reload(newCfg *config.Config) error {
 	for name, dbCfg := range newDBs {
 		if existing, ok := s.dbGroups[name]; ok {
 			existing.Reload(dbCfg, newCfg.CircuitBreaker)
+			existing.WarmPools(context.Background())
 			slog.Info("reload: database group updated", "db", name)
 		} else {
 			dbg := newDatabaseGroup(name, dbCfg, newCfg.CircuitBreaker)
+			dbg.WarmPools(context.Background())
 			s.dbGroups[name] = dbg
 			slog.Info("reload: database group added", "db", name)
 		}

@@ -80,6 +80,14 @@ rate_limit:
   enabled: true
   rate: 10000
   burst: 5000
+  per_user:
+    enabled: false
+    default_rate: 100
+    default_burst: 50
+  per_ip:
+    enabled: false
+    default_rate: 100
+    default_burst: 50
 
 audit:
   enabled: true

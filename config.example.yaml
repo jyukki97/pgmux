@@ -44,8 +44,24 @@ circuit_breaker:
 
 rate_limit:
   enabled: false
-  rate: 1000                        # 초당 허용 쿼리 수
-  burst: 100                        # 최대 버스트 크기
+  rate: 1000                        # 초당 허용 쿼리 수 (전역)
+  burst: 100                        # 최대 버스트 크기 (전역)
+  per_user:
+    enabled: false
+    default_rate: 100               # 사용자별 기본 초당 허용 쿼리 수
+    default_burst: 50               # 사용자별 기본 버스트 크기
+    overrides:                      # 사용자별 차등 설정
+      - key: "heavy_user"
+        rate: 200
+        burst: 100
+  per_ip:
+    enabled: false
+    default_rate: 100               # IP별 기본 초당 허용 쿼리 수
+    default_burst: 50               # IP별 기본 버스트 크기
+    overrides:                      # IP별 차등 설정
+      - key: "10.0.0.100"
+        rate: 500
+        burst: 200
 
 cache:
   enabled: true

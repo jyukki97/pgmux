@@ -19,7 +19,7 @@ type Metrics struct {
 	CacheInvalidations prometheus.Counter
 
 	// Rate limiting
-	RateLimited prometheus.Counter
+	RateLimited *prometheus.CounterVec
 
 	// Pool
 	PoolOpenConns  *prometheus.GaugeVec
@@ -119,11 +119,12 @@ func New() *Metrics {
 			},
 		),
 
-		RateLimited: prometheus.NewCounter(
+		RateLimited: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "pgmux_rate_limited_total",
 				Help: "Total number of rate-limited requests.",
 			},
+			[]string{"scope"},
 		),
 
 		PoolOpenConns: prometheus.NewGaugeVec(

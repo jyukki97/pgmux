@@ -113,7 +113,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	rateLimiter := s.rateLimiterFn()
 	if rateLimiter != nil && !rateLimiter.Allow() {
 		if s.met != nil {
-			s.met.RateLimited.Inc()
+			s.met.RateLimited.WithLabelValues("global").Inc()
 		}
 		writeError(w, http.StatusTooManyRequests, "too many requests")
 		return

@@ -122,16 +122,40 @@ func (s *Server) relayQueries(ctx context.Context, clientConn net.Conn, session 
 			return
 		}
 
-		// Rate limit check
+		// Rate limit check — global
 		if rl := s.getRateLimiter(); rl != nil && !rl.Allow() {
-			slog.Warn("rate limited", "remote", clientConn.RemoteAddr())
+			slog.Warn("rate limited", "scope", "global", "remote", clientConn.RemoteAddr())
 			if s.metrics != nil {
-				s.metrics.RateLimited.Inc()
+				s.metrics.RateLimited.WithLabelValues("global").Inc()
 			}
 			s.sendError(clientConn, "too many requests")
-			// Send ReadyForQuery so the client can continue
 			_ = protocol.WriteMessage(clientConn, protocol.MsgReadyForQuery, []byte{'I'})
 			continue
+		}
+
+		// Rate limit check — per-user
+		if reg := s.perUserRLPtr.Load(); reg != nil && !reg.Allow(si.User) {
+			slog.Warn("rate limited", "scope", "user", "user", si.User, "remote", clientConn.RemoteAddr())
+			if s.metrics != nil {
+				s.metrics.RateLimited.WithLabelValues("user").Inc()
+			}
+			s.sendError(clientConn, "per-user rate limit exceeded")
+			_ = protocol.WriteMessage(clientConn, protocol.MsgReadyForQuery, []byte{'I'})
+			continue
+		}
+
+		// Rate limit check — per-IP
+		if reg := s.perIPRLPtr.Load(); reg != nil {
+			clientIP := extractIP(clientConn.RemoteAddr().String())
+			if !reg.Allow(clientIP) {
+				slog.Warn("rate limited", "scope", "ip", "ip", clientIP, "remote", clientConn.RemoteAddr())
+				if s.metrics != nil {
+					s.metrics.RateLimited.WithLabelValues("ip").Inc()
+				}
+				s.sendError(clientConn, "per-ip rate limit exceeded")
+				_ = protocol.WriteMessage(clientConn, protocol.MsgReadyForQuery, []byte{'I'})
+				continue
+			}
 		}
 
 		// --- Simple Query Protocol ---

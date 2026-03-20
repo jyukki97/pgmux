@@ -164,9 +164,26 @@ type CircuitBreakerConfig struct {
 }
 
 type RateLimitConfig struct {
-	Enabled bool    `yaml:"enabled"`
-	Rate    float64 `yaml:"rate"`  // queries per second
-	Burst   int     `yaml:"burst"` // max burst size
+	Enabled bool                  `yaml:"enabled"`
+	Rate    float64               `yaml:"rate"`  // queries per second
+	Burst   int                   `yaml:"burst"` // max burst size
+	PerUser PerKeyRateLimitConfig `yaml:"per_user"`
+	PerIP   PerKeyRateLimitConfig `yaml:"per_ip"`
+}
+
+// PerKeyRateLimitConfig defines per-user or per-IP rate limiting.
+type PerKeyRateLimitConfig struct {
+	Enabled      bool                      `yaml:"enabled"`
+	DefaultRate  float64                   `yaml:"default_rate"`  // per-key qps
+	DefaultBurst int                       `yaml:"default_burst"` // per-key burst
+	Overrides    []PerKeyRateLimitOverride `yaml:"overrides"`
+}
+
+// PerKeyRateLimitOverride allows per-key rate/burst customization.
+type PerKeyRateLimitOverride struct {
+	Key   string  `yaml:"key"` // username or IP/CIDR
+	Rate  float64 `yaml:"rate"`
+	Burst int     `yaml:"burst"`
 }
 
 type BackendConfig struct {
@@ -347,6 +364,18 @@ func (c *Config) applyDefaults() {
 	}
 	if c.RateLimit.Burst <= 0 {
 		c.RateLimit.Burst = 100
+	}
+	if c.RateLimit.PerUser.DefaultRate <= 0 {
+		c.RateLimit.PerUser.DefaultRate = 100
+	}
+	if c.RateLimit.PerUser.DefaultBurst <= 0 {
+		c.RateLimit.PerUser.DefaultBurst = 50
+	}
+	if c.RateLimit.PerIP.DefaultRate <= 0 {
+		c.RateLimit.PerIP.DefaultRate = 100
+	}
+	if c.RateLimit.PerIP.DefaultBurst <= 0 {
+		c.RateLimit.PerIP.DefaultBurst = 50
 	}
 	if c.CircuitBreaker.ErrorThreshold <= 0 {
 		c.CircuitBreaker.ErrorThreshold = 0.5

@@ -27,6 +27,8 @@ type Server struct {
 	mu              sync.RWMutex // protects dbGroups, defaultDB
 	cfgPtr          atomic.Pointer[config.Config]
 	rateLimitPtr    atomic.Pointer[resilience.RateLimiter]
+	perUserRLPtr    atomic.Pointer[resilience.RateLimiterRegistry]
+	perIPRLPtr      atomic.Pointer[resilience.RateLimiterRegistry]
 	listenAddr      string
 	dbGroups        map[string]*DatabaseGroup
 	defaultDB       string
@@ -105,6 +107,26 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		rl := resilience.NewRateLimiter(cfg.RateLimit.Rate, cfg.RateLimit.Burst)
 		s.rateLimitPtr.Store(rl)
 		slog.Info("rate limiter enabled", "rate", cfg.RateLimit.Rate, "burst", cfg.RateLimit.Burst)
+	}
+
+	// Initialize per-user rate limiter
+	if cfg.RateLimit.PerUser.Enabled {
+		reg := resilience.NewRateLimiterRegistry(buildRegistryConfig(cfg.RateLimit.PerUser))
+		s.perUserRLPtr.Store(reg)
+		slog.Info("per-user rate limiter enabled",
+			"default_rate", cfg.RateLimit.PerUser.DefaultRate,
+			"default_burst", cfg.RateLimit.PerUser.DefaultBurst,
+			"overrides", len(cfg.RateLimit.PerUser.Overrides))
+	}
+
+	// Initialize per-IP rate limiter
+	if cfg.RateLimit.PerIP.Enabled {
+		reg := resilience.NewRateLimiterRegistry(buildRegistryConfig(cfg.RateLimit.PerIP))
+		s.perIPRLPtr.Store(reg)
+		slog.Info("per-ip rate limiter enabled",
+			"default_rate", cfg.RateLimit.PerIP.DefaultRate,
+			"default_burst", cfg.RateLimit.PerIP.DefaultBurst,
+			"overrides", len(cfg.RateLimit.PerIP.Overrides))
 	}
 
 	// Load TLS certificate if enabled (fail-fast: misconfigured TLS must not silently degrade)
@@ -504,6 +526,32 @@ func (s *Server) Reload(newCfg *config.Config) error {
 		s.rateLimitPtr.Store(nil)
 	}
 
+	// Update per-user rate limiter
+	if newCfg.RateLimit.PerUser.Enabled {
+		if old := s.perUserRLPtr.Swap(
+			resilience.NewRateLimiterRegistry(buildRegistryConfig(newCfg.RateLimit.PerUser)),
+		); old != nil {
+			old.Close()
+		}
+	} else {
+		if old := s.perUserRLPtr.Swap(nil); old != nil {
+			old.Close()
+		}
+	}
+
+	// Update per-IP rate limiter
+	if newCfg.RateLimit.PerIP.Enabled {
+		if old := s.perIPRLPtr.Swap(
+			resilience.NewRateLimiterRegistry(buildRegistryConfig(newCfg.RateLimit.PerIP)),
+		); old != nil {
+			old.Close()
+		}
+	} else {
+		if old := s.perIPRLPtr.Swap(nil); old != nil {
+			old.Close()
+		}
+	}
+
 	// Update connection limits (atomic — no lock needed for readers)
 	if newCfg.ConnectionLimits.Enabled {
 		if ct := s.connTrackerPtr.Load(); ct != nil {
@@ -693,6 +741,28 @@ func (s *Server) ReadOnlyState() (bool, time.Time) {
 	}
 	ts := s.readOnlyAt.Load()
 	return true, time.Unix(ts, 0)
+}
+
+// buildRegistryConfig converts per-key rate limit config to RegistryConfig.
+func buildRegistryConfig(cfg config.PerKeyRateLimitConfig) resilience.RegistryConfig {
+	overrides := make(map[string]resilience.Override, len(cfg.Overrides))
+	for _, o := range cfg.Overrides {
+		overrides[o.Key] = resilience.Override{Rate: o.Rate, Burst: o.Burst}
+	}
+	return resilience.RegistryConfig{
+		DefaultRate:  cfg.DefaultRate,
+		DefaultBurst: cfg.DefaultBurst,
+		Overrides:    overrides,
+	}
+}
+
+// extractIP strips the port from a net.Addr string (e.g. "1.2.3.4:5678" → "1.2.3.4").
+func extractIP(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr // fallback to full string
+	}
+	return host
 }
 
 // buildRewriteRules converts config rules to router.RewriteRule slice.

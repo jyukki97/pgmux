@@ -164,24 +164,24 @@ type CircuitBreakerConfig struct {
 }
 
 type RateLimitConfig struct {
-	Enabled bool    `yaml:"enabled"`
-	Rate    float64 `yaml:"rate"`  // queries per second
-	Burst   int     `yaml:"burst"` // max burst size
+	Enabled bool                  `yaml:"enabled"`
+	Rate    float64               `yaml:"rate"`  // queries per second
+	Burst   int                   `yaml:"burst"` // max burst size
 	PerUser PerKeyRateLimitConfig `yaml:"per_user"`
 	PerIP   PerKeyRateLimitConfig `yaml:"per_ip"`
 }
 
 // PerKeyRateLimitConfig defines per-user or per-IP rate limiting.
 type PerKeyRateLimitConfig struct {
-	Enabled      bool                       `yaml:"enabled"`
-	DefaultRate  float64                    `yaml:"default_rate"`  // per-key qps
-	DefaultBurst int                        `yaml:"default_burst"` // per-key burst
-	Overrides    []PerKeyRateLimitOverride  `yaml:"overrides"`
+	Enabled      bool                      `yaml:"enabled"`
+	DefaultRate  float64                   `yaml:"default_rate"`  // per-key qps
+	DefaultBurst int                       `yaml:"default_burst"` // per-key burst
+	Overrides    []PerKeyRateLimitOverride `yaml:"overrides"`
 }
 
 // PerKeyRateLimitOverride allows per-key rate/burst customization.
 type PerKeyRateLimitOverride struct {
-	Key   string  `yaml:"key"`   // username or IP/CIDR
+	Key   string  `yaml:"key"` // username or IP/CIDR
 	Rate  float64 `yaml:"rate"`
 	Burst int     `yaml:"burst"`
 }
